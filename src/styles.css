@@ -166,14 +166,89 @@ body {
   position: relative;
 }
 
-.terminal-host {
+/* ---------- split panes ---------- */
+.split {
   position: absolute;
   inset: 0;
-  padding: 6px;
+  display: flex;
+}
+.split-row {
+  flex-direction: row;
+}
+.split-col {
+  flex-direction: column;
 }
 
-.terminal-host .xterm {
+/* nested splits fill their cell */
+.split-cell > .split {
+  position: relative;
+  inset: auto;
+  width: 100%;
   height: 100%;
+}
+
+.split-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-grow: 0;
+  flex-shrink: 0;
+}
+/* a cell containing a leaf must let the leaf fill it */
+.split-cell > .pane-leaf,
+.split-cell > .split {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-leaf {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+}
+.pane-leaf.active {
+  border-color: var(--accent);
+}
+
+.pane-host {
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+}
+.pane-host .xterm {
+  height: 100%;
+}
+
+/* dividers */
+.divider {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+}
+.divider:hover {
+  background: var(--accent);
+}
+.divider-v {
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+.divider-h {
+  left: 0;
+  bottom: -3px;
+  width: 100%;
+  height: 6px;
+  cursor: row-resize;
+}
+
+.tabbar-spacer {
+  flex: 1;
 }
 
 .empty {

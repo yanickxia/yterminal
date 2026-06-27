@@ -1,19 +1,24 @@
-// workspace-store: owns the workspace + tab tree and persistence.
-// This is the heart of yterminal's "sidebar of workspaces, tabs inside each" model.
+// workspace-store: owns the workspace -> tab -> pane-tree structure + persistence.
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Tab, Workspace } from "../lib/types";
 import { uid } from "../lib/uid";
+import { makeLeaf, splitPane, removePane, setSizesAt } from "../lib/pane-tree";
 
-/** default home dir used when spawning a fresh tab */
 function defaultCwd(): string {
-  // The backend resolves "~" / empty to the user's home; keep it simple here.
   return "~";
 }
 
 function makeTab(name: string, cwd = defaultCwd()): Tab {
-  return { id: uid("tab"), name, cwd };
+  const leaf = makeLeaf(cwd);
+  return {
+    id: uid("tab"),
+    name,
+    cwd,
+    root: leaf,
+    activePaneId: leaf.id,
+  };
 }
 
 function makeWorkspace(name: string): Workspace {
@@ -42,8 +47,37 @@ interface WorkspaceState {
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
 
+  // ---- pane ops ----
+  splitActivePane: (
+    workspaceId: string,
+    tabId: string,
+    direction: "row" | "column"
+  ) => void;
+  closePane: (workspaceId: string, tabId: string, paneId: string) => void;
+  setActivePane: (workspaceId: string, tabId: string, paneId: string) => void;
+  resizeSplit: (
+    workspaceId: string,
+    tabId: string,
+    splitId: string,
+    sizes: number[]
+  ) => void;
+
   // ---- selectors ----
   activeWorkspace: () => Workspace | undefined;
+}
+
+/** helper: map over a specific tab inside a specific workspace */
+function mapTab(
+  workspaces: Workspace[],
+  workspaceId: string,
+  tabId: string,
+  fn: (t: Tab) => Tab
+): Workspace[] {
+  return workspaces.map((w) =>
+    w.id !== workspaceId
+      ? w
+      : { ...w, tabs: w.tabs.map((t) => (t.id === tabId ? fn(t) : t)) }
+  );
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -86,11 +120,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           workspaces: s.workspaces.map((w) => {
             if (w.id !== workspaceId) return w;
             const tab = makeTab(name ?? "shell");
-            return {
-              ...w,
-              tabs: [...w.tabs, tab],
-              activeTabId: tab.id,
-            };
+            return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
           }),
         })),
 
@@ -109,15 +139,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
       renameTab: (workspaceId, tabId, name) =>
         set((s) => ({
-          workspaces: s.workspaces.map((w) => {
-            if (w.id !== workspaceId) return w;
-            return {
-              ...w,
-              tabs: w.tabs.map((t) =>
-                t.id === tabId ? { ...t, name, customName: name } : t
-              ),
-            };
-          }),
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            name,
+            customName: name,
+          })),
         })),
 
       setActiveTab: (workspaceId, tabId) =>
@@ -127,6 +153,66 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           ),
         })),
 
+      splitActivePane: (workspaceId, tabId, direction) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => {
+            const { tree, newLeafId } = splitPane(
+              t.root,
+              t.activePaneId,
+              direction,
+              t.cwd
+            );
+            return { ...t, root: tree, activePaneId: newLeafId };
+          }),
+        })),
+
+      closePane: (workspaceId, tabId, paneId) =>
+        set((s) => {
+          let removeWholeTab = false;
+          const workspaces = mapTab(s.workspaces, workspaceId, tabId, (t) => {
+            const { tree, nextActiveId } = removePane(t.root, paneId);
+            if (tree === null) {
+              removeWholeTab = true;
+              return t; // handled below
+            }
+            return {
+              ...t,
+              root: tree,
+              activePaneId: nextActiveId ?? t.activePaneId,
+            };
+          });
+          if (removeWholeTab) {
+            // last pane closed -> close the tab itself
+            return {
+              workspaces: workspaces.map((w) => {
+                if (w.id !== workspaceId) return w;
+                const tabs = w.tabs.filter((t) => t.id !== tabId);
+                let activeTabId = w.activeTabId;
+                if (activeTabId === tabId)
+                  activeTabId = tabs[tabs.length - 1]?.id ?? null;
+                return { ...w, tabs, activeTabId };
+              }),
+            };
+          }
+          return { workspaces };
+        }),
+
+      setActivePane: (workspaceId, tabId, paneId) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            activePaneId: paneId,
+          })),
+        })),
+
+      resizeSplit: (workspaceId, tabId, splitId, sizes) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            root: setSizesAt(t.root, splitId, sizes),
+          })),
+        })),
+
       activeWorkspace: () => {
         const s = get();
         return s.workspaces.find((w) => w.id === s.activeWorkspaceId);
@@ -134,11 +220,33 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: "yterminal-workspaces",
-      // Only persist the tree, not the action functions.
+      version: 2,
       partialize: (s) => ({
         workspaces: s.workspaces,
         activeWorkspaceId: s.activeWorkspaceId,
       }),
+      // v1 (flat tabs, no pane tree) -> v2: rebuild tabs with a single leaf.
+      migrate: (persisted: any, version) => {
+        if (!persisted) return persisted;
+        if (version < 2 && Array.isArray(persisted.workspaces)) {
+          persisted.workspaces = persisted.workspaces.map((w: any) => ({
+            ...w,
+            tabs: (w.tabs ?? []).map((t: any) => {
+              if (t.root) return t;
+              const leaf = makeLeaf(t.cwd ?? "~");
+              return {
+                id: t.id,
+                name: t.name,
+                customName: t.customName,
+                cwd: t.cwd ?? "~",
+                root: leaf,
+                activePaneId: leaf.id,
+              };
+            }),
+          }));
+        }
+        return persisted;
+      },
     }
   )
 );

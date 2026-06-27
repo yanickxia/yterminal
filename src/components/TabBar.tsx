@@ -2,12 +2,14 @@ import { useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Workspace } from "../lib/types";
 import { disposeSession } from "../lib/terminal-manager";
+import { collectLeafIds } from "../lib/pane-tree";
 
 export function TabBar({ workspace }: { workspace: Workspace }) {
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const addTab = useWorkspaceStore((s) => s.addTab);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const renameTab = useWorkspaceStore((s) => s.renameTab);
+  const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -18,7 +20,11 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   }
 
   function closeTab(tabId: string) {
-    disposeSession(tabId);
+    const tab = workspace.tabs.find((t) => t.id === tabId);
+    if (tab) {
+      // kill every shell in this tab's split tree
+      for (const paneId of collectLeafIds(tab.root)) disposeSession(paneId);
+    }
     removeTab(workspace.id, tabId);
   }
 
@@ -71,6 +77,31 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
       >
         +
       </button>
+
+      <div className="tabbar-spacer" />
+
+      {workspace.activeTabId && (
+        <>
+          <button
+            className="icon-btn"
+            title="Split right (Cmd/Ctrl+D)"
+            onClick={() =>
+              splitActivePane(workspace.id, workspace.activeTabId!, "row")
+            }
+          >
+            ▮▮
+          </button>
+          <button
+            className="icon-btn"
+            title="Split down (Cmd/Ctrl+Shift+D)"
+            onClick={() =>
+              splitActivePane(workspace.id, workspace.activeTabId!, "column")
+            }
+          >
+            ⬓
+          </button>
+        </>
+      )}
     </div>
   );
 }
