@@ -35,6 +35,20 @@ npm run tauri:dev
 
 Requires Node 18+ and Rust (stable).
 
+### Platform prerequisites
+
+- **macOS**: Xcode Command Line Tools (`xcode-select --install`). No extra system libs needed.
+- **Windows**: MSVC Build Tools + WebView2 (preinstalled on Win10/11).
+- **Linux**: WebKitGTK 4.1 + GTK3, e.g. on Debian/Ubuntu:
+  ```bash
+  sudo apt install libwebkit2gtk-4.1-dev build-essential libssl-dev \
+    libayatana-appindicator3-dev librsvg2-dev
+  ```
+
+> The frontend (`npm run dev`, `npm run build`) and `cargo check` for non-GUI
+> logic work anywhere. The full GUI (`tauri:dev`) needs the platform webview
+> libs above — a headless server without GTK cannot launch the window.
+
 ## Roadmap
 
 - [x] Workspace sidebar + tabs (MVP)
