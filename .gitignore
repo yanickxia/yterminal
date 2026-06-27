@@ -1,0 +1,11 @@
+# deps
+node_modules
+# build output
+dist
+# rust / tauri
+src-tauri/target
+src-tauri/gen
+# misc
+.DS_Store
+*.log
+.env
