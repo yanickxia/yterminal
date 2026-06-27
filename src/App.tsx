@@ -4,6 +4,8 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { disposeSession } from "./lib/terminal-manager";
+import { collectLeafIds } from "./lib/pane-tree";
+import { pruneScrollback } from "./lib/scrollback";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -15,6 +17,12 @@ export default function App() {
 
   useEffect(() => {
     ensureSeedWorkspace();
+    // drop scrollback snapshots whose panes no longer exist in the store
+    const live = new Set<string>();
+    for (const w of useWorkspaceStore.getState().workspaces) {
+      for (const t of w.tabs) for (const id of collectLeafIds(t.root)) live.add(id);
+    }
+    pruneScrollback(live);
   }, []);
 
   const ws = workspaces.find((w) => w.id === activeWorkspaceId);

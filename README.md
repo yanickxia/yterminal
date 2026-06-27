@@ -52,8 +52,10 @@ Requires Node 18+ and Rust (stable).
 ## Roadmap
 
 - [x] Workspace sidebar + tabs (MVP)
-- [ ] Split panes (insert a Pane layer between Workspace and Tab)
-- [ ] Persist scrollback (SQLite via Rust)
+- [x] Split panes (recursive pane tree, draggable dividers, focus + shortcuts)
+- [x] Persist scrollback — per-pane buffer snapshots via `@xterm/addon-serialize`
+      into `localStorage`, replayed on launch (autosave + flush on close)
+- [ ] Scale scrollback to a Rust + SQLite store (unbounded history, cross-device)
 - [ ] SSH sessions
 - [ ] Drag-and-drop reorder
 - [ ] Settings / themes
