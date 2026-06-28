@@ -91,6 +91,11 @@ export default function App() {
                   onFocusPane={(paneId) =>
                     setActivePane(ws.id, activeTab.id, paneId)
                   }
+                  onExitPane={(paneId) => {
+                    // shell exited -> tear down its session and close the pane
+                    disposeSession(paneId);
+                    closePane(ws.id, activeTab.id, paneId);
+                  }}
                   onResize={(splitId, sizes) => {
                     resizeSplit(ws.id, activeTab.id, splitId, sizes);
                     requestAnimationFrame(() => refitTree(activeTab.root));

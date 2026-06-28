@@ -9,10 +9,11 @@ interface RenderProps {
   activePaneId: string;
   onFocusPane: (paneId: string) => void;
   onResize: (splitId: string, sizes: number[]) => void;
+  onExitPane: (paneId: string) => void;
 }
 
 export function PaneRenderer(props: RenderProps) {
-  const { node, activePaneId, onFocusPane, onResize } = props;
+  const { node, activePaneId, onFocusPane, onResize, onExitPane } = props;
 
   if (node.type === "leaf") {
     return (
@@ -20,6 +21,7 @@ export function PaneRenderer(props: RenderProps) {
         pane={node}
         active={node.id === activePaneId}
         onFocus={() => onFocusPane(node.id)}
+        onExit={onExitPane}
       />
     );
   }

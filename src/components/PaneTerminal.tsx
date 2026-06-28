@@ -4,6 +4,8 @@ import {
   attachSession,
   detachSession,
   fitSession,
+  onSessionExit,
+  offSessionExit,
 } from "../lib/terminal-manager";
 
 /**
@@ -15,19 +17,26 @@ export function PaneTerminal({
   pane,
   active,
   onFocus,
+  onExit,
 }: {
   pane: PaneLeaf;
   active: boolean;
   onFocus: () => void;
+  onExit: (paneId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    // close this pane when its shell process exits (e.g. user types `exit`)
+    onSessionExit(pane.id, onExit);
     attachSession(pane.id, container, pane.cwd);
-    return () => detachSession(pane.id);
-  }, [pane.id, pane.cwd]);
+    return () => {
+      offSessionExit(pane.id);
+      detachSession(pane.id);
+    };
+  }, [pane.id, pane.cwd, onExit]);
 
   // refit when activation/layout may have changed
   useEffect(() => {

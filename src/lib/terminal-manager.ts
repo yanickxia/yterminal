@@ -32,6 +32,24 @@ interface Session {
   /** the detached DOM element that hosts this terminal */
   el: HTMLDivElement;
   disposed: boolean;
+  /** the shell process has exited (user typed `exit` or it died) */
+  exited: boolean;
+}
+
+/**
+ * Per-pane callbacks fired when the shell process exits, so the UI can close
+ * the dead pane. Registered by PaneTerminal; keyed by pane/tab id.
+ */
+const exitListeners = new Map<string, (tabId: string) => void>();
+
+/** Register a callback invoked when the given pane's shell process exits. */
+export function onSessionExit(tabId: string, cb: (tabId: string) => void) {
+  exitListeners.set(tabId, cb);
+}
+
+/** Remove a previously registered exit callback. */
+export function offSessionExit(tabId: string) {
+  exitListeners.delete(tabId);
 }
 
 /** Persist a session's current buffer to storage (best effort). */
@@ -159,10 +177,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     }
   });
   pty.onExit(() => {
+    if (s) s.exited = true;
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
+    // notify the app so it can close the now-dead pane (standard terminal
+    // behavior: exiting the shell closes the split / tab).
+    const cb = exitListeners.get(tabId);
+    if (cb) cb(tabId);
   });
 
-  s = { term, fit, serialize, pty, el, disposed: false };
+  s = { term, fit, serialize, pty, el, disposed: false, exited: false };
   sessions.set(tabId, s);
   return s;
 }
