@@ -278,3 +278,140 @@ body {
 .icon-btn:hover {
   background: var(--bg-dark);
 }
+
+/* ---------- sidebar footer / settings entry ---------- */
+.sidebar-footer {
+  border-top: 1px solid var(--bg-light);
+  padding: 8px;
+}
+
+.settings-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 7px 9px;
+  border-radius: 6px;
+}
+
+.settings-btn:hover {
+  background: var(--bg-light);
+  color: var(--fg);
+}
+
+.settings-btn .gear {
+  font-size: 14px;
+}
+
+/* ---------- settings modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  width: 460px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bg-light);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 2px solid var(--bg-light);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.theme-swatch.active {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.theme-dots {
+  display: flex;
+  gap: 5px;
+}
+
+.theme-dots i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.theme-name {
+  font-size: 12px;
+}
+
+.select {
+  background: var(--bg-dark);
+  color: var(--fg);
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  outline: none;
+}
+
+.select:focus {
+  border-color: var(--accent);
+}
+
+.range {
+  width: 100%;
+  accent-color: var(--accent);
+}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { SettingsPanel } from "./SettingsPanel";
 
 export function WorkspaceSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -11,6 +12,7 @@ export function WorkspaceSidebar() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
 
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
@@ -72,6 +74,18 @@ export function WorkspaceSidebar() {
           </div>
         ))}
       </div>
+
+      <div className="sidebar-footer">
+        <button
+          className="settings-btn"
+          title="Appearance settings"
+          onClick={() => setShowSettings(true)}
+        >
+          <span className="gear">⚙</span> Settings
+        </button>
+      </div>
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

@@ -15,6 +15,13 @@ import {
   loadScrollback,
   clearScrollback,
 } from "./scrollback";
+import {
+  getTheme,
+  getFont,
+  toXtermTheme,
+  type ThemePalette,
+} from "./themes";
+import { useSettingsStore } from "../stores/settings-store";
 
 interface Session {
   term: Terminal;
@@ -38,20 +45,27 @@ function persist(id: string, s: Session) {
 
 const sessions = new Map<string, Session>();
 
-const THEME = {
-  background: "#1a1b26",
-  foreground: "#c0caf5",
-  cursor: "#7aa2f7",
-  selectionBackground: "#33467c",
-  black: "#15161e",
-  red: "#f7768e",
-  green: "#9ece6a",
-  yellow: "#e0af68",
-  blue: "#7aa2f7",
-  magenta: "#bb9af7",
-  cyan: "#7dcfff",
-  white: "#a9b1d6",
-};
+/** Push a theme palette onto the app-chrome CSS variables. */
+function applyChromeVars(p: ThemePalette) {
+  if (typeof document === "undefined") return;
+  const r = document.documentElement.style;
+  r.setProperty("--bg-dark", p.bgDark);
+  r.setProperty("--bg-medium", p.bgMedium);
+  r.setProperty("--bg-light", p.bgLight);
+  r.setProperty("--fg", p.fg);
+  r.setProperty("--fg-dim", p.fgDim);
+  r.setProperty("--accent", p.accent);
+}
+
+/** Read the current appearance from the settings store. */
+function currentAppearance() {
+  const { themeId, fontId, fontSize } = useSettingsStore.getState();
+  return {
+    theme: getTheme(themeId),
+    font: getFont(fontId),
+    fontSize,
+  };
+}
 
 function pickShell(): { cmd: string; args: string[] } {
   // Best-effort cross-platform default shell.
@@ -76,13 +90,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   el.style.width = "100%";
   el.style.height = "100%";
 
+  const { theme, font, fontSize } = currentAppearance();
+  applyChromeVars(theme.palette);
+
   const term = new Terminal({
-    fontFamily:
-      'JetBrainsMono, Menlo, Monaco, "Cascadia Code", "Courier New", monospace',
-    fontSize: 14,
+    fontFamily: font.stack,
+    fontSize,
     cursorBlink: true,
     allowProposedApi: true,
-    theme: THEME,
+    theme: toXtermTheme(theme.palette),
     scrollback: 10000,
   });
   const fit = new FitAddon();
@@ -187,6 +203,28 @@ export function fitSession(tabId: string) {
 /** Snapshot every live session to storage. */
 export function persistAllSessions() {
   for (const [id, s] of sessions) persist(id, s);
+}
+
+/**
+ * Apply the current appearance settings to the app chrome and every live
+ * terminal. Called whenever theme / font / font size changes so the update is
+ * instant, without re-spawning shells.
+ */
+export function applyAppearance() {
+  const { theme, font, fontSize } = currentAppearance();
+  applyChromeVars(theme.palette);
+  const xtermTheme = toXtermTheme(theme.palette);
+  for (const [, s] of sessions) {
+    if (s.disposed) continue;
+    s.term.options.theme = xtermTheme;
+    s.term.options.fontFamily = font.stack;
+    s.term.options.fontSize = fontSize;
+    try {
+      s.fit.fit();
+    } catch {
+      /* not measurable while detached */
+    }
+  }
 }
 
 // Autosave every 15s and flush once more right before the window goes away,

@@ -56,7 +56,9 @@ Requires Node 18+ and Rust (stable).
 - [x] Persist scrollback — per-pane buffer snapshots via `@xterm/addon-serialize`
       into `localStorage`, replayed on launch (autosave + flush on close)
 - [ ] Scale scrollback to a Rust + SQLite store (unbounded history, cross-device)
+- [x] Settings / themes — appearance panel: 5 built-in skins (Tokyo Night,
+      Dracula, Solarized Dark, Gruvbox Dark, One Light), font family + size,
+      applied live to all open terminals and the app chrome
 - [ ] SSH sessions
 - [ ] Drag-and-drop reorder
-- [ ] Settings / themes
 ```

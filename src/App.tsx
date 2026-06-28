@@ -3,7 +3,7 @@ import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
-import { disposeSession } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
 
@@ -17,6 +17,8 @@ export default function App() {
 
   useEffect(() => {
     ensureSeedWorkspace();
+    // sync app-chrome colors to the saved theme before any terminal opens
+    applyAppearance();
     // drop scrollback snapshots whose panes no longer exist in the store
     const live = new Set<string>();
     for (const w of useWorkspaceStore.getState().workspaces) {
