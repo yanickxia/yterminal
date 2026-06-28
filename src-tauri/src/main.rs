@@ -88,8 +88,7 @@ fn write_config(contents: String) -> Result<(), String> {
 /// fonts itself. font-kit reads the platform's native font catalog. We load one
 /// representative face per family and keep only the monospaced ones (a terminal
 /// only wants fixed-width fonts), returning a sorted, de-duplicated list.
-#[tauri::command]
-fn list_fonts() -> Vec<String> {
+fn enumerate_fonts() -> Vec<String> {
     use font_kit::loader::Loader; // brings is_monospace() into scope
     use font_kit::source::SystemSource;
 
@@ -120,6 +119,58 @@ fn list_fonts() -> Vec<String> {
     mono
 }
 
+/// Path of the JSON cache for the monospace font list. Lives next to the main
+/// config file so it gets cleaned up with the rest of yterminal's state.
+fn fonts_cache_path() -> std::path::PathBuf {
+    config_path()
+        .parent()
+        .map(|d| d.join("fonts-cache.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("fonts-cache.json"))
+}
+
+fn read_fonts_cache() -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(fonts_cache_path()).ok()?;
+    let list: Vec<String> = serde_json::from_str(&text).ok()?;
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+fn write_fonts_cache(list: &[String]) {
+    let path = fonts_cache_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string(list) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Return the cached font list if present (cheap), else enumerate, cache, and
+/// return. Enumeration walks the OS font catalog and parses one face per family
+/// — on macOS with hundreds of installed families that can take 1-2 seconds, so
+/// caching to disk makes second-and-later launches effectively free.
+#[tauri::command]
+fn list_fonts() -> Vec<String> {
+    if let Some(cached) = read_fonts_cache() {
+        return cached;
+    }
+    let list = enumerate_fonts();
+    write_fonts_cache(&list);
+    list
+}
+
+/// Force a fresh enumeration and rewrite the cache. Useful after the user
+/// installs new fonts; called from the Settings panel.
+#[tauri::command]
+fn refresh_fonts() -> Vec<String> {
+    let list = enumerate_fonts();
+    write_fonts_cache(&list);
+    list
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
@@ -129,7 +180,8 @@ fn main() {
             config_file_path,
             read_config,
             write_config,
-            list_fonts
+            list_fonts,
+            refresh_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running yterminal");

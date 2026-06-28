@@ -5,6 +5,8 @@
   --fg: #c0caf5;
   --fg-dim: #565f89;
   --accent: #7aa2f7;
+  --divider-width: 1px;
+  --divider-color: #3a3f4b;
 }
 
 * {
@@ -102,6 +104,15 @@ body {
 }
 
 .rail-settings:hover {
+  color: var(--fg);
+}
+
+.rail-search {
+  color: var(--fg-dim);
+  margin-top: 4px;
+}
+
+.rail-search:hover {
   color: var(--fg);
 }
 
@@ -381,23 +392,46 @@ body {
   position: absolute;
   z-index: 5;
   background: transparent;
+  /* hit area scales with the visible line so a thick divider stays grabbable
+     everywhere it shows. Floor at 8px so a 0-1px line is still easy to grab. */
+  --hit: max(8px, calc(var(--divider-width, 0px) + 6px));
+}
+.divider::before {
+  content: "";
+  position: absolute;
+  background: var(--divider-color, transparent);
+  pointer-events: none;
 }
 .divider:hover {
   background: var(--accent);
 }
 .divider-v {
   top: 0;
-  right: -3px;
-  width: 6px;
+  right: calc(var(--hit) / -2);
+  width: var(--hit);
   height: 100%;
   cursor: col-resize;
 }
+.divider-v::before {
+  top: 0;
+  left: 50%;
+  height: 100%;
+  width: var(--divider-width, 0px);
+  transform: translateX(-50%);
+}
 .divider-h {
   left: 0;
-  bottom: -3px;
+  bottom: calc(var(--hit) / -2);
   width: 100%;
-  height: 6px;
+  height: var(--hit);
   cursor: row-resize;
+}
+.divider-h::before {
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: var(--divider-width, 0px);
+  transform: translateY(-50%);
 }
 
 .tabbar-spacer {
@@ -596,6 +630,28 @@ body {
   letter-spacing: 0.05em;
   color: var(--fg-dim);
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+.link-btn:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+  text-decoration: none;
 }
 
 .config-path {
@@ -663,4 +719,115 @@ body {
 .range {
   width: 100%;
   accent-color: var(--accent);
+}
+
+.divider-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.divider-color-row .color-input {
+  width: 36px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--bg-light);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.divider-color-row .select {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---------- workspace palette (Cmd+K) ---------- */
+.palette {
+  width: 520px;
+  max-width: 92vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  /* anchor near the top of the viewport like VSCode's quickopen */
+  margin-top: -20vh;
+}
+.palette-input {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--bg-light);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 12px 14px;
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--fg-dim);
+}
+.palette-list {
+  overflow-y: auto;
+  max-height: 50vh;
+  padding: 4px 0;
+}
+.palette-empty {
+  padding: 14px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  text-align: center;
+}
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+.palette-row.active {
+  background: var(--bg-light);
+}
+.palette-row.current .palette-ws {
+  color: var(--accent);
+}
+.palette-icon {
+  width: 18px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+.palette-ws {
+  font-weight: 500;
+}
+.palette-sep {
+  color: var(--fg-dim);
+}
+.palette-tab {
+  color: var(--fg-dim);
+}
+.palette-row.active .palette-tab,
+.palette-row.active .palette-sep {
+  color: var(--fg);
+}
+.palette-badge {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.palette-hint {
+  padding: 8px 14px;
+  border-top: 1px solid var(--bg-light);
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-align: center;
 }

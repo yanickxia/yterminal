@@ -4,6 +4,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
+import { WorkspacePalette } from "./components/WorkspacePalette";
 import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
@@ -17,6 +18,7 @@ export default function App() {
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
   const closePane = useWorkspaceStore((s) => s.closePane);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
+  const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
@@ -25,19 +27,18 @@ export default function App() {
   const [ready, setReady] = useState(false);
   // when set, the in-terminal search box is open for this pane id
   const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await initShell();
       if (cancelled) return;
-      // probe which monospace fonts this machine actually has, so the picker can
-      // offer real system fonts (must run before loadConfigFromDisk so a saved
-      // system-font id validates instead of resetting to the default).
-      registerSystemFonts(await detectSystemFonts());
-      if (cancelled) return;
       // load appearance from the on-disk JSON config (synced/hand-editable);
-      // falls back to localStorage-persisted settings if the file is absent
+      // falls back to localStorage-persisted settings if the file is absent.
+      // A saved system-font id that isn't catalogued yet is preserved as-is
+      // (config.ts keeps any non-empty string), so we can defer font detection
+      // to after the UI is up.
       await loadConfigFromDisk();
       if (cancelled) return;
       ensureSeedWorkspace();
@@ -50,6 +51,15 @@ export default function App() {
       }
       pruneScrollback(live);
       setReady(true);
+
+      // probe installed monospace fonts in the background — the native call is
+      // cached to disk on the Rust side so subsequent launches are ~instant,
+      // but the very first one can take 1-2s. Off the critical path: the
+      // Settings picker reads getAllFonts() on open, which sees the updated
+      // list once this resolves.
+      detectSystemFonts().then((fonts) => {
+        if (!cancelled) registerSystemFonts(fonts);
+      });
     })();
     return () => {
       cancelled = true;
@@ -75,8 +85,16 @@ export default function App() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || !ws || !ws.activeTabId) return;
+      if (!mod) return;
       const key = e.key.toLowerCase();
+      // Cmd/Ctrl+K: workspace/tab quick switcher. Works regardless of whether
+      // a workspace or tab is currently focused.
+      if (key === "k") {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+        return;
+      }
+      if (!ws || !ws.activeTabId) return;
       if (key === "d") {
         e.preventDefault();
         splitActivePane(ws.id, ws.activeTabId, e.shiftKey ? "column" : "row");
@@ -94,20 +112,28 @@ export default function App() {
           closePane(ws.id, ws.activeTabId, tab.activePaneId);
         }
       } else if (key === "w") {
-        // Cmd/Ctrl+W: close the current tab (NOT the whole window).
+        // Cmd/Ctrl+W: cascade close — pane → tab → workspace.
         // preventDefault stops the OS/webview from closing the window.
         e.preventDefault();
         const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
-        if (tab) {
-          // tear down every shell in the tab before dropping it
-          for (const id of collectLeafIds(tab.root)) disposeSession(id);
+        if (!tab) return;
+        const leafIds = collectLeafIds(tab.root);
+        if (leafIds.length > 1) {
+          disposeSession(tab.activePaneId);
+          closePane(ws.id, ws.activeTabId, tab.activePaneId);
+        } else if (ws.tabs.length > 1) {
+          for (const id of leafIds) disposeSession(id);
           removeTab(ws.id, ws.activeTabId);
+        } else if (workspaces.length > 1) {
+          for (const t of ws.tabs)
+            for (const id of collectLeafIds(t.root)) disposeSession(id);
+          removeWorkspace(ws.id);
         }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ws, splitActivePane, closePane, removeTab]);
+  }, [ws, workspaces, splitActivePane, closePane, removeTab, removeWorkspace]);
 
   // refit terminals whenever the active tab's tree changes
   useEffect(() => {
@@ -119,7 +145,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <WorkspaceSidebar />
+      <WorkspaceSidebar onOpenPalette={() => setPaletteOpen(true)} />
       <div className="main">
         {!ready ? (
           <div className="empty">Starting…</div>
@@ -162,6 +188,9 @@ export default function App() {
           <div className="empty">No workspace.</div>
         )}
       </div>
+      {paletteOpen && (
+        <WorkspacePalette onClose={() => setPaletteOpen(false)} />
+      )}
     </div>
   );
 }

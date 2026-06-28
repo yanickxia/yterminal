@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   useSettingsStore,
   MIN_FONT_SIZE,
   MAX_FONT_SIZE,
+  MIN_DIVIDER_WIDTH,
+  MAX_DIVIDER_WIDTH,
 } from "../stores/settings-store";
-import { THEMES, FONTS, getAllFonts } from "../lib/themes";
+import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 
@@ -17,16 +20,46 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const themeId = useSettingsStore((s) => s.themeId);
   const fontId = useSettingsStore((s) => s.fontId);
   const fontSize = useSettingsStore((s) => s.fontSize);
+  const dividerWidth = useSettingsStore((s) => s.dividerWidth);
+  const dividerColor = useSettingsStore((s) => s.dividerColor);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
+  const setDividerWidth = useSettingsStore((s) => s.setDividerWidth);
+  const setDividerColor = useSettingsStore((s) => s.setDividerColor);
 
   const [cfgPath, setCfgPath] = useState("");
-  // built-in presets vs. fonts detected on this machine (computed once)
+  const [fontsBump, setFontsBump] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  // built-in presets vs. fonts detected on this machine. Recomputed when
+  // fontsBump changes so a manual refresh re-renders the picker.
   const builtinIds = new Set(FONTS.map((f) => f.id));
-  const systemFonts = getAllFonts().filter((f) => !builtinIds.has(f.id));
+  const systemFonts = (() => {
+    void fontsBump;
+    return getAllFonts().filter((f) => !builtinIds.has(f.id));
+  })();
   // skip persisting on the initial mount (only write on actual user changes)
   const mounted = useRef(false);
+
+  async function refreshFonts() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const families = await invoke<string[]>("refresh_fonts");
+      registerSystemFonts(
+        families.map((family) => ({
+          id: family,
+          name: family,
+          stack: `"${family}", monospace`,
+        }))
+      );
+      setFontsBump((n) => n + 1);
+    } catch {
+      /* command unavailable (non-Tauri) — silently no-op */
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     configFilePath().then(setCfgPath);
@@ -37,7 +70,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     applyAppearance();
     if (mounted.current) saveConfigToDisk();
     else mounted.current = true;
-  }, [themeId, fontId, fontSize]);
+  }, [themeId, fontId, fontSize, dividerWidth, dividerColor]);
 
   // close on Escape
   useEffect(() => {
@@ -96,6 +129,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <div className="field">
             <label className="field-label" htmlFor="font-select">
               Font
+              <button
+                type="button"
+                className="link-btn"
+                onClick={refreshFonts}
+                disabled={refreshing}
+                title="Re-scan installed system fonts"
+              >
+                {refreshing ? "scanning…" : "refresh"}
+              </button>
             </label>
             <select
               id="font-select"
@@ -135,6 +177,40 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             />
           </div>
 
+          {/* pane divider */}
+          <div className="field">
+            <label className="field-label">
+              Pane divider width — {dividerWidth}px
+            </label>
+            <input
+              type="range"
+              min={MIN_DIVIDER_WIDTH}
+              max={MAX_DIVIDER_WIDTH}
+              value={dividerWidth}
+              onChange={(e) => setDividerWidth(Number(e.target.value))}
+              className="range"
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label">Pane divider color</label>
+            <div className="divider-color-row">
+              <input
+                type="color"
+                value={normalizeColorForInput(dividerColor)}
+                onChange={(e) => setDividerColor(e.target.value)}
+                className="color-input"
+              />
+              <input
+                type="text"
+                value={dividerColor}
+                onChange={(e) => setDividerColor(e.target.value)}
+                className="select"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
           {/* config file location (sync target) */}
           {cfgPath && (
             <div className="field">
@@ -146,4 +222,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+/** Coerce any CSS color string to a 7-char #rrggbb for <input type="color">. */
+function normalizeColorForInput(c: string): string {
+  const m = c.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!m) return "#000000";
+  if (m[1].length === 3) {
+    const [r, g, b] = m[1];
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return `#${m[1].toLowerCase()}`;
 }

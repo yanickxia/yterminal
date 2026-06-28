@@ -12,7 +12,11 @@ function railGlyph(name: string, icon?: string): string {
   return ch ? ch.toUpperCase() : "·";
 }
 
-export function WorkspaceSidebar() {
+export function WorkspaceSidebar({
+  onOpenPalette,
+}: {
+  onOpenPalette: () => void;
+}) {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspaceStore((s) => s.setActiveWorkspace);
@@ -106,6 +110,13 @@ export function WorkspaceSidebar() {
         >
           »
         </button>
+        <button
+          className="icon-btn rail-search"
+          title="Search workspaces & tabs (⌘K)"
+          onClick={onOpenPalette}
+        >
+          ⌕
+        </button>
         <div className="rail-list">
           {workspaces.map((w) => (
             <button
@@ -137,6 +148,13 @@ export function WorkspaceSidebar() {
       <div className="sidebar-header">
         <span>WORKSPACES</span>
         <div className="sidebar-header-actions">
+          <button
+            className="icon-btn"
+            title="Search workspaces & tabs (⌘K)"
+            onClick={onOpenPalette}
+          >
+            ⌕
+          </button>
           <button
             className="icon-btn"
             title="New workspace"

@@ -64,6 +64,13 @@ function Divider({
   onDrag: (deltaPct: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Each render the parent passes a fresh onDrag that closes over the latest
+  // `node.sizes`. The window mousemove handler captures its own reference, so
+  // we route through a ref to always call the newest callback — otherwise the
+  // drag only nudges sizes once (based on the snapshot at mousedown) and then
+  // appears frozen.
+  const onDragRef = useRef(onDrag);
+  onDragRef.current = onDrag;
 
   function onMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -77,7 +84,7 @@ function Divider({
       const cur = isRow ? ev.clientX : ev.clientY;
       const deltaPx = cur - last;
       last = cur;
-      onDrag((deltaPx / total) * 100);
+      onDragRef.current((deltaPx / total) * 100);
     }
     function onUp() {
       window.removeEventListener("mousemove", onMove);

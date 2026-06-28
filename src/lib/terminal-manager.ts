@@ -134,6 +134,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
 
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
+  applyDividerVars();
 
   const term = new Terminal({
     fontFamily: font.stack,
@@ -336,6 +337,7 @@ export function persistAllSessions() {
 export function applyAppearance() {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
+  applyDividerVars();
   const xtermTheme = toXtermTheme(theme.palette);
   for (const [, s] of sessions) {
     if (s.disposed) continue;
@@ -348,6 +350,15 @@ export function applyAppearance() {
       /* not measurable while detached */
     }
   }
+}
+
+/** Push divider width/color from settings onto CSS variables. */
+function applyDividerVars() {
+  if (typeof document === "undefined") return;
+  const { dividerWidth, dividerColor } = useSettingsStore.getState();
+  const r = document.documentElement.style;
+  r.setProperty("--divider-width", `${dividerWidth}px`);
+  r.setProperty("--divider-color", dividerColor);
 }
 
 // Autosave every 15s and flush once more right before the window goes away,

@@ -15,6 +15,10 @@ import {
   useSettingsStore,
   MIN_FONT_SIZE,
   MAX_FONT_SIZE,
+  MIN_DIVIDER_WIDTH,
+  MAX_DIVIDER_WIDTH,
+  DEFAULT_DIVIDER_WIDTH,
+  DEFAULT_DIVIDER_COLOR,
 } from "../stores/settings-store";
 
 /** The on-disk schema. Kept intentionally small and stable. */
@@ -28,6 +32,10 @@ export interface YterminalConfig {
     font: string;
     /** font size in px, clamped to [MIN_FONT_SIZE, MAX_FONT_SIZE] */
     fontSize: number;
+    /** pane divider line width in px (0 hides it) */
+    dividerWidth: number;
+    /** pane divider line color (any CSS color string) */
+    dividerColor: string;
   };
 }
 
@@ -42,6 +50,8 @@ export function configFromStore(): YterminalConfig {
       theme: s.themeId,
       font: s.fontId,
       fontSize: s.fontSize,
+      dividerWidth: s.dividerWidth,
+      dividerColor: s.dividerColor,
     },
   };
 }
@@ -49,6 +59,21 @@ export function configFromStore(): YterminalConfig {
 function clampFontSize(n: unknown): number {
   const v = typeof n === "number" && Number.isFinite(n) ? n : 14;
   return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(v)));
+}
+
+function clampDividerWidth(n: unknown): number {
+  const v =
+    typeof n === "number" && Number.isFinite(n) ? n : DEFAULT_DIVIDER_WIDTH;
+  return Math.max(
+    MIN_DIVIDER_WIDTH,
+    Math.min(MAX_DIVIDER_WIDTH, Math.round(v))
+  );
+}
+
+function validDividerColor(c: unknown): string {
+  return typeof c === "string" && c.trim().length > 0
+    ? c
+    : DEFAULT_DIVIDER_COLOR;
 }
 
 /**
@@ -80,6 +105,8 @@ export function parseConfig(text: string): YterminalConfig | null {
       theme: themeOk ? ap.theme : DEFAULT_THEME_ID,
       font: fontOk ? ap.font : DEFAULT_FONT_ID,
       fontSize: clampFontSize(ap.fontSize),
+      dividerWidth: clampDividerWidth(ap.dividerWidth),
+      dividerColor: validDividerColor(ap.dividerColor),
     },
   };
 }
@@ -87,10 +114,12 @@ export function parseConfig(text: string): YterminalConfig | null {
 /** Push a parsed config into the settings store (only if values differ). */
 export function applyConfigToStore(cfg: YterminalConfig) {
   const s = useSettingsStore.getState();
-  const { theme, font, fontSize } = cfg.appearance;
+  const { theme, font, fontSize, dividerWidth, dividerColor } = cfg.appearance;
   if (theme !== s.themeId) s.setTheme(theme);
   if (font !== s.fontId) s.setFont(font);
   if (fontSize !== s.fontSize) s.setFontSize(fontSize);
+  if (dividerWidth !== s.dividerWidth) s.setDividerWidth(dividerWidth);
+  if (dividerColor !== s.dividerColor) s.setDividerColor(dividerColor);
 }
 
 /** Absolute path of the config file (for display in the UI). */
