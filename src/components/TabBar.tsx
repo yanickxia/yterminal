@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Workspace } from "../lib/types";
 import { disposeSession } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
+import { EmojiPicker } from "./EmojiPicker";
 
 export function TabBar({ workspace }: { workspace: Workspace }) {
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const addTab = useWorkspaceStore((s) => s.addTab);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const renameTab = useWorkspaceStore((s) => s.renameTab);
+  const setTabIcon = useWorkspaceStore((s) => s.setTabIcon);
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
   const reorderTab = useWorkspaceStore((s) => s.reorderTab);
 
@@ -16,6 +18,23 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // id of the tab whose emoji picker is open (null = none), plus the screen
+  // anchor (bottom-left of the trigger) so the fixed-position popover lands
+  // under the icon and isn't clipped by the tab bar's horizontal scroll.
+  const [iconPicker, setIconPicker] = useState<{
+    id: string;
+    anchor: { x: number; y: number };
+  } | null>(null);
+
+  function toggleIconPicker(tabId: string, e: MouseEvent) {
+    e.stopPropagation();
+    if (iconPicker?.id === tabId) {
+      setIconPicker(null);
+      return;
+    }
+    const r = e.currentTarget.getBoundingClientRect();
+    setIconPicker({ id: tabId, anchor: { x: r.left, y: r.bottom } });
+  }
 
   function commitRename(tabId: string) {
     if (draft.trim()) renameTab(workspace.id, tabId, draft.trim());
@@ -89,6 +108,23 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
             />
           ) : (
             <>
+              {t.icon ? (
+                <button
+                  className="tab-icon"
+                  title="Change icon"
+                  onClick={(e) => toggleIconPicker(t.id, e)}
+                >
+                  {t.icon}
+                </button>
+              ) : (
+                <button
+                  className="tab-icon tab-icon-add"
+                  title="Set icon"
+                  onClick={(e) => toggleIconPicker(t.id, e)}
+                >
+                  ☺
+                </button>
+              )}
               <span className="tab-name">{t.name}</span>
               <button
                 className="icon-btn tab-close"
@@ -100,6 +136,13 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
               >
                 ×
               </button>
+              {iconPicker?.id === t.id && (
+                <EmojiPicker
+                  anchor={iconPicker.anchor}
+                  onPick={(emoji) => setTabIcon(workspace.id, t.id, emoji)}
+                  onClose={() => setIconPicker(null)}
+                />
+              )}
             </>
           )}
         </div>

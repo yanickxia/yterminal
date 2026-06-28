@@ -39,6 +39,7 @@ interface WorkspaceState {
   addWorkspace: (name?: string) => void;
   removeWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
+  setWorkspaceIcon: (id: string, icon: string) => void;
   setActiveWorkspace: (id: string) => void;
   reorderWorkspace: (fromId: string, toId: string) => void;
 
@@ -46,6 +47,7 @@ interface WorkspaceState {
   addTab: (workspaceId: string, name?: string) => void;
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
+  setTabIcon: (workspaceId: string, tabId: string, icon: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
   reorderTab: (workspaceId: string, fromId: string, toId: string) => void;
 
@@ -131,8 +133,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           ),
         })),
 
-      setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
+      setWorkspaceIcon: (id, icon) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) =>
+            w.id === id ? { ...w, icon: icon || undefined } : w
+          ),
+        })),
 
+      setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
       reorderWorkspace: (fromId, toId) =>
         set((s) => ({
           workspaces: moveById(s.workspaces, fromId, toId),
@@ -166,6 +174,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             ...t,
             name,
             customName: name,
+          })),
+        })),
+
+      setTabIcon: (workspaceId, tabId, icon) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            icon: icon || undefined,
           })),
         })),
 

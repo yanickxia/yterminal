@@ -44,12 +44,12 @@ body {
   flex-direction: column;
 }
 
-/* collapsed rail: a slim strip with just the expand affordance */
+/* collapsed rail: a slim strip of workspace icons + expand/settings */
 .sidebar.collapsed {
-  width: 32px;
-  min-width: 32px;
+  width: 44px;
+  min-width: 44px;
   align-items: center;
-  padding-top: 8px;
+  padding: 8px 0;
 }
 
 .sidebar-expand {
@@ -57,6 +57,51 @@ body {
 }
 
 .sidebar-expand:hover {
+  color: var(--fg);
+}
+
+.rail-list {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  overflow-y: auto;
+}
+
+.rail-item {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: var(--bg-dark);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.rail-item:hover {
+  background: var(--bg-light);
+}
+
+.rail-item.active {
+  background: var(--bg-light);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.rail-settings {
+  color: var(--fg-dim);
+  margin-top: 6px;
+}
+
+.rail-settings:hover {
   color: var(--fg);
 }
 
@@ -84,6 +129,7 @@ body {
 }
 
 .ws-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -91,6 +137,27 @@ body {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
+}
+
+/* icon chip on a workspace row / clickable to open the emoji picker */
+.ws-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: var(--bg-dark);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.ws-icon:hover {
+  background: var(--accent);
 }
 
 .ws-item:hover {
@@ -172,6 +239,7 @@ body {
 }
 
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -189,6 +257,31 @@ body {
 .tab.active {
   background: var(--bg-dark);
   color: var(--fg);
+}
+
+/* emoji/icon chip on a tab */
+.tab-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+/* the "set icon" placeholder stays subtle until hovered */
+.tab-icon-add {
+  opacity: 0;
+  color: var(--fg-dim);
+}
+
+.tab:hover .tab-icon-add {
+  opacity: 0.6;
 }
 
 .tab-add {
@@ -339,6 +432,60 @@ body {
 }
 
 .search-input:focus {
+  border-color: var(--accent);
+}
+
+/* ---------- emoji picker popover ---------- */
+.emoji-picker {
+  position: fixed;
+  z-index: 60;
+  margin-top: 4px;
+  width: 232px;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+}
+
+.emoji-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.emoji-cell:hover {
+  background: var(--bg-light);
+}
+
+.emoji-clear {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  background: var(--bg-dark);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.emoji-clear:hover {
+  color: var(--fg);
   border-color: var(--accent);
 }
 

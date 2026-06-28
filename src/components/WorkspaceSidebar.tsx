@@ -1,8 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { SettingsPanel } from "./SettingsPanel";
+import { EmojiPicker } from "./EmojiPicker";
 
 const COLLAPSE_KEY = "yterminal.sidebar.collapsed";
+
+/** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
+function railGlyph(name: string, icon?: string): string {
+  if (icon) return icon;
+  const ch = name.trim().charAt(0);
+  return ch ? ch.toUpperCase() : "·";
+}
 
 export function WorkspaceSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -12,12 +20,19 @@ export function WorkspaceSidebar() {
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const renameWorkspace = useWorkspaceStore((s) => s.renameWorkspace);
   const reorderWorkspace = useWorkspaceStore((s) => s.reorderWorkspace);
+  const setWorkspaceIcon = useWorkspaceStore((s) => s.setWorkspaceIcon);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // id of the workspace whose emoji picker is open (null = none), plus the
+  // screen anchor (bottom-left of the trigger) for the fixed-position popover.
+  const [iconPicker, setIconPicker] = useState<{
+    id: string;
+    anchor: { x: number; y: number };
+  } | null>(null);
   // collapsed state persists across launches; restored synchronously so the
   // sidebar doesn't flash open on startup.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -47,8 +62,18 @@ export function WorkspaceSidebar() {
     setOverId(null);
   }
 
-  // collapsed rail: just a button to expand again, kept narrow so the
-  // terminal area reclaims the space.
+  function toggleIconPicker(wsId: string, e: MouseEvent) {
+    e.stopPropagation();
+    if (iconPicker?.id === wsId) {
+      setIconPicker(null);
+      return;
+    }
+    const r = e.currentTarget.getBoundingClientRect();
+    setIconPicker({ id: wsId, anchor: { x: r.left, y: r.bottom } });
+  }
+
+  // collapsed rail: a narrow strip of workspace icons (emoji or first letter)
+  // plus the expand + settings affordances, so the chrome stays usable.
   if (collapsed) {
     return (
       <div className="sidebar collapsed">
@@ -59,6 +84,28 @@ export function WorkspaceSidebar() {
         >
           »
         </button>
+        <div className="rail-list">
+          {workspaces.map((w) => (
+            <button
+              key={w.id}
+              className={"rail-item" + (w.id === activeId ? " active" : "")}
+              title={w.name}
+              onClick={() => setActive(w.id)}
+            >
+              {railGlyph(w.name, w.icon)}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-btn rail-settings"
+          title="Appearance settings"
+          onClick={() => setShowSettings(true)}
+        >
+          ⚙
+        </button>
+        {showSettings && (
+          <SettingsPanel onClose={() => setShowSettings(false)} />
+        )}
       </div>
     );
   }
@@ -133,6 +180,13 @@ export function WorkspaceSidebar() {
               />
             ) : (
               <>
+                <button
+                  className="ws-icon"
+                  title="Set icon"
+                  onClick={(e) => toggleIconPicker(w.id, e)}
+                >
+                  {railGlyph(w.name, w.icon)}
+                </button>
                 <span className="ws-name">{w.name}</span>
                 <span className="ws-count">{w.tabs.length}</span>
                 <button
@@ -145,6 +199,13 @@ export function WorkspaceSidebar() {
                 >
                   ×
                 </button>
+                {iconPicker?.id === w.id && (
+                  <EmojiPicker
+                    anchor={iconPicker.anchor}
+                    onPick={(emoji) => setWorkspaceIcon(w.id, emoji)}
+                    onClose={() => setIconPicker(null)}
+                  />
+                )}
               </>
             )}
           </div>

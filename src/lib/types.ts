@@ -33,6 +33,8 @@ export interface Tab {
   name: string;
   /** user-overridden name; when set it wins over auto title */
   customName?: string;
+  /** optional emoji/icon shown before the name */
+  icon?: string;
   /** working directory for the tab's first pane */
   cwd: string;
   /** the split tree rooted here */
@@ -44,6 +46,8 @@ export interface Tab {
 export interface Workspace {
   id: string;
   name: string;
+  /** optional emoji/icon shown before the name (and in the collapsed rail) */
+  icon?: string;
   /** ordered list of tabs that belong to this workspace */
   tabs: Tab[];
   /** id of the currently visible tab inside this workspace */
