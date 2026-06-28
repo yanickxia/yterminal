@@ -40,12 +40,14 @@ interface WorkspaceState {
   removeWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   setActiveWorkspace: (id: string) => void;
+  reorderWorkspace: (fromId: string, toId: string) => void;
 
   // ---- tab ops ----
   addTab: (workspaceId: string, name?: string) => void;
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
+  reorderTab: (workspaceId: string, fromId: string, toId: string) => void;
 
   // ---- pane ops ----
   splitActivePane: (
@@ -78,6 +80,22 @@ function mapTab(
       ? w
       : { ...w, tabs: w.tabs.map((t) => (t.id === tabId ? fn(t) : t)) }
   );
+}
+
+/** helper: move the item with id `fromId` to the slot occupied by `toId`. */
+function moveById<T extends { id: string }>(
+  list: T[],
+  fromId: string,
+  toId: string
+): T[] {
+  if (fromId === toId) return list;
+  const from = list.findIndex((x) => x.id === fromId);
+  const to = list.findIndex((x) => x.id === toId);
+  if (from === -1 || to === -1) return list;
+  const next = [...list];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -115,6 +133,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
       setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
 
+      reorderWorkspace: (fromId, toId) =>
+        set((s) => ({
+          workspaces: moveById(s.workspaces, fromId, toId),
+        })),
+
       addTab: (workspaceId, name) =>
         set((s) => ({
           workspaces: s.workspaces.map((w) => {
@@ -150,6 +173,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         set((s) => ({
           workspaces: s.workspaces.map((w) =>
             w.id === workspaceId ? { ...w, activeTabId: tabId } : w
+          ),
+        })),
+
+      reorderTab: (workspaceId, fromId, toId) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) =>
+            w.id === workspaceId
+              ? { ...w, tabs: moveById(w.tabs, fromId, toId) }
+              : w
           ),
         })),
 

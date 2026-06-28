@@ -60,5 +60,6 @@ Requires Node 18+ and Rust (stable).
       Dracula, Solarized Dark, Gruvbox Dark, One Light), font family + size,
       applied live to all open terminals and the app chrome
 - [ ] SSH sessions
-- [ ] Drag-and-drop reorder
+- [x] Drag-and-drop reorder — tabs within a workspace and workspaces in the
+      sidebar, via native HTML5 DnD
 ```

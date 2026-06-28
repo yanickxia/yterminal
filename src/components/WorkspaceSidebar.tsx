@@ -9,14 +9,23 @@ export function WorkspaceSidebar() {
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const renameWorkspace = useWorkspaceStore((s) => s.renameWorkspace);
+  const reorderWorkspace = useWorkspaceStore((s) => s.reorderWorkspace);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
     setEditingId(null);
+  }
+
+  function onDrop(targetId: string) {
+    if (dragId && dragId !== targetId) reorderWorkspace(dragId, targetId);
+    setDragId(null);
+    setOverId(null);
   }
 
   return (
@@ -35,7 +44,30 @@ export function WorkspaceSidebar() {
         {workspaces.map((w) => (
           <div
             key={w.id}
-            className={"ws-item" + (w.id === activeId ? " active" : "")}
+            className={
+              "ws-item" +
+              (w.id === activeId ? " active" : "") +
+              (w.id === dragId ? " dragging" : "") +
+              (w.id === overId && dragId && w.id !== dragId ? " drag-over" : "")
+            }
+            draggable={editingId !== w.id}
+            onDragStart={(e) => {
+              setDragId(w.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (overId !== w.id) setOverId(w.id);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              onDrop(w.id);
+            }}
+            onDragEnd={() => {
+              setDragId(null);
+              setOverId(null);
+            }}
             onClick={() => setActive(w.id)}
             onDoubleClick={() => {
               setEditingId(w.id);

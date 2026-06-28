@@ -10,9 +10,12 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const renameTab = useWorkspaceStore((s) => s.renameTab);
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
+  const reorderTab = useWorkspaceStore((s) => s.reorderTab);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   function commitRename(tabId: string) {
     if (draft.trim()) renameTab(workspace.id, tabId, draft.trim());
@@ -28,12 +31,43 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
     removeTab(workspace.id, tabId);
   }
 
+  function onDrop(targetId: string) {
+    if (dragId && dragId !== targetId) {
+      reorderTab(workspace.id, dragId, targetId);
+    }
+    setDragId(null);
+    setOverId(null);
+  }
+
   return (
     <div className="tabbar">
       {workspace.tabs.map((t) => (
         <div
           key={t.id}
-          className={"tab" + (t.id === workspace.activeTabId ? " active" : "")}
+          className={
+            "tab" +
+            (t.id === workspace.activeTabId ? " active" : "") +
+            (t.id === dragId ? " dragging" : "") +
+            (t.id === overId && dragId && t.id !== dragId ? " drag-over" : "")
+          }
+          draggable={editingId !== t.id}
+          onDragStart={(e) => {
+            setDragId(t.id);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            if (overId !== t.id) setOverId(t.id);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            onDrop(t.id);
+          }}
+          onDragEnd={() => {
+            setDragId(null);
+            setOverId(null);
+          }}
           onClick={() => setActiveTab(workspace.id, t.id)}
           onDoubleClick={() => {
             setEditingId(t.id);

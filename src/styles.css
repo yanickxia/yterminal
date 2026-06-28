@@ -80,6 +80,20 @@ body {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* drag-and-drop reorder feedback */
+.ws-item.dragging,
+.tab.dragging {
+  opacity: 0.4;
+}
+
+.ws-item.drag-over {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab.drag-over {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .ws-name {
   flex: 1;
   white-space: nowrap;
