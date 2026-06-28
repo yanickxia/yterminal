@@ -20,8 +20,9 @@ drag-and-drop reordering.
   matches in the focused pane's scrollback, with next/previous stepping.
 - **Themes (skins)** — 5 built-in: Tokyo Night, Dracula, Solarized Dark,
   Gruvbox Dark, One Light. Applied live to both the terminal and the app chrome.
-- **Fonts** — pick a monospace family and size; applied live without
-  re-spawning shells.
+- **Fonts** — pick a monospace family and size; the picker offers built-in
+  presets plus the monospace fonts detected on your system. Applied live
+  without re-spawning shells.
 - **Drag-and-drop reorder** — reorder tabs within a workspace and workspaces in
   the sidebar.
 - **Instance caching** — terminals are cached, not destroyed, on tab/pane
@@ -61,7 +62,11 @@ sync it across machines, or edit it by hand:
 
 - `theme` — one of: `tokyo-night`, `dracula`, `solarized-dark`, `gruvbox-dark`,
   `one-light`.
-- `font` — one of: `jetbrains-mono`, `menlo`, `cascadia`, `fira-code`, `sf-mono`.
+- `font` — a built-in preset id (`jetbrains-mono`, `menlo`, `cascadia`,
+  `fira-code`, `sf-mono`) **or the exact name of any monospace font installed on
+  your system** (e.g. `IBM Plex Mono`, `Hack`). The Settings font picker lists
+  built-in presets plus the monospace fonts detected on this machine; unknown
+  names fall back to a generic monospace.
 - `fontSize` — integer px, clamped to `8`–`28`.
 
 Changes made in the in-app **Settings** panel are written back to this file.

@@ -206,6 +206,30 @@ export const FONTS: FontOption[] = [
 
 export const DEFAULT_FONT_ID = "jetbrains-mono";
 
-export function getFont(id: string): FontOption {
-  return FONTS.find((f) => f.id === id) ?? FONTS[0];
+// System fonts detected at runtime (see system-fonts.ts). Kept separate from the
+// curated built-in presets above, but merged for lookup via getAllFonts().
+let systemFonts: FontOption[] = [];
+
+/** Register the monospace fonts detected on this machine (dedup vs presets). */
+export function registerSystemFonts(list: FontOption[]) {
+  const builtinIds = new Set(FONTS.map((f) => f.id));
+  systemFonts = list.filter((f) => !builtinIds.has(f.id));
 }
+
+/** Built-in presets plus any detected system fonts. */
+export function getAllFonts(): FontOption[] {
+  return [...FONTS, ...systemFonts];
+}
+
+export function getFont(id: string): FontOption {
+  const hit = getAllFonts().find((f) => f.id === id);
+  if (hit) return hit;
+  // A saved/hand-edited id may name an installed font we haven't catalogued
+  // (or detection hasn't run yet). Synthesize a stack with a monospace
+  // fallback so it still renders sensibly instead of snapping back to default.
+  if (id && id.trim()) {
+    return { id, name: id, stack: `"${id}", monospace` };
+  }
+  return FONTS[0];
+}
+

@@ -8,6 +8,8 @@ import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manag
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
+import { registerSystemFonts } from "./lib/themes";
+import { detectSystemFonts } from "./lib/system-fonts";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -29,6 +31,10 @@ export default function App() {
     (async () => {
       await initShell();
       if (cancelled) return;
+      // probe which monospace fonts this machine actually has, so the picker can
+      // offer real system fonts (must run before loadConfigFromDisk so a saved
+      // system-font id validates instead of resetting to the default).
+      registerSystemFonts(detectSystemFonts());
       // load appearance from the on-disk JSON config (synced/hand-editable);
       // falls back to localStorage-persisted settings if the file is absent
       await loadConfigFromDisk();

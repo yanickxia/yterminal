@@ -10,7 +10,7 @@
 // catalogs so a hand-edited file can never put the app into a broken state.
 
 import { invoke } from "@tauri-apps/api/core";
-import { THEMES, FONTS, DEFAULT_THEME_ID, DEFAULT_FONT_ID } from "./themes";
+import { THEMES, getAllFonts, DEFAULT_THEME_ID, DEFAULT_FONT_ID } from "./themes";
 import {
   useSettingsStore,
   MIN_FONT_SIZE,
@@ -67,7 +67,12 @@ export function parseConfig(text: string): YterminalConfig | null {
   const ap = raw.appearance ?? {};
 
   const themeOk = THEMES.some((t) => t.id === ap.theme);
-  const fontOk = FONTS.some((f) => f.id === ap.font);
+  // accept any built-in preset OR a detected system font; an unknown id is kept
+  // only if it's a non-empty string (a hand-edited font name we may not have
+  // probed yet), otherwise it falls back to the default.
+  const knownFont = getAllFonts().some((f) => f.id === ap.font);
+  const fontOk =
+    knownFont || (typeof ap.font === "string" && ap.font.trim().length > 0);
 
   return {
     version: typeof raw.version === "number" ? raw.version : CONFIG_VERSION,

@@ -4,7 +4,7 @@ import {
   MIN_FONT_SIZE,
   MAX_FONT_SIZE,
 } from "../stores/settings-store";
-import { THEMES, FONTS } from "../lib/themes";
+import { THEMES, FONTS, getAllFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 
@@ -22,6 +22,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setFontSize = useSettingsStore((s) => s.setFontSize);
 
   const [cfgPath, setCfgPath] = useState("");
+  // built-in presets vs. fonts detected on this machine (computed once)
+  const builtinIds = new Set(FONTS.map((f) => f.id));
+  const systemFonts = getAllFonts().filter((f) => !builtinIds.has(f.id));
   // skip persisting on the initial mount (only write on actual user changes)
   const mounted = useRef(false);
 
@@ -100,11 +103,22 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               value={fontId}
               onChange={(e) => setFont(e.target.value)}
             >
-              {FONTS.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
+              <optgroup label="Built-in">
+                {FONTS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </optgroup>
+              {systemFonts.length > 0 && (
+                <optgroup label="System fonts">
+                  {systemFonts.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 
