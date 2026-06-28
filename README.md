@@ -101,12 +101,27 @@ npx tsc --noEmit     # type-check only
 ## Releases
 
 Release builds are produced automatically by GitHub Actions
-(`.github/workflows/release.yml`). To cut a release:
+(`.github/workflows/release.yml`). To cut a release, use the helper script — it
+sets the version in all three manifests (`package.json`,
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) at once, then commits,
+tags, and pushes:
 
 ```bash
-# 1. bump the version in package.json, src-tauri/tauri.conf.json,
-#    and src-tauri/Cargo.toml so they match (e.g. 0.2.0)
-# 2. tag and push
+scripts/bump-version.sh 0.2.0 --push   # bump + commit + tag v0.2.0 + push
+```
+
+Or do it in steps:
+
+```bash
+scripts/bump-version.sh 0.2.0          # just rewrite the manifests
+scripts/bump-version.sh 0.2.0 --tag    # rewrite + commit + tag (no push)
+```
+
+Doing it by hand instead:
+
+```bash
+# bump the version in package.json, src-tauri/tauri.conf.json,
+# and src-tauri/Cargo.toml so they match, then:
 git tag v0.2.0
 git push origin v0.2.0
 ```
