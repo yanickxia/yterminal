@@ -120,7 +120,7 @@ fn list_fonts() -> Vec<String> {
     mono
 }
 
-
+fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_pty::init())
