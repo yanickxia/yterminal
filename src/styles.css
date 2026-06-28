@@ -44,6 +44,28 @@ body {
   flex-direction: column;
 }
 
+/* collapsed rail: a slim strip with just the expand affordance */
+.sidebar.collapsed {
+  width: 32px;
+  min-width: 32px;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.sidebar-expand {
+  color: var(--fg-dim);
+}
+
+.sidebar-expand:hover {
+  color: var(--fg);
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;

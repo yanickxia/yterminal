@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { SettingsPanel } from "./SettingsPanel";
+
+const COLLAPSE_KEY = "yterminal.sidebar.collapsed";
 
 export function WorkspaceSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -16,6 +18,23 @@ export function WorkspaceSidebar() {
   const [showSettings, setShowSettings] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // collapsed state persists across launches; restored synchronously so the
+  // sidebar doesn't flash open on startup.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+  }, [collapsed]);
 
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
@@ -28,17 +47,42 @@ export function WorkspaceSidebar() {
     setOverId(null);
   }
 
+  // collapsed rail: just a button to expand again, kept narrow so the
+  // terminal area reclaims the space.
+  if (collapsed) {
+    return (
+      <div className="sidebar collapsed">
+        <button
+          className="icon-btn sidebar-expand"
+          title="Show workspaces"
+          onClick={() => setCollapsed(false)}
+        >
+          »
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
         <span>WORKSPACES</span>
-        <button
-          className="icon-btn"
-          title="New workspace"
-          onClick={() => addWorkspace()}
-        >
-          +
-        </button>
+        <div className="sidebar-header-actions">
+          <button
+            className="icon-btn"
+            title="New workspace"
+            onClick={() => addWorkspace()}
+          >
+            +
+          </button>
+          <button
+            className="icon-btn"
+            title="Hide sidebar"
+            onClick={() => setCollapsed(true)}
+          >
+            «
+          </button>
+        </div>
       </div>
       <div className="ws-list">
         {workspaces.map((w) => (
