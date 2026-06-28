@@ -32,6 +32,7 @@ drag-and-drop reordering.
 | `Cmd/Ctrl + D` | Split the focused pane to the right |
 | `Cmd/Ctrl + Shift + D` | Split the focused pane downward |
 | `Cmd/Ctrl + Shift + W` | Close the focused pane |
+| `Cmd/Ctrl + W` | Close the current tab |
 | Double-click a tab / workspace | Rename it |
 
 ## Configuration

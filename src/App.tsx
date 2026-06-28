@@ -13,6 +13,7 @@ export default function App() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
   const closePane = useWorkspaceStore((s) => s.closePane);
+  const removeTab = useWorkspaceStore((s) => s.removeTab);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
@@ -77,11 +78,21 @@ export default function App() {
           disposeSession(tab.activePaneId);
           closePane(ws.id, ws.activeTabId, tab.activePaneId);
         }
+      } else if (key === "w") {
+        // Cmd/Ctrl+W: close the current tab (NOT the whole window).
+        // preventDefault stops the OS/webview from closing the window.
+        e.preventDefault();
+        const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+        if (tab) {
+          // tear down every shell in the tab before dropping it
+          for (const id of collectLeafIds(tab.root)) disposeSession(id);
+          removeTab(ws.id, ws.activeTabId);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ws, splitActivePane, closePane]);
+  }, [ws, splitActivePane, closePane, removeTab]);
 
   // refit terminals whenever the active tab's tree changes
   useEffect(() => {
