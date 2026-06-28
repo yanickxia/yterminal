@@ -6,6 +6,7 @@ import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
+import { loadConfigFromDisk } from "./lib/config";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -24,6 +25,10 @@ export default function App() {
     (async () => {
       await initShell();
       if (cancelled) return;
+      // load appearance from the on-disk JSON config (synced/hand-editable);
+      // falls back to localStorage-persisted settings if the file is absent
+      await loadConfigFromDisk();
+      if (cancelled) return;
       ensureSeedWorkspace();
       // sync app-chrome colors to the saved theme before any terminal opens
       applyAppearance();
@@ -39,6 +44,18 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // re-read the config file whenever the window regains focus, so syncing the
+  // file in (git pull / Dropbox / hand edit) updates the running app live.
+  useEffect(() => {
+    if (!ready) return;
+    async function reload() {
+      const changed = await loadConfigFromDisk();
+      if (changed) applyAppearance();
+    }
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, [ready]);
 
   const ws = workspaces.find((w) => w.id === activeWorkspaceId);
   const activeTab = ws?.tabs.find((t) => t.id === ws.activeTabId);

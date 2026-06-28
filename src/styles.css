@@ -374,6 +374,17 @@ body {
   text-transform: uppercase;
 }
 
+.config-path {
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: var(--bg-dark);
+  border: 1px solid var(--bg-light);
+  border-radius: 4px;
+  padding: 6px 8px;
+  word-break: break-all;
+  user-select: all;
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

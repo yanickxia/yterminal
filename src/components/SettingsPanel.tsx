@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useSettingsStore,
   MIN_FONT_SIZE,
@@ -6,10 +6,12 @@ import {
 } from "../stores/settings-store";
 import { THEMES, FONTS } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
+import { saveConfigToDisk, configFilePath } from "../lib/config";
 
 /**
  * Appearance settings modal: terminal theme (skin), font family, font size.
- * Changes apply live to every open terminal via applyAppearance().
+ * Changes apply live to every open terminal via applyAppearance() and are also
+ * written to the on-disk JSON config so they can be synced across machines.
  */
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const themeId = useSettingsStore((s) => s.themeId);
@@ -19,9 +21,19 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
 
-  // re-apply to live terminals on any appearance change
+  const [cfgPath, setCfgPath] = useState("");
+  // skip persisting on the initial mount (only write on actual user changes)
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    configFilePath().then(setCfgPath);
+  }, []);
+
+  // re-apply to live terminals and persist to the JSON file on any change
   useEffect(() => {
     applyAppearance();
+    if (mounted.current) saveConfigToDisk();
+    else mounted.current = true;
   }, [themeId, fontId, fontSize]);
 
   // close on Escape
@@ -108,6 +120,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               className="range"
             />
           </div>
+
+          {/* config file location (sync target) */}
+          {cfgPath && (
+            <div className="field">
+              <label className="field-label">Config file (JSON, syncable)</label>
+              <code className="config-path">{cfgPath}</code>
+            </div>
+          )}
         </div>
       </div>
     </div>

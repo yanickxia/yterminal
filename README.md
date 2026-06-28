@@ -34,6 +34,38 @@ drag-and-drop reordering.
 | `Cmd/Ctrl + Shift + W` | Close the focused pane |
 | Double-click a tab / workspace | Rename it |
 
+## Configuration
+
+Appearance settings are mirrored to a plain JSON file, so you can version it,
+sync it across machines, or edit it by hand:
+
+| OS | Path |
+|---|---|
+| macOS / Linux | `~/.config/yterminal/config.json` (honors `$XDG_CONFIG_HOME`) |
+| Windows | `%APPDATA%\yterminal\config.json` |
+
+```json
+{
+  "version": 1,
+  "appearance": {
+    "theme": "tokyo-night",
+    "font": "jetbrains-mono",
+    "fontSize": 14
+  }
+}
+```
+
+- `theme` — one of: `tokyo-night`, `dracula`, `solarized-dark`, `gruvbox-dark`,
+  `one-light`.
+- `font` — one of: `jetbrains-mono`, `menlo`, `cascadia`, `fira-code`, `sf-mono`.
+- `fontSize` — integer px, clamped to `8`–`28`.
+
+Changes made in the in-app **Settings** panel are written back to this file.
+Conversely, when you sync the file in (git pull, Dropbox, a hand edit) the app
+re-reads it and applies the new appearance the next time its window regains
+focus. Unknown or invalid values fall back to defaults, so a malformed file
+never breaks the app. The Settings panel shows the exact file path.
+
 ## Tech stack
 
 | Layer | Choice |
