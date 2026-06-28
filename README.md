@@ -1,8 +1,38 @@
 # yterminal
 
-A workspace-first terminal emulator. Two-level model: a **workspace sidebar**, and **multiple tabs inside each workspace** — each tab is its own shell session.
+A workspace-first terminal emulator, built from scratch (not a fork) on the
+same battle-tested stack as termul / maiTerm.
 
-Built from scratch (not a fork) using the same battle-tested stack as termul/maiTerm.
+It organizes shells in three levels — a **workspace sidebar**, **tabs** inside
+each workspace, and a recursive **split-pane tree** inside each tab — with
+persistent scrollback, switchable themes, configurable fonts, and
+drag-and-drop reordering.
+
+## Features
+
+- **Workspaces → Tabs → Split panes** — a three-level model; each leaf pane is
+  its own live shell.
+- **Split panes** — split any pane horizontally or vertically, nest freely,
+  resize with draggable dividers, focus follows click.
+- **Persistent scrollback** — every pane's buffer is snapshotted (colors
+  intact) via `@xterm/addon-serialize` and replayed on the next launch.
+- **Themes (skins)** — 5 built-in: Tokyo Night, Dracula, Solarized Dark,
+  Gruvbox Dark, One Light. Applied live to both the terminal and the app chrome.
+- **Fonts** — pick a monospace family and size; applied live without
+  re-spawning shells.
+- **Drag-and-drop reorder** — reorder tabs within a workspace and workspaces in
+  the sidebar.
+- **Instance caching** — terminals are cached, not destroyed, on tab/pane
+  switch, so scrollback and shell state survive.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Cmd/Ctrl + D` | Split the focused pane to the right |
+| `Cmd/Ctrl + Shift + D` | Split the focused pane downward |
+| `Cmd/Ctrl + Shift + W` | Close the focused pane |
+| Double-click a tab / workspace | Rename it |
 
 ## Tech stack
 
@@ -12,19 +42,31 @@ Built from scratch (not a fork) using the same battle-tested stack as termul/mai
 | Backend | Rust (`tauri-plugin-pty` for PTY) |
 | Frontend | React 18 + TypeScript + Vite |
 | State | Zustand (persisted) |
-| Terminal | xterm.js + `tauri-pty` |
+| Terminal | xterm.js + `tauri-pty` (+ `addon-fit`, `addon-serialize`) |
 
 ## Architecture
 
 ```
-Workspace (sidebar)         <- workspace-store.ts (Zustand, persisted)
-  └── Tab[] (per workspace) <- workspace-store.ts
-        └── live shell      <- terminal-manager.ts (xterm + pty, instance cache)
+Workspace (sidebar)                <- workspace-store.ts (Zustand, persisted)
+  └── Tab[] (per workspace)        <- workspace-store.ts
+        └── PaneTree (recursive)   <- pane-tree.ts (split / remove / resize)
+              └── PaneLeaf == live shell  <- terminal-manager.ts (xterm + pty)
 ```
 
-- `src/stores/workspace-store.ts` — the workspace+tab tree, all CRUD, persisted to localStorage.
-- `src/lib/terminal-manager.ts` — owns live xterm.js + PTY instances. Terminals are **cached, not destroyed**, on tab switch, so scrollback survives. PTYs are spawned lazily on first view.
-- `src/components/` — `WorkspaceSidebar`, `TabBar`, `TerminalView`.
+### Source layout
+
+| Path | Responsibility |
+|---|---|
+| `src/stores/workspace-store.ts` | Workspace + tab + pane tree, all CRUD & reorder, persisted to `localStorage` |
+| `src/stores/settings-store.ts` | Appearance settings (theme / font / size), persisted separately |
+| `src/lib/terminal-manager.ts` | Owns live xterm.js + PTY instances; cache, attach/detach, fit, persist, live re-theme |
+| `src/lib/pane-tree.ts` | Pure split-tree transforms (split, remove, resize, collect leaves) |
+| `src/lib/scrollback.ts` | Per-pane buffer snapshots in `localStorage` (save / load / clear / prune) |
+| `src/lib/themes.ts` | Built-in skins + font presets; palette → xterm theme + CSS vars |
+| `src/components/` | `WorkspaceSidebar`, `TabBar`, `PaneRenderer`, `PaneTerminal`, `SettingsPanel` |
+
+Terminals are **cached, not destroyed**, on tab/pane switch, so scrollback
+survives. PTYs are spawned lazily the first time a pane becomes visible.
 
 ## Develop
 
@@ -34,6 +76,13 @@ npm run tauri:dev
 ```
 
 Requires Node 18+ and Rust (stable).
+
+Useful checks without launching the GUI:
+
+```bash
+npm run build        # type-check + bundle the frontend
+npx tsc --noEmit     # type-check only
+```
 
 ### Platform prerequisites
 
@@ -49,17 +98,42 @@ Requires Node 18+ and Rust (stable).
 > logic work anywhere. The full GUI (`tauri:dev`) needs the platform webview
 > libs above — a headless server without GTK cannot launch the window.
 
+## Releases
+
+Release builds are produced automatically by GitHub Actions
+(`.github/workflows/release.yml`). To cut a release:
+
+```bash
+# 1. bump the version in package.json, src-tauri/tauri.conf.json,
+#    and src-tauri/Cargo.toml so they match (e.g. 0.2.0)
+# 2. tag and push
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Pushing a `v*` tag triggers the workflow, which builds native bundles on macOS
+(Apple Silicon + Intel), Windows, and Linux, then publishes them to a GitHub
+Release as a **draft**. Review the draft and hit publish. The workflow can also
+be started manually from the Actions tab via `workflow_dispatch`.
+
+Artifacts per platform:
+
+| Platform | Bundles |
+|---|---|
+| macOS | `.dmg`, `.app` (universal — arm64 + x86_64) |
+| Windows | `.msi`, NSIS `.exe` |
+| Linux | `.AppImage`, `.deb` |
+
 ## Roadmap
 
 - [x] Workspace sidebar + tabs (MVP)
 - [x] Split panes (recursive pane tree, draggable dividers, focus + shortcuts)
 - [x] Persist scrollback — per-pane buffer snapshots via `@xterm/addon-serialize`
       into `localStorage`, replayed on launch (autosave + flush on close)
-- [ ] Scale scrollback to a Rust + SQLite store (unbounded history, cross-device)
-- [x] Settings / themes — appearance panel: 5 built-in skins (Tokyo Night,
-      Dracula, Solarized Dark, Gruvbox Dark, One Light), font family + size,
+- [x] Settings / themes — appearance panel: 5 built-in skins, font family + size,
       applied live to all open terminals and the app chrome
-- [ ] SSH sessions
 - [x] Drag-and-drop reorder — tabs within a workspace and workspaces in the
       sidebar, via native HTML5 DnD
-```
+- [x] CI — automated multi-platform release builds via GitHub Actions
+- [ ] Scale scrollback to a Rust + SQLite store (unbounded history, cross-device)
+- [ ] SSH sessions
