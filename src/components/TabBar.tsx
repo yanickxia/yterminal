@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from "react";
+import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Workspace } from "../lib/types";
 import { disposeSession } from "../lib/terminal-manager";
@@ -18,6 +18,10 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // manual double-click detection: WebKit (macOS WKWebView) does NOT fire the
+  // native `dblclick` event on `draggable` elements, so we time consecutive
+  // clicks ourselves to trigger rename.
+  const lastClick = useRef<{ id: string; t: number }>({ id: "", t: 0 });
   // id of the tab whose emoji picker is open (null = none), plus the screen
   // anchor (bottom-left of the trigger) so the fixed-position popover lands
   // under the icon and isn't clipped by the tab bar's horizontal scroll.
@@ -39,6 +43,25 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   function commitRename(tabId: string) {
     if (draft.trim()) renameTab(workspace.id, tabId, draft.trim());
     setEditingId(null);
+  }
+
+  function beginEdit(tabId: string, name: string) {
+    setEditingId(tabId);
+    setDraft(name);
+  }
+
+  // single click activates the tab; a second click on the same tab within
+  // 400ms enters rename mode (manual dblclick because draggable swallows it).
+  function onTabClick(tabId: string, name: string) {
+    setActiveTab(workspace.id, tabId);
+    const now = Date.now();
+    const prev = lastClick.current;
+    if (prev.id === tabId && now - prev.t < 400) {
+      beginEdit(tabId, name);
+      lastClick.current = { id: "", t: 0 };
+    } else {
+      lastClick.current = { id: tabId, t: now };
+    }
   }
 
   function closeTab(tabId: string) {
@@ -87,11 +110,8 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
             setDragId(null);
             setOverId(null);
           }}
-          onClick={() => setActiveTab(workspace.id, t.id)}
-          onDoubleClick={() => {
-            setEditingId(t.id);
-            setDraft(t.name);
-          }}
+          onClick={() => onTabClick(t.id, t.name)}
+          onDoubleClick={() => beginEdit(t.id, t.name)}
         >
           {editingId === t.id ? (
             <input

@@ -34,7 +34,8 @@ export default function App() {
       // probe which monospace fonts this machine actually has, so the picker can
       // offer real system fonts (must run before loadConfigFromDisk so a saved
       // system-font id validates instead of resetting to the default).
-      registerSystemFonts(detectSystemFonts());
+      registerSystemFonts(await detectSystemFonts());
+      if (cancelled) return;
       // load appearance from the on-disk JSON config (synced/hand-editable);
       // falls back to localStorage-persisted settings if the file is absent
       await loadConfigFromDisk();

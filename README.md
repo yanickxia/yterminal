@@ -21,8 +21,8 @@ drag-and-drop reordering.
 - **Themes (skins)** — 5 built-in: Tokyo Night, Dracula, Solarized Dark,
   Gruvbox Dark, One Light. Applied live to both the terminal and the app chrome.
 - **Fonts** — pick a monospace family and size; the picker offers built-in
-  presets plus the monospace fonts detected on your system. Applied live
-  without re-spawning shells.
+  presets plus every monospace font installed on your system (enumerated
+  natively via font-kit). Applied live without re-spawning shells.
 - **Drag-and-drop reorder** — reorder tabs within a workspace and workspaces in
   the sidebar.
 - **Instance caching** — terminals are cached, not destroyed, on tab/pane

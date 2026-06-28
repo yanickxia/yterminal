@@ -81,7 +81,46 @@ fn write_config(contents: String) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
-fn main() {
+/// Enumerate the monospace font families installed on this machine.
+///
+/// The WebViews Tauri uses (WKWebView on macOS, WebKitGTK on Linux) don't
+/// implement the Local Font Access API, so the frontend can't list installed
+/// fonts itself. font-kit reads the platform's native font catalog. We load one
+/// representative face per family and keep only the monospaced ones (a terminal
+/// only wants fixed-width fonts), returning a sorted, de-duplicated list.
+#[tauri::command]
+fn list_fonts() -> Vec<String> {
+    use font_kit::loader::Loader; // brings is_monospace() into scope
+    use font_kit::source::SystemSource;
+
+    let source = SystemSource::new();
+    let families = match source.all_families() {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut mono: Vec<String> = Vec::new();
+    for family in families {
+        // load a handle for this family; skip families we can't resolve/parse
+        let handle = match source.select_family_by_name(&family) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let fonts = handle.fonts();
+        let Some(first) = fonts.first() else { continue };
+        if let Ok(font) = first.load() {
+            if font.is_monospace() {
+                mono.push(family);
+            }
+        }
+    }
+
+    mono.sort_by_key(|s| s.to_lowercase());
+    mono.dedup();
+    mono
+}
+
+
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_pty::init())
@@ -89,7 +128,8 @@ fn main() {
             default_shell,
             config_file_path,
             read_config,
-            write_config
+            write_config,
+            list_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running yterminal");

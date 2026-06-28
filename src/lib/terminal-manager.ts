@@ -204,7 +204,14 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   requestAnimationFrame(() => {
     try {
       s.fit.fit();
-      s.term.focus();
+      // don't steal focus from an open rename/search input (xterm's textarea
+      // is allowed — that's the terminal itself getting focus).
+      const ae = document.activeElement as HTMLElement | null;
+      const editing =
+        ae &&
+        (ae.tagName === "INPUT" ||
+          (ae.tagName === "TEXTAREA" && !s.el.contains(ae)));
+      if (!editing) s.term.focus();
     } catch {
       /* container not measurable yet */
     }

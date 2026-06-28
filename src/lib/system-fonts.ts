@@ -2,15 +2,19 @@
 // machine, so the Settings font picker can offer real system fonts beyond the
 // handful of built-in presets.
 //
-// Why canvas detection (and not a native API)?
-//   - The Local Font Access API (`queryLocalFonts()`) is Chromium-only; the
-//     macOS WKWebView and Linux WebKitGTK that Tauri uses don't expose it.
-//   - A native crate (font-kit) pulls in fontconfig/freetype, complicating the
-//     Linux build for no real gain here.
-// Canvas text-measurement works in every WebView with zero dependencies: we
-// render a probe string in a generic family, then in `"Candidate", generic`.
-// If the width changes, the candidate font is installed.
+// Two strategies, in order of preference:
+//   1. Native enumeration via the Tauri `list_fonts` command (font-kit reads the
+//      OS font catalog). This gives the *complete* set of installed monospace
+//      families, not just ones we thought to list.
+//   2. Canvas text-measurement fallback (for non-Tauri/dev-server contexts or if
+//      the native call fails): render a probe string in a generic family, then in
+//      `"Candidate", generic`; a width change means the candidate is installed.
+//      This can only test names from a fixed CANDIDATES catalog.
+//
+// Why not the Local Font Access API? `queryLocalFonts()` is Chromium-only; the
+// macOS WKWebView and Linux WebKitGTK that Tauri uses don't expose it.
 
+import { invoke } from "@tauri-apps/api/core";
 import type { FontOption } from "./themes";
 
 // A broad catalog of popular monospace fonts across macOS / Windows / Linux and
@@ -180,17 +184,44 @@ function isInstalled(family: string): boolean {
   return false;
 }
 
+/** Wrap a list of family names into FontOptions (sorted, monospace fallback). */
+function toFontOptions(families: string[]): FontOption[] {
+  const out = families.map((family) => ({
+    id: family,
+    name: family,
+    stack: `"${family}", monospace`,
+  }));
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 /**
  * Probe the candidate list and return FontOptions for the installed ones.
  * The id is the family name itself; the stack falls back to `monospace`.
+ * This is the canvas fallback used when native enumeration is unavailable.
  */
-export function detectSystemFonts(): FontOption[] {
-  const found: FontOption[] = [];
+export function detectSystemFontsCanvas(): FontOption[] {
+  const found: string[] = [];
   for (const family of CANDIDATES) {
-    if (isInstalled(family)) {
-      found.push({ id: family, name: family, stack: `"${family}", monospace` });
-    }
+    if (isInstalled(family)) found.push(family);
   }
-  found.sort((a, b) => a.name.localeCompare(b.name));
-  return found;
+  return toFontOptions(found);
+}
+
+/**
+ * Return every installed monospace font. Prefers native enumeration via the
+ * Tauri `list_fonts` command (complete catalog); falls back to canvas
+ * candidate-probing when that's unavailable (e.g. plain browser dev server) or
+ * yields nothing.
+ */
+export async function detectSystemFonts(): Promise<FontOption[]> {
+  try {
+    const families = await invoke<string[]>("list_fonts");
+    if (Array.isArray(families) && families.length > 0) {
+      return toFontOptions(families);
+    }
+  } catch {
+    /* not running under Tauri, or the command failed — use the fallback */
+  }
+  return detectSystemFontsCanvas();
 }

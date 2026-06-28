@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
@@ -27,6 +27,9 @@ export function WorkspaceSidebar() {
   const [showSettings, setShowSettings] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  // manual double-click detection: WebKit (macOS WKWebView) does NOT fire the
+  // native `dblclick` event on `draggable` elements, so we time clicks here.
+  const lastClick = useRef<{ id: string; t: number }>({ id: "", t: 0 });
   // id of the workspace whose emoji picker is open (null = none), plus the
   // screen anchor (bottom-left of the trigger) for the fixed-position popover.
   const [iconPicker, setIconPicker] = useState<{
@@ -54,6 +57,25 @@ export function WorkspaceSidebar() {
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
     setEditingId(null);
+  }
+
+  function beginEdit(id: string, name: string) {
+    setEditingId(id);
+    setDraft(name);
+  }
+
+  // single click selects the workspace; a second click on the same row within
+  // 400ms enters rename mode (manual dblclick because draggable swallows it).
+  function onRowClick(id: string, name: string) {
+    setActive(id);
+    const now = Date.now();
+    const prev = lastClick.current;
+    if (prev.id === id && now - prev.t < 400) {
+      beginEdit(id, name);
+      lastClick.current = { id: "", t: 0 };
+    } else {
+      lastClick.current = { id, t: now };
+    }
   }
 
   function onDrop(targetId: string) {
@@ -159,11 +181,8 @@ export function WorkspaceSidebar() {
               setDragId(null);
               setOverId(null);
             }}
-            onClick={() => setActive(w.id)}
-            onDoubleClick={() => {
-              setEditingId(w.id);
-              setDraft(w.name);
-            }}
+            onClick={() => onRowClick(w.id, w.name)}
+            onDoubleClick={() => beginEdit(w.id, w.name)}
           >
             {editingId === w.id ? (
               <input
