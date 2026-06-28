@@ -238,7 +238,17 @@ export function fitSession(tabId: string) {
   const s = sessions.get(tabId);
   if (s && s.el.parentElement) {
     try {
-      s.fit.fit();
+      // Only resize when the proposed geometry actually differs, so we don't
+      // emit redundant PTY resizes (SIGWINCH) that make TUIs repaint.
+      const dims = s.fit.proposeDimensions();
+      if (
+        dims &&
+        Number.isFinite(dims.cols) &&
+        Number.isFinite(dims.rows) &&
+        (dims.cols !== s.term.cols || dims.rows !== s.term.rows)
+      ) {
+        s.fit.fit();
+      }
     } catch {
       /* ignore */
     }

@@ -237,6 +237,30 @@ body {
   height: 100%;
 }
 
+/* themed, slim scrollbar for the terminal viewport (replaces the default
+   chunky browser scrollbar that clashes with the app chrome) */
+.pane-host .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-light) transparent;
+}
+.pane-host .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.pane-host .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pane-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--bg-light);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+.pane-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-dim);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
 /* dividers */
 .divider {
   position: absolute;

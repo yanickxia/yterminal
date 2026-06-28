@@ -38,11 +38,25 @@ export function PaneTerminal({
     };
   }, [pane.id, pane.cwd, onExit]);
 
-  // refit when activation/layout may have changed
+  // Refit only when the container is actually resized, not on every React
+  // render. Re-fitting on every render fires spurious PTY resizes (SIGWINCH),
+  // which makes full-screen TUIs (Claude Code, vim, htop) redraw repeatedly and
+  // leave stacked/garbled output. A ResizeObserver fires only on real size
+  // changes; fitSession itself is a no-op when cols/rows are unchanged.
   useEffect(() => {
-    const id = requestAnimationFrame(() => fitSession(pane.id));
-    return () => cancelAnimationFrame(id);
-  });
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => fitSession(pane.id));
+    });
+    ro.observe(container);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [pane.id]);
 
   return (
     <div
