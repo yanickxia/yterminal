@@ -9,6 +9,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { SearchAddon } from "@xterm/addon-search";
 import { spawn, type IPty } from "tauri-pty";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -28,6 +29,7 @@ interface Session {
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
+  search: SearchAddon;
   pty: IPty;
   /** the detached DOM element that hosts this terminal */
   el: HTMLDivElement;
@@ -143,8 +145,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
   const fit = new FitAddon();
   const serialize = new SerializeAddon();
+  const search = new SearchAddon();
   term.loadAddon(fit);
   term.loadAddon(serialize);
+  term.loadAddon(search);
   term.open(el);
 
   // replay any persisted scrollback from a previous launch before wiring the
@@ -185,7 +189,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (cb) cb(tabId);
   });
 
-  s = { term, fit, serialize, pty, el, disposed: false, exited: false };
+  s = { term, fit, serialize, search, pty, el, disposed: false, exited: false };
   sessions.set(tabId, s);
   return s;
 }
@@ -251,6 +255,63 @@ export function fitSession(tabId: string) {
       }
     } catch {
       /* ignore */
+    }
+  }
+}
+
+/** Decorations used to highlight search hits in the terminal viewport. */
+function searchDecorations() {
+  return {
+    decorations: {
+      matchBackground: "#7aa2f7",
+      matchOverviewRuler: "#7aa2f7",
+      activeMatchBackground: "#ff9e64",
+      activeMatchColorOverviewRuler: "#ff9e64",
+    },
+  };
+}
+
+/** Find the next occurrence of `query` in a tab's terminal. */
+export function searchNext(tabId: string, query: string): boolean {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return false;
+  try {
+    return s.search.findNext(query, searchDecorations());
+  } catch {
+    return false;
+  }
+}
+
+/** Find the previous occurrence of `query` in a tab's terminal. */
+export function searchPrevious(tabId: string, query: string): boolean {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return false;
+  try {
+    return s.search.findPrevious(query, searchDecorations());
+  } catch {
+    return false;
+  }
+}
+
+/** Clear any active search highlight and refocus the terminal. */
+export function clearSearch(tabId: string) {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return;
+  try {
+    s.search.clearDecorations();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Focus a tab's terminal (e.g. after closing the search box). */
+export function focusSession(tabId: string) {
+  const s = sessions.get(tabId);
+  if (s && !s.disposed) {
+    try {
+      s.term.focus();
+    } catch {
+      /* not mounted */
     }
   }
 }

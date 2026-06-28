@@ -16,6 +16,8 @@ drag-and-drop reordering.
   resize with draggable dividers, focus follows click.
 - **Persistent scrollback** — every pane's buffer is snapshotted (colors
   intact) via `@xterm/addon-serialize` and replayed on the next launch.
+- **In-terminal search** — `Cmd/Ctrl + F` opens a search box that highlights
+  matches in the focused pane's scrollback, with next/previous stepping.
 - **Themes (skins)** — 5 built-in: Tokyo Night, Dracula, Solarized Dark,
   Gruvbox Dark, One Light. Applied live to both the terminal and the app chrome.
 - **Fonts** — pick a monospace family and size; applied live without
@@ -31,6 +33,7 @@ drag-and-drop reordering.
 |---|---|
 | `Cmd/Ctrl + D` | Split the focused pane to the right |
 | `Cmd/Ctrl + Shift + D` | Split the focused pane downward |
+| `Cmd/Ctrl + F` | Search the focused pane's scrollback (Enter / Shift+Enter to step, Esc to close) |
 | `Cmd/Ctrl + Shift + W` | Close the focused pane |
 | `Cmd/Ctrl + W` | Close the current tab |
 | Double-click a tab / workspace | Rename it |

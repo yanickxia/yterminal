@@ -311,6 +311,37 @@ body {
   flex: 1;
 }
 
+/* ---------- in-terminal search box ---------- */
+.search-box {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 8px;
+  padding: 4px 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.search-input {
+  background: var(--bg-dark);
+  border: 1px solid var(--bg-light);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 13px;
+  padding: 4px 8px;
+  outline: none;
+  width: 180px;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
 .empty {
   display: flex;
   align-items: center;

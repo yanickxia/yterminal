@@ -3,6 +3,7 @@ import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
+import { SearchBox } from "./components/SearchBox";
 import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
@@ -20,6 +21,8 @@ export default function App() {
   // gate the UI until the real login shell is resolved, so the first pane
   // doesn't spawn against a fallback shell before $SHELL is known.
   const [ready, setReady] = useState(false);
+  // when set, the in-terminal search box is open for this pane id
+  const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +73,11 @@ export default function App() {
       if (key === "d") {
         e.preventDefault();
         splitActivePane(ws.id, ws.activeTabId, e.shiftKey ? "column" : "row");
+      } else if (key === "f") {
+        // Cmd/Ctrl+F: open in-terminal search for the focused pane
+        e.preventDefault();
+        const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+        if (tab) setSearchPaneId(tab.activePaneId);
       } else if (key === "w" && e.shiftKey) {
         // Cmd/Ctrl+Shift+W: close the focused pane
         e.preventDefault();
@@ -132,6 +140,15 @@ export default function App() {
               ) : (
                 <div className="empty">No tab. Press + to open a shell.</div>
               )}
+              {searchPaneId &&
+                activeTab &&
+                collectLeafIds(activeTab.root).includes(searchPaneId) && (
+                  <SearchBox
+                    key={searchPaneId}
+                    paneId={searchPaneId}
+                    onClose={() => setSearchPaneId(null)}
+                  />
+                )}
             </div>
           </>
         ) : (
