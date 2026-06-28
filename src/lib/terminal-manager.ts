@@ -10,6 +10,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { spawn, type IPty } from "tauri-pty";
+import { invoke } from "@tauri-apps/api/core";
 import {
   saveScrollback,
   loadScrollback,
@@ -68,14 +69,35 @@ function currentAppearance() {
 }
 
 function pickShell(): { cmd: string; args: string[] } {
-  // Best-effort cross-platform default shell.
   const ua = navigator.userAgent.toLowerCase();
   if (ua.includes("windows")) {
-    return { cmd: "powershell.exe", args: [] };
+    return { cmd: cachedShell ?? "powershell.exe", args: [] };
   }
-  // macOS / Linux
-  const shell = "/bin/bash";
+  // macOS / Linux: spawn the user's *actual* login shell (resolved from $SHELL
+  // by the Rust backend), not a hardcoded /bin/bash. Hardcoding bash breaks
+  // accounts whose default shell is zsh — their zsh-only rc files get sourced
+  // under bash and throw a wall of syntax errors. `-l` makes it a login shell
+  // so the usual profile is loaded.
+  const shell = cachedShell ?? "/bin/zsh";
   return { cmd: shell, args: ["-l"] };
+}
+
+/** Cached login shell path, resolved once from the Rust backend at startup. */
+let cachedShell: string | null = null;
+
+/**
+ * Resolve the user's real login shell from the backend and cache it.
+ * Call this once at app startup, before any pane spawns. Safe to call again;
+ * failures fall back to the platform default inside pickShell().
+ */
+export async function initShell(): Promise<void> {
+  if (cachedShell) return;
+  try {
+    const sh = await invoke<string>("default_shell");
+    if (sh && sh.trim()) cachedShell = sh.trim();
+  } catch {
+    // leave cachedShell null; pickShell() uses a sane platform default
+  }
 }
 
 /**

@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
-import { disposeSession, applyAppearance } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback } from "./lib/scrollback";
 
@@ -15,16 +15,29 @@ export default function App() {
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
+  // gate the UI until the real login shell is resolved, so the first pane
+  // doesn't spawn against a fallback shell before $SHELL is known.
+  const [ready, setReady] = useState(false);
+
   useEffect(() => {
-    ensureSeedWorkspace();
-    // sync app-chrome colors to the saved theme before any terminal opens
-    applyAppearance();
-    // drop scrollback snapshots whose panes no longer exist in the store
-    const live = new Set<string>();
-    for (const w of useWorkspaceStore.getState().workspaces) {
-      for (const t of w.tabs) for (const id of collectLeafIds(t.root)) live.add(id);
-    }
-    pruneScrollback(live);
+    let cancelled = false;
+    (async () => {
+      await initShell();
+      if (cancelled) return;
+      ensureSeedWorkspace();
+      // sync app-chrome colors to the saved theme before any terminal opens
+      applyAppearance();
+      // drop scrollback snapshots whose panes no longer exist in the store
+      const live = new Set<string>();
+      for (const w of useWorkspaceStore.getState().workspaces) {
+        for (const t of w.tabs) for (const id of collectLeafIds(t.root)) live.add(id);
+      }
+      pruneScrollback(live);
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const ws = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -65,7 +78,9 @@ export default function App() {
     <div className="app">
       <WorkspaceSidebar />
       <div className="main">
-        {ws ? (
+        {!ready ? (
+          <div className="empty">Starting…</div>
+        ) : ws ? (
           <>
             <TabBar workspace={ws} />
             <div className="terminal-area">
