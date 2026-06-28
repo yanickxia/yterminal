@@ -139,6 +139,29 @@ Artifacts per platform:
 | Windows | `.msi`, NSIS `.exe` |
 | Linux | `.AppImage`, `.deb` |
 
+### Installing on macOS (unsigned)
+
+The macOS bundles are **not yet code-signed or notarized**, so on first launch
+Gatekeeper will block them with *"yterminal is damaged and can't be opened"* or
+*"cannot be opened because the developer cannot be verified"*. The app is fine —
+it just hasn't gone through Apple's signing/notarization yet. Use one of the
+workarounds below.
+
+1. Open the `.dmg` and drag **yterminal** into `/Applications`.
+2. Clear the quarantine flag macOS puts on downloaded apps, then launch normally:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/yterminal.app
+   ```
+
+Without using the terminal: try to open the app once (it gets blocked), then go
+to **System Settings → Privacy & Security**, scroll to the *Security* section,
+and click **Open Anyway**. Right-clicking the app and choosing **Open** also
+works on most macOS versions.
+
+> Proper signing + notarization is on the roadmap; until then these steps are
+> the intended way to run the macOS build.
+
 ## Roadmap
 
 - [x] Workspace sidebar + tabs (MVP)
