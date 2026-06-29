@@ -4,14 +4,29 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Tab, Workspace } from "../lib/types";
 import { uid } from "../lib/uid";
-import { makeLeaf, splitPane, removePane, setSizesAt, setLeafCwd } from "../lib/pane-tree";
+import {
+  findLeaf,
+  makeLeaf,
+  splitPane,
+  removePane,
+  setSizesAt,
+  setLeafCwd,
+} from "../lib/pane-tree";
+import { useSettingsStore } from "./settings-store";
 
 function defaultCwd(): string {
   return "~";
 }
 
+function configuredNewTabCwd(inherited?: string): string {
+  const { defaultCwdMode, defaultCwdFixed } = useSettingsStore.getState();
+  if (defaultCwdMode === "home") return "~";
+  if (defaultCwdMode === "fixed") return defaultCwdFixed.trim() || "~";
+  return inherited && inherited.trim() ? inherited : defaultCwd();
+}
+
 function makeTab(name: string, cwd?: string): Tab {
-  const resolved = cwd && cwd.trim() ? cwd : defaultCwd();
+  const resolved = configuredNewTabCwd(cwd);
   const leaf = makeLeaf(resolved);
   return {
     id: uid("tab"),
@@ -338,11 +353,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       splitActivePane: (workspaceId, tabId, direction) =>
         set((s) => ({
           workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => {
+            const activeLeaf = findLeaf(t.root, t.activePaneId);
             const { tree, newLeafId } = splitPane(
               t.root,
               t.activePaneId,
               direction,
-              t.cwd
+              activeLeaf?.cwd ?? t.cwd
             );
             return { ...t, root: tree, activePaneId: newLeafId };
           }),

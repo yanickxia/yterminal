@@ -22,13 +22,11 @@ export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const SCROLLBACK_UNLIMITED = 0;
 
 /**
- * Policy for the cwd a freshly-spawned shell starts in. Applied uniformly to
- * Cmd+T / `+`-button new tabs AND to the restore-on-launch path, so the same
- * setting controls both "open a new shell" and "respawn a closed shell".
+ * Policy for the cwd a newly created tab starts in. Restore-on-launch uses the
+ * saved pane cwd instead, so old tabs reopen where they were left.
  *
  *   home    — always $HOME (the shell's default if you pass no cwd)
- *   inherit — carry forward: new tab uses the active pane's current cwd,
- *             restored tab uses the cwd it was last in before close
+ *   inherit — carry forward: new tab uses the active pane's current cwd
  *   fixed   — always `defaultCwdFixed` (e.g. a project root you live in)
  */
 export type DefaultCwdMode = "home" | "inherit" | "fixed";

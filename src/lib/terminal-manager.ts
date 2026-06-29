@@ -26,7 +26,7 @@ import {
 import { useSettingsStore } from "../stores/settings-store";
 import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
-import { collectLeafIds } from "./pane-tree";
+import { findLeaf } from "./pane-tree";
 
 interface Session {
   term: Terminal;
@@ -68,6 +68,20 @@ interface Session {
   shellCwd?: string;
 }
 
+interface XtermCoreInternals {
+  viewport?: {
+    syncScrollArea?: (immediate?: boolean) => void;
+    _ignoreNextScrollEvent?: boolean;
+  };
+  _charSizeService?: { hasValidSize?: boolean; measure?: () => void };
+  _renderService?: {
+    _observerDisposable?: { clear?: () => void };
+    _isPaused?: boolean;
+    _needsFullRefresh?: boolean;
+    _pausedResizeTask?: { flush?: () => void };
+  };
+}
+
 /**
  * Per-pane callbacks fired when the shell process exits, so the UI can close
  * the dead pane. Registered by PaneTerminal; keyed by pane/tab id.
@@ -95,6 +109,79 @@ function persist(id: string, s: Session) {
 }
 
 const sessions = new Map<string, Session>();
+
+function recordPaneCwd(paneId: string, cwd: string) {
+  const normalized = cwd.trim();
+  if (!normalized) return;
+  const store = useWorkspaceStore.getState();
+  for (const w of store.workspaces) {
+    for (const t of w.tabs) {
+      const leaf = findLeaf(t.root, paneId);
+      if (!leaf) continue;
+      const tabCwdAlreadyCurrent =
+        paneId !== t.activePaneId || t.cwd === normalized;
+      if (leaf.cwd === normalized && tabCwdAlreadyCurrent) return;
+      store.updatePaneCwd(w.id, t.id, paneId, normalized);
+      return;
+    }
+  }
+}
+
+function closePaneForExitedSession(paneId: string) {
+  const store = useWorkspaceStore.getState();
+  for (const w of store.workspaces) {
+    for (const t of w.tabs) {
+      if (!findLeaf(t.root, paneId)) continue;
+      disposeSession(paneId);
+      store.closePane(w.id, t.id, paneId);
+      return;
+    }
+  }
+  disposeSession(paneId);
+}
+
+function xtermCore(s: Session): XtermCoreInternals | undefined {
+  return (s.term as unknown as { _core?: XtermCoreInternals })._core;
+}
+
+function resumeXtermRenderer(s: Session) {
+  try {
+    const core = xtermCore(s);
+    const renderService = core?._renderService;
+    if (!renderService) return;
+    // These terminals are intentionally cached and re-parented between tabs.
+    // xterm's IntersectionObserver pause can therefore get stuck in WKWebView;
+    // disable that observer and explicitly resume before fitting/refreshing.
+    renderService._observerDisposable?.clear?.();
+    renderService._isPaused = false;
+    if (!core?._charSizeService?.hasValidSize) {
+      core?._charSizeService?.measure?.();
+    }
+    renderService._pausedResizeTask?.flush?.();
+    renderService._needsFullRefresh = false;
+  } catch {
+    /* xterm internals changed; normal refresh below is still best effort */
+  }
+}
+
+function syncXtermViewport(
+  s: Session,
+  opts: { immediate?: boolean; clearIgnoredScroll?: boolean } = {}
+) {
+  if (s.disposed || !s.el.parentElement) return;
+  try {
+    const viewport = xtermCore(s)?.viewport;
+    viewport?.syncScrollArea?.(opts.immediate);
+    if (opts.clearIgnoredScroll && viewport) {
+      // `syncScrollArea()` may set this before programmatically assigning
+      // scrollTop. When we call it immediately before a wheel/restore scroll,
+      // clear it so the user's next scroll event is not swallowed.
+      viewport._ignoreNextScrollEvent = false;
+    }
+  } catch {
+    /* xterm internals moved; scrolling will fall back to default behavior */
+  }
+}
 
 /** Push a theme palette onto the app-chrome CSS variables. */
 function applyChromeVars(p: ThemePalette) {
@@ -195,20 +282,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   }
 
   const { cmd, args } = pickShell();
-  // Apply the user's default-cwd policy. The same setting governs Cmd+T,
-  // the +-button, and the restore-on-launch path because all three end up
-  // here. `home` and a blank `fixed` collapse to undefined so portable-pty
-  // inherits the user's HOME via getpwuid.
-  const { defaultCwdMode, defaultCwdFixed } = useSettingsStore.getState();
-  let effectiveCwd = cwd;
-  if (defaultCwdMode === "home") {
-    effectiveCwd = "~";
-  } else if (defaultCwdMode === "fixed") {
-    const trimmed = defaultCwdFixed.trim();
-    effectiveCwd = trimmed || "~";
-  }
-  const resolvedCwd =
-    effectiveCwd && effectiveCwd !== "~" ? effectiveCwd : undefined;
+  // Spawn exactly where the pane says it should spawn. New-tab defaults are
+  // applied when the tab is created in the workspace store; restore-on-launch
+  // must use the saved pane cwd, otherwise a fixed default path can overwrite
+  // the directory shown in the restored scrollback.
+  const trimmedCwd = cwd.trim();
+  const resolvedCwd = trimmedCwd && trimmedCwd !== "~" ? trimmedCwd : undefined;
 
   const pty = spawn(cmd, args, {
     cols: term.cols || 80,
@@ -238,7 +317,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (slash === -1) return false;
     try {
       const path = decodeURIComponent(data.slice(slash));
-      if (s) s.shellCwd = path;
+      if (s?.shellCwd !== path) {
+        if (s) s.shellCwd = path;
+        recordPaneCwd(tabId, path);
+      }
     } catch {
       /* malformed percent-encoding — leave shellCwd untouched */
     }
@@ -257,10 +339,19 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     }
     return true;
   });
+  term.attachCustomWheelEventHandler(() => {
+    if (s) {
+      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
+    }
+    return true;
+  });
 
   // wire data both directions.
   // tauri-pty emits Uint8Array; xterm's write() accepts Uint8Array directly.
   pty.onData((data: Uint8Array) => term.write(data));
+  term.onWriteParsed(() => {
+    if (s) syncXtermViewport(s);
+  });
   term.onData((data: string) => pty.write(data));
   term.onResize(({ cols, rows }) => {
     try {
@@ -270,12 +361,14 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     }
   });
   pty.onExit(() => {
+    if (s?.disposed) return;
     if (s) s.exited = true;
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
     // notify the app so it can close the now-dead pane (standard terminal
     // behavior: exiting the shell closes the split / tab).
     const cb = exitListeners.get(tabId);
     if (cb) cb(tabId);
+    else closePaneForExitedSession(tabId);
   });
 
   s = { term, fit, serialize, search, pty, el, opened: false, disposed: false, exited: false };
@@ -296,28 +389,15 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     s.term.open(s.el);
     s.opened = true;
   }
+  resumeXtermRenderer(s);
   // defer fit until layout settles
   requestAnimationFrame(() => {
+    if (s.disposed || s.el.parentElement !== container) return;
     try {
+      resumeXtermRenderer(s);
       s.fit.fit();
-      // xterm's RenderService pauses painting via IntersectionObserver when
-      // the screen element isn't visible. Detaching the host el on a tab
-      // switch fires the IO with isIntersecting=false and flips _isPaused
-      // to true — every subsequent PTY write then just stamps
-      // _needsFullRefresh and skips the actual draw. The IO is supposed to
-      // fire again when we re-attach, but in WKWebView (Tauri on macOS) the
-      // callback can be delayed for minutes, during which the pane stays
-      // blank even though the shell is alive and accepting input. Reach in
-      // and clear the paused flag ourselves, then ask xterm to repaint from
-      // the buffer so the queued rows hit the screen on the next frame.
-      try {
-        const core = (s.term as unknown as {
-          _core?: { _renderService?: { _isPaused: boolean } };
-        })._core;
-        if (core?._renderService) core._renderService._isPaused = false;
-      } catch {
-        /* internals moved in a future xterm; the IO will eventually fire */
-      }
+      resumeXtermRenderer(s);
+      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       s.term.refresh(0, s.term.rows - 1);
       // Restore the underlying viewport scrollTop. We do this rather than
       // calling `scrollToLine` because scrollTop is the source of truth for
@@ -328,8 +408,10 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
       if (s.savedAtBottom) {
         s.term.scrollToBottom();
+        syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       } else if (viewport && typeof s.savedScrollTop === "number") {
         viewport.scrollTop = s.savedScrollTop;
+        viewport.dispatchEvent(new Event("scroll"));
       }
       s.savedScrollTop = undefined;
       s.savedAtBottom = undefined;
@@ -368,6 +450,8 @@ export function detachSession(tabId: string) {
 export function disposeSession(tabId: string) {
   const s = sessions.get(tabId);
   if (!s) return;
+  s.disposed = true;
+  sessions.delete(tabId);
   try {
     s.pty.kill();
   } catch {
@@ -375,8 +459,6 @@ export function disposeSession(tabId: string) {
   }
   s.term.dispose();
   s.el.remove();
-  s.disposed = true;
-  sessions.delete(tabId);
   // a deliberately closed pane should not resurrect on next launch
   clearScrollback(tabId);
 }
@@ -397,6 +479,7 @@ export function fitSession(tabId: string) {
       ) {
         s.fit.fit();
       }
+      syncXtermViewport(s, { immediate: true });
     } catch {
       /* ignore */
     }
@@ -518,26 +601,13 @@ export async function snapshotAllCwds() {
   if (cwdSnapshotInFlight) return;
   cwdSnapshotInFlight = true;
   try {
-    const store = useWorkspaceStore.getState();
     const paneIds = Array.from(sessions.keys());
     const cwds = await Promise.all(paneIds.map(getSessionCwd));
     for (let i = 0; i < paneIds.length; i++) {
       const paneId = paneIds[i];
       const cwd = cwds[i];
       if (!cwd) continue;
-      // locate which workspace/tab owns this paneId so the store action knows
-      // where to write. paneId is unique across the whole tree.
-      for (const w of store.workspaces) {
-        let found = false;
-        for (const t of w.tabs) {
-          if (collectLeafIds(t.root).includes(paneId)) {
-            store.updatePaneCwd(w.id, t.id, paneId, cwd);
-            found = true;
-            break;
-          }
-        }
-        if (found) break;
-      }
+      recordPaneCwd(paneId, cwd);
     }
   } finally {
     cwdSnapshotInFlight = false;

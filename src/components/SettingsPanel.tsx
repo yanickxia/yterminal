@@ -336,7 +336,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
 
-              {/* default working directory for new / restored shells */}
+              {/* default working directory for newly created tabs */}
               <div className="field">
                 <label className="field-label" htmlFor="cwd-mode-select">
                   Default working directory
@@ -365,8 +365,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   />
                 )}
                 <p className="field-hint">
-                  Applies when opening a new tab (⌘T) and when respawning
-                  closed tabs on launch.
+                  Applies when opening a new tab (⌘T). Restored tabs use their
+                  last saved directory.
                 </p>
               </div>
             </>
