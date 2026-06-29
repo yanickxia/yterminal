@@ -1,10 +1,14 @@
 name: release
 
 # Build native bundles on every pushed v* tag (or manual dispatch) and publish
-# them to a single draft GitHub Release. The matrix runs three OS jobs; they
-# all upload into the same draft via `releaseId` so a) the assets aren't split
-# across multiple drafts (race-on-create that tauri-action has historically
-# fallen into) and b) `publish-latest-json` can see all assets in one place.
+# them to a single draft GitHub Release.
+#
+# Why we don't use tauri-apps/tauri-action: in matrix mode each runner races
+# on draft creation (so we get one draft per OS, with split assets), and the
+# action's universal-apple-darwin path silently skips uploading .sig
+# companions. We instead create the draft once up front, then run `tauri
+# build` directly on each runner and sweep the bundle output ourselves —
+# every artifact, signature included, goes into the same draft.
 
 on:
   push:
@@ -16,35 +20,29 @@ permissions:
   contents: write
 
 jobs:
-  # Single job that owns the draft release. Outputs its id for the matrix to
-  # target with `releaseId`, so all platform bundles land in one draft.
+  # Single job that owns the draft release. find-or-create makes it idempotent
+  # for workflow_dispatch re-runs on the same tag. The matrix jobs upload
+  # straight into this draft via `gh release upload` — no `releaseId` plumbing
+  # needed.
   create-release:
     runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.find_or_create.outputs.id }}
     steps:
       - uses: actions/checkout@v4
       - name: Find existing draft or create one
-        id: find_or_create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          # `gh release view <tag>` works for both draft and published releases
-          # whose tag_name matches; it errors with exit 1 if none found.
-          if existing=$(gh release view "$TAG" --json id --jq '.id' 2>/dev/null); then
-            echo "Found existing release for $TAG: id=$existing"
-            echo "id=$existing" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --json id --jq '.id' >/dev/null 2>&1; then
+            echo "Found existing release for $TAG"
             exit 0
           fi
           gh release create "$TAG" \
             --draft \
             --title "yterminal $TAG" \
             --notes "See the assets below to download and install this version of yterminal."
-          id=$(gh release view "$TAG" --json id --jq '.id')
-          echo "id=$id" >> "$GITHUB_OUTPUT"
 
   build:
     needs: create-release
@@ -109,24 +107,20 @@ jobs:
             exit 1
           fi
 
-      - name: Build and upload bundle assets
-        uses: tauri-apps/tauri-action@v0
+      - name: Build tauri bundle
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          # Upload into the shared draft created above. Without releaseId the
-          # action would otherwise race on draft creation and we'd end up with
-          # one draft per matrix runner.
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: ${{ matrix.args }}
+        # `npm run tauri:build -- ${args}` forwards the extra flag(s) to
+        # `tauri build`. We call the CLI directly (rather than going through
+        # tauri-apps/tauri-action) so the bundle output stays on disk and we
+        # can upload every artifact ourselves — tauri-action's universal-darwin
+        # path drops the .sig from its upload list, which makes the updater
+        # manifest impossible to assemble downstream.
+        run: npm run tauri:build -- ${{ matrix.args }}
 
-      # tauri-action has historically skipped uploading the `.sig` companions
-      # for some bundle targets (notably universal-apple-darwin). Sweep the
-      # bundle output and upload every `.sig` explicitly so the updater
-      # manifest always has a signature to embed.
-      - name: Upload signature files
+      - name: Upload bundle artifacts to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,15 +128,35 @@ jobs:
         run: |
           set -euo pipefail
           count=0
-          while IFS= read -r -d '' sig; do
-            echo "Uploading $sig"
-            gh release upload "$TAG" "$sig" --clobber
+          sig_count=0
+          while IFS= read -r -d '' file; do
+            echo "Uploading $file"
+            gh release upload "$TAG" "$file" --clobber
             count=$((count + 1))
-          done < <(find src-tauri/target -type f -name "*.sig" -print0)
+            case "$file" in *.sig) sig_count=$((sig_count + 1));; esac
+          done < <(find src-tauri/target -type f \( \
+            -name "*.dmg" -o \
+            -name "*.app.tar.gz" -o \
+            -name "*.app.tar.gz.sig" -o \
+            -name "*.msi" -o \
+            -name "*.msi.sig" -o \
+            -name "*-setup.exe" -o \
+            -name "*-setup.exe.sig" -o \
+            -name "*.AppImage" -o \
+            -name "*.AppImage.sig" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" \
+            \) -print0)
+          echo "Uploaded $count artifacts ($sig_count .sig files)"
           if [ "$count" -eq 0 ]; then
-            echo "::error::No .sig files found under src-tauri/target — bundle did not sign artifacts"
+            echo "::error::No bundle artifacts found under src-tauri/target"
             exit 1
           fi
+          if [ "$sig_count" -eq 0 ]; then
+            echo "::error::Bundle produced no .sig files — signing must be misconfigured"
+            exit 1
+          fi
+
 
   publish-latest-json:
     needs: [build]
