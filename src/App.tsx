@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store";
+import { useSettingsStore } from "./stores/settings-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
@@ -14,6 +16,7 @@ import { detectSystemFonts } from "./lib/system-fonts";
 import { scheduleAutoCheck } from "./lib/updater-auto-check";
 import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
+import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -37,6 +40,17 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      installGlobalErrorLogging();
+      // The persisted user setting is the source of truth for verbosity (the
+      // backend's flag resets to its default each launch). Push it both ways.
+      const wantVerbose = useSettingsStore.getState().debugVerbose;
+      setVerbose(wantVerbose);
+      try {
+        await invoke("set_log_verbose", { verbose: wantVerbose });
+      } catch {
+        /* non-Tauri — ignore */
+      }
+      logger.info("app", "startup begin");
       await initShell();
       if (cancelled) return;
       // load appearance from the on-disk JSON config (synced/hand-editable);
@@ -61,6 +75,7 @@ export default function App() {
       }
       pruneScrollback(live);
       setReady(true);
+      logger.info("app", "startup ready");
       scheduleAutoCheck();
 
       // probe installed monospace fonts in the background — the native call is

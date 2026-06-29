@@ -16,12 +16,19 @@ import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 import { useUpdaterStore } from "../stores/updater-store";
+import {
+  exportLogs,
+  clearLogs,
+  logDirPath,
+  setVerbose,
+} from "../lib/logger";
 
-type TabId = "appearance" | "terminal" | "update";
+type TabId = "appearance" | "terminal" | "debug" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "debug", label: "Debug" },
   { id: "update", label: "Update" },
 ];
 
@@ -376,6 +383,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <UpdateTab />
           )}
 
+          {tab === "debug" && <DebugTab />}
+
           {/* config file location stays at the bottom regardless of tab */}
           {cfgPath && (
             <div className="field config-footer">
@@ -386,6 +395,109 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function DebugTab() {
+  const debugVerbose = useSettingsStore((s) => s.debugVerbose);
+  const setDebugVerbose = useSettingsStore((s) => s.setDebugVerbose);
+  const [dir, setDir] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string>("");
+
+  useEffect(() => {
+    logDirPath().then(setDir);
+  }, []);
+
+  async function onExport() {
+    if (busy) return;
+    setBusy(true);
+    setStatus("Exporting…");
+    try {
+      const path = await exportLogs();
+      setStatus(`Exported to: ${path}`);
+    } catch (e) {
+      setStatus(`Export failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onClear() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await clearLogs();
+      setStatus("Logs cleared.");
+    } catch (e) {
+      setStatus(`Clear failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onToggleVerbose(on: boolean) {
+    setDebugVerbose(on);
+    // mirror into the frontend logger and the backend immediately so the new
+    // level takes effect without a restart
+    setVerbose(on);
+    try {
+      await invoke("set_log_verbose", { verbose: on });
+    } catch {
+      /* non-Tauri — ignore */
+    }
+  }
+
+  return (
+    <>
+      <div className="field">
+        <label className="field-label">Diagnostic logging</label>
+        <p className="field-hint">
+          Logs record sizes, ids, durations and control metadata to help
+          diagnose hangs and dropped input. Terminal content and keystrokes are
+          never recorded.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={debugVerbose}
+            onChange={(e) => onToggleVerbose(e.target.checked)}
+          />
+          Verbose (capture DEBUG/TRACE detail)
+        </label>
+        <p className="field-hint">
+          Keep on while reproducing the hang — it captures per-keystroke and
+          per-read timing needed to find the stall.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-label">Logs</label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onExport} disabled={busy}>
+            {busy ? "Working…" : "Export logs"}
+          </button>
+          <button onClick={onClear} disabled={busy}>
+            Clear logs
+          </button>
+        </div>
+        {status && (
+          <p className="field-hint" style={{ wordBreak: "break-all" }}>
+            {status}
+          </p>
+        )}
+      </div>
+
+      {dir && (
+        <div className="field">
+          <label className="field-label">Log directory</label>
+          <code className="config-path">{dir}</code>
+        </div>
+      )}
+    </>
   );
 }
 

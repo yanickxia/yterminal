@@ -44,6 +44,8 @@ interface SettingsState {
   defaultCwdMode: DefaultCwdMode;
   /** absolute path used when defaultCwdMode === "fixed"; empty falls back to home */
   defaultCwdFixed: string;
+  /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
+  debugVerbose: boolean;
 
   setTheme: (id: string) => void;
   setFont: (id: string) => void;
@@ -53,6 +55,7 @@ interface SettingsState {
   setScrollbackLines: (lines: number) => void;
   setDefaultCwdMode: (mode: DefaultCwdMode) => void;
   setDefaultCwdFixed: (path: string) => void;
+  setDebugVerbose: (on: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -66,6 +69,7 @@ export const useSettingsStore = create<SettingsState>()(
       scrollbackLines: DEFAULT_SCROLLBACK_LINES,
       defaultCwdMode: DEFAULT_CWD_MODE,
       defaultCwdFixed: "",
+      debugVerbose: true,
 
       setTheme: (id) => set({ themeId: id }),
       setFont: (id) => set({ fontId: id }),
@@ -93,6 +97,7 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setDefaultCwdMode: (mode) => set({ defaultCwdMode: mode }),
       setDefaultCwdFixed: (path) => set({ defaultCwdFixed: path }),
+      setDebugVerbose: (on) => set({ debugVerbose: on }),
     }),
     { name: "yterminal-settings", version: 2 }
   )

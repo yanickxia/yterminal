@@ -8,6 +8,7 @@
     windows_subsystem = "windows"
 )]
 
+mod logger;
 mod pty;
 
 use std::collections::HashMap;
@@ -378,6 +379,10 @@ fn scrollback_prune(live_pane_ids: Vec<String>) -> Result<(), String> {
 }
 
 fn main() {
+    logger::info(
+        "main",
+        &format!("yterminal {} starting", env!("CARGO_PKG_VERSION")),
+    );
     tauri::Builder::default()
         .manage(pty::PtyState::default())
         .plugin(tauri_plugin_os::init())
@@ -395,6 +400,12 @@ fn main() {
             scrollback_load_all,
             scrollback_clear,
             scrollback_prune,
+            logger::log_event,
+            logger::set_log_verbose,
+            logger::get_log_verbose,
+            logger::log_dir_path,
+            logger::clear_logs,
+            logger::export_logs,
             pty::pty_spawn,
             pty::pty_read,
             pty::pty_write,

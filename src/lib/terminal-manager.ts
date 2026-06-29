@@ -28,6 +28,7 @@ import { useSettingsStore } from "../stores/settings-store";
 import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { findLeaf } from "./pane-tree";
+import { logger } from "./logger";
 
 interface Session {
   term: Terminal;
@@ -352,15 +353,26 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.onWriteParsed(() => {
     if (s) syncXtermViewport(s);
   });
-  term.onData((data: string) => pty.write(data));
+  // term.onData fires for every keystroke/paste leaving xterm toward the pty.
+  // Log size + a rough latency tag so a "can't type" report can be traced from
+  // the very first hop (xterm) all the way to the OS write.
+  term.onData((data: string) => {
+    logger.trace(
+      "term",
+      `input pane=${tabId} bytes=${data.length}`
+    );
+    pty.write(data);
+  });
   term.onResize(({ cols, rows }) => {
+    logger.debug("term", `resize pane=${tabId} cols=${cols} rows=${rows}`);
     try {
       pty.resize(cols, rows);
-    } catch {
-      /* pty may have exited */
+    } catch (e) {
+      logger.warn("term", `resize forward failed pane=${tabId}: ${String(e)}`);
     }
   });
-  pty.onExit(() => {
+  pty.onExit((e) => {
+    logger.info("term", `session exit pane=${tabId} code=${e.exitCode}`);
     if (s?.disposed) return;
     if (s) s.exited = true;
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
@@ -373,6 +385,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
 
   s = { term, fit, serialize, search, pty, el, opened: false, disposed: false, exited: false };
   sessions.set(tabId, s);
+  logger.info("term", `session created pane=${tabId} live_sessions=${sessions.size}`);
   return s;
 }
 
@@ -450,6 +463,7 @@ export function detachSession(tabId: string) {
 export function disposeSession(tabId: string) {
   const s = sessions.get(tabId);
   if (!s) return;
+  logger.info("term", `dispose pane=${tabId} pid=${s.pty.pid ?? "?"}`);
   s.disposed = true;
   sessions.delete(tabId);
   try {
