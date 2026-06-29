@@ -15,12 +15,14 @@ import {
 import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
+import { useUpdaterStore } from "../stores/updater-store";
 
-type TabId = "appearance" | "terminal";
+type TabId = "appearance" | "terminal" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "update", label: "Update" },
 ];
 
 /**
@@ -370,6 +372,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             </>
           )}
 
+          {tab === "update" && (
+            <UpdateTab />
+          )}
+
           {/* config file location stays at the bottom regardless of tab */}
           {cfgPath && (
             <div className="field config-footer">
@@ -379,6 +385,46 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function UpdateTab() {
+  const state = useUpdaterStore((s) => s.state);
+  const manifest = useUpdaterStore((s) => s.manifest);
+  const errorMessage = useUpdaterStore((s) => s.errorMessage);
+  const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt);
+  const recheck = useUpdaterStore((s) => s.check);
+
+  const currentVersion = __APP_VERSION__;
+  return (
+    <div className="field">
+      <label className="field-label">Current version</label>
+      <div>{currentVersion}</div>
+      <div style={{ marginTop: 12 }}>
+        <button onClick={() => recheck()} disabled={state === "checking"}>
+          {state === "checking"
+            ? "Checking…"
+            : state === "available" && manifest
+            ? `View update v${manifest.version}`
+            : state === "error"
+            ? "Retry"
+            : "Check for updates"}
+        </button>
+        {lastCheckedAt && (
+          <span style={{ marginLeft: 12, fontSize: 12, opacity: 0.7 }}>
+            Last checked: {new Date(lastCheckedAt).toLocaleString()}
+          </span>
+        )}
+      </div>
+      {state === "error" && errorMessage && (
+        <div style={{ marginTop: 8, color: "var(--err, #c66)" }}>
+          {errorMessage}
+        </div>
+      )}
+      {state === "up-to-date" && (
+        <div style={{ marginTop: 8, opacity: 0.7 }}>You're up to date.</div>
+      )}
     </div>
   );
 }
