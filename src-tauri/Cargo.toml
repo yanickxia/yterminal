@@ -1,6 +1,6 @@
 [package]
 name = "yterminal"
-version = "0.5.3"
+version = "0.6.0"
 description = "A workspace-first terminal emulator"
 authors = ["you"]
 edition = "2021"
