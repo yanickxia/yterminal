@@ -64,21 +64,24 @@ S3 bucket, or custom backend is needed.
 
 ```toml
 tauri-plugin-updater = "2"
+tauri-plugin-process = "2"   # for relaunch() after install
 ```
 
-**`src/main.rs`** — register the plugin in the existing builder
-chain:
+**`src/main.rs`** — register both plugins in the existing builder
+chain (add next to `tauri_plugin_os::init()` and `tauri_plugin_pty::init()`):
 
 ```rust
 .plugin(tauri_plugin_updater::Builder::new().build())
+.plugin(tauri_plugin_process::init())
 ```
 
-No custom Rust commands. The plugin exposes a JS API the frontend
+No custom Rust commands. Both plugins expose JS APIs the frontend
 calls directly.
 
-**`capabilities/default.json`** — append `"updater:default"` to the
-`permissions` array so the renderer can call `check`,
-`downloadAndInstall`, etc.
+**`capabilities/default.json`** — append `"updater:default"` *and*
+`"process:default"` to the `permissions` array. Without
+`process:default` the `relaunch()` call from the "Restart now"
+button will fail at runtime.
 
 ### 2. Tauri config (`src-tauri/tauri.conf.json`)
 
@@ -95,22 +98,38 @@ Add a `plugins.updater` block:
 }
 ```
 
-Bundler targets need adjusting so the formats the updater expects are
-produced:
+Bundler targets, current state and changes needed:
 
-- **macOS** — keep `.app.tar.gz` (already produced); this is the
-  updater format on darwin.
-- **Windows** — change NSIS target so `.nsis.zip` is produced
-  alongside the existing `.exe` installer. Updater installs from
-  the zipped bundle, not the raw `.exe`.
-- **Linux** — keep `.AppImage`; the updater understands AppImage
-  in-place updates. `.deb` / `.rpm` continue to be produced for
-  manual installs but are not referenced from `latest.json`.
+- **macOS** — current build produces `yterminal_universal.app.tar.gz`
+  + `.sig` from `--target universal-apple-darwin`. The Tauri 2
+  updater consumes that directly. No changes.
+- **Windows** — current build produces `*-setup.exe` (NSIS) and
+  `*_x64_en-US.msi`. Tauri 2's updater consumes the **raw `.exe`**
+  directly (this is the v2 default; the v1-style `.nsis.zip` is
+  only emitted when `bundle.createUpdaterArtifacts: "v1Compatible"`
+  is set, which we do **not** want). `latest.json` will therefore
+  reference `*_x64-setup.exe`. No bundler change needed.
+- **Linux** — current build produces `.AppImage`, `.deb`, `.rpm`.
+  The updater consumes `.AppImage` in place. `.deb` / `.rpm`
+  continue to be produced for manual installs but are not
+  referenced from `latest.json`. No bundler change needed.
 
-### 3. Frontend (`src/updater/`)
+The existing `bundle.targets: "all"` setting in `tauri.conf.json`
+already produces every artifact above, verified against the v0.3.0
+release assets.
 
-**`src/updater/store.ts`** — a Zustand slice (matches existing
-project style) implementing this state machine:
+### 3. Frontend (`src/stores/updater-store.ts` + `src/components/`)
+
+The store goes in `src/stores/` alongside the existing
+`settings-store.ts` and `workspace-store.ts` — same place, same
+naming convention.
+
+**`src/stores/updater-store.ts`** — Zustand slice. Only
+`lastCheckedAt` is persisted (matches the persisted slice pattern
+already used by `settings-store`); everything else is transient
+session state.
+
+State machine:
 
 ```
 idle ──► checking ──► up-to-date
@@ -123,11 +142,12 @@ idle ──► checking ──► up-to-date
 Actions:
 - `check()` — calls `@tauri-apps/plugin-updater`'s `check()`, on
   success transitions to `up-to-date` or `available` with the
-  manifest payload.
+  manifest payload. Calling `check()` while already `checking` is
+  a no-op.
 - `startDownload()` — only valid from `available`; calls
   `update.downloadAndInstall(onEvent)`, threads progress events
-  into store.
-- `relaunch()` — calls `@tauri-apps/plugin-process` `relaunch()`
+  into the store. No-op from any other state.
+- `relaunch()` — calls `@tauri-apps/plugin-process`'s `relaunch()`
   once state is `ready`.
 - `dismiss()` — closes the modal but keeps the `available` payload
   so Settings can re-open it.
@@ -136,25 +156,32 @@ Actions:
 Every action is `try / catch`; errors set `state = 'error'` with a
 human message and never throw past the store boundary.
 
-**`src/updater/auto-check.ts`** — `useEffect` in the app root:
-`setTimeout(() => store.getState().check(), 5000)`. Failure is
-swallowed (logged via `console.warn`); the user is *not* shown a
-toast on launch-time failure.
+**`src/lib/updater-auto-check.ts`** — thin module exposing
+`scheduleAutoCheck()`. `App.tsx` calls it once after mount:
+`setTimeout(() => useUpdaterStore.getState().check(), 5000)`.
+Failure is swallowed (logged via `console.warn`); the user is
+*not* shown a toast on launch-time failure.
 
-**`src/updater/UpdateDialog.tsx`** — modal that renders against the
-store state. Three render modes:
+**`src/components/UpdateDialog.tsx`** — modal rendered against the
+store state. Mounted in `App.tsx` at the top level next to the
+existing `WorkspacePalette` / search overlay, **outside** any
+"workspace ready" gate so an updater error surfaces even if the
+rest of the app is degraded.
 
-- `available` — version, release notes (markdown rendered with the
-  same minimal renderer used elsewhere in the app, or plain `<pre>`
-  if none exists), `[Later] [Update now]`.
-- `downloading` — progress bar with bytes / total, "Cancel"
-  disabled (Tauri updater downloads aren't cancellable).
+Render modes:
+
+- `available` — version, release notes (rendered as plain `<pre>`;
+  the codebase has no markdown renderer and we are not adding one),
+  `[Later] [Update now]`.
+- `downloading` — progress bar with bytes / total. "Cancel" is not
+  offered — Tauri's `downloadAndInstall` doesn't expose
+  cancellation.
 - `ready` — "Download finished. Restart to apply." `[Restart now]`.
 - `error` — error message + `[Retry]` (re-runs whichever step
   failed).
 
-**Settings panel** — append a new section to the existing settings
-component (the one that shows theme / font):
+**Settings panel** — append a new section to the existing
+`SettingsPanel` component (which already shows theme / font):
 
 ```
 Update
@@ -169,40 +196,72 @@ message is shown next to it.
 
 ### 4. Release CI (`.github/workflows/release.yml`)
 
-**Per-platform build job** — inject signing env on the existing
-`tauri-action` step:
+The current workflow is a single `build` job with a 3-platform
+matrix that calls `tauri-apps/tauri-action@v0`. Two changes:
+
+**(a) Sign artifacts** — extend the existing `env:` block on the
+`tauri-action` step (currently only sets `GITHUB_TOKEN`) so each
+build runs with the signing key in scope:
 
 ```yaml
-env:
-  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+- name: Build and release
+  uses: tauri-apps/tauri-action@v0
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  with:
+    ...
 ```
 
-When these env vars are present, `tauri build` automatically signs
-each updater-eligible artifact and writes a sibling `.sig` file
-which is uploaded as a release asset alongside the bundle.
+When `TAURI_SIGNING_PRIVATE_KEY` is set, `tauri build` automatically
+signs each updater-eligible artifact and writes a sibling `.sig`
+file that `tauri-action` then uploads to the draft release.
 
-**Fail-fast guard** — the workflow checks at the start of each build
-job that `TAURI_SIGNING_PRIVATE_KEY` is non-empty and aborts with a
-clear message if not. This keeps a release without signatures from
-silently going out — clients would reject it anyway, but the early
-abort makes the failure obvious.
+**(b) Fail-fast guard** — add one short step *before* the build
+step in the same job, so a missing secret aborts immediately rather
+than producing an unsigned release:
 
-**New aggregator job** — runs after all platform builds finish:
+```yaml
+- name: Verify signing key is configured
+  shell: bash
+  env:
+    KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  run: |
+    if [ -z "$KEY" ]; then
+      echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set." \
+           "Generate a key with 'npx @tauri-apps/cli signer generate'" \
+           "and add it as a repo secret. See docs/superpowers/specs/" \
+           "2026-06-29-auto-update-design.md."
+      exit 1
+    fi
+```
+
+**(c) New `publish-latest-json` job** — runs once after the matrix
+build completes, on Ubuntu, and uploads `latest.json` to the same
+draft release:
 
 ```yaml
 publish-latest-json:
-  needs: [build-macos, build-windows, build-linux]
+  needs: [build]
   runs-on: ubuntu-latest
   steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
+      with:
+        node-version: 20
     - run: node scripts/generate-latest-json.mjs
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAG: ${{ github.ref_name }}
     - run: gh release upload "$TAG" latest.json --clobber
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+The existing build job already publishes the release as a draft;
+this aggregator runs against the draft and adds `latest.json` to
+its assets. The maintainer publishes the draft manually as today.
 
 ### 5. `scripts/generate-latest-json.mjs` (new)
 
@@ -218,9 +277,13 @@ Logic:
 3. `pub_date` = release `publishedAt`
 4. For each platform key, find the matching asset and its sibling
    `.sig`:
-   - `darwin-x86_64`, `darwin-aarch64`, `darwin-universal` → first
-     `.app.tar.gz` whose name suggests universal (`yterminal_universal.app.tar.gz`)
-   - `windows-x86_64` → `*_x64-setup.nsis.zip`
+   - `darwin-x86_64`, `darwin-aarch64`, `darwin-universal` → all
+     three keys point at the same single universal artifact
+     (`yterminal_universal.app.tar.gz` + its `.sig`). The build
+     matrix only produces one universal bundle, and the Tauri
+     updater accepts the same URL under multiple darwin keys.
+   - `windows-x86_64` → `*_x64-setup.exe` (raw NSIS installer,
+     v2 default; **not** `.nsis.zip`)
    - `linux-x86_64` → `*_amd64.AppImage`
 5. Download each `.sig` (it's small text), embed contents into the
    manifest's `signature` field.
@@ -238,9 +301,17 @@ Schema:
       "signature": "<contents of yterminal_universal.app.tar.gz.sig>",
       "url": "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_universal.app.tar.gz"
     },
+    "darwin-aarch64": {
+      "signature": "<same as darwin-universal>",
+      "url": "<same as darwin-universal>"
+    },
+    "darwin-x86_64": {
+      "signature": "<same as darwin-universal>",
+      "url": "<same as darwin-universal>"
+    },
     "windows-x86_64": {
       "signature": "...",
-      "url": "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_x64-setup.nsis.zip"
+      "url": "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_x64-setup.exe"
     },
     "linux-x86_64": {
       "signature": "...",
@@ -250,9 +321,9 @@ Schema:
 }
 ```
 
-**Fail-fast:** if any platform's `.sig` is missing, the script
-exits non-zero. Better to fail the release than to publish a
-manifest the updater will reject silently.
+**Fail-fast:** if any platform's expected asset or its `.sig` is
+missing, the script exits non-zero. Better to fail the release than
+to publish a manifest the updater will reject silently.
 
 ## Data flow / sequence (happy path)
 
@@ -273,7 +344,7 @@ plugin parses JSON, picks current platform key
   ▼ user clicks "Update now"
 store.startDownload()
   ▼
-plugin downloads .app.tar.gz / .nsis.zip / .AppImage with progress events
+plugin downloads .app.tar.gz / .exe / .AppImage with progress events
   ▼
 plugin verifies ed25519 signature in .sig vs pubkey in tauri.conf.json
   ▼ ok
@@ -385,7 +456,21 @@ After this one-time setup, subsequent releases need no extra steps.
   unauthenticated requests are rate-limited per IP. For a personal
   app this is fine; if it ever becomes a problem, swap the endpoint
   to a static `latest.json` on GitHub Pages.
-- **Windows updater requires NSIS target.** Existing release was
-  shipping `.msi`; the bundler change to add `.nsis.zip` may
-  produce slightly different installer behavior on first install.
-  Existing manual `.msi` download stays available as a fallback.
+- **PTY shutdown during `relaunch()`.** `tauri-plugin-pty` spawns
+  child shells that need to be killed cleanly when the host process
+  exits. `relaunch()` calls `app.exit()` then re-spawns, which lets
+  the plugin's Drop run; in practice this works the same as the
+  user pressing Cmd-Q. Worth re-confirming during manual acceptance
+  on each platform.
+- **Scrollback survival across in-place upgrade.** The SQLite
+  database lives at `$XDG_DATA_HOME/yterminal/scrollback.db` (or the
+  Windows / macOS equivalent), *outside* the application bundle, so
+  an in-place app replacement leaves it untouched. Autosave runs
+  on a 15s tick under WAL, so worst case the user loses 15s of
+  buffer at the moment they hit "Restart now".
+- **Linux `.AppImage` self-replace requires write access.** If the
+  user installed the AppImage to a system location like
+  `/opt/yterminal`, the running process won't be able to overwrite
+  it and the updater will error out. We can't fix this from inside
+  the app — the user has to either re-launch from a writable
+  location or fall back to the manual `.deb` / `.rpm` download.
