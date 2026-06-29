@@ -641,6 +641,13 @@ body {
   gap: 18px;
 }
 
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
