@@ -75,6 +75,18 @@ re-reads it and applies the new appearance the next time its window regains
 focus. Unknown or invalid values fall back to defaults, so a malformed file
 never breaks the app. The Settings panel shows the exact file path.
 
+## Auto-update
+
+yterminal checks GitHub for new releases on launch (5 seconds after the
+window opens) and via **Settings → Update → Check for updates**. When a
+new version is available, you'll see a dialog with the release notes
+and an "Update now" button. Updates are signed with ed25519 and verified
+before install — a tampered or mismatched download is refused.
+
+Linux users: the in-app updater works for the **AppImage** flavor only;
+`.deb` / `.rpm` users continue to install via the system package
+manager.
+
 ## Tech stack
 
 | Layer | Choice |
