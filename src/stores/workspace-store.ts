@@ -18,15 +18,18 @@ function defaultCwd(): string {
   return "~";
 }
 
-function configuredNewTabCwd(inherited?: string): string {
+function configuredDefaultCwd(): string {
   const { defaultCwdMode, defaultCwdFixed } = useSettingsStore.getState();
   if (defaultCwdMode === "home") return "~";
   if (defaultCwdMode === "fixed") return defaultCwdFixed.trim() || "~";
-  return inherited && inherited.trim() ? inherited : defaultCwd();
+  return defaultCwd();
 }
 
 function makeTab(name: string, cwd?: string): Tab {
-  const resolved = configuredNewTabCwd(cwd);
+  // An explicit cwd is authoritative. The default-cwd setting is only a
+  // fallback for brand new workspaces or cases where no active pane can supply
+  // a directory. This keeps cwd inheritance scoped to the current workspace.
+  const resolved = cwd && cwd.trim() ? cwd : configuredDefaultCwd();
   const leaf = makeLeaf(resolved);
   return {
     id: uid("tab"),

@@ -12,6 +12,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
 import { spawn, type IPty } from "tauri-pty";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   saveScrollback,
   loadScrollback,
@@ -62,8 +63,8 @@ interface Session {
   /**
    * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
    * refreshed on every prompt. This is how we know a pane's *real* cwd —
-   * tauri-plugin-pty's `pty.pid` is an internal session handle, not the OS
-   * pid, so /proc/<pid>/cwd and `lsof -p <pid>` can't be used directly.
+   * yterminal patches tauri-plugin-pty to expose the OS child pid, so when
+   * this signal is stale or absent we can also query the process directly.
    */
   shellCwd?: string;
 }
@@ -551,28 +552,24 @@ export function persistAllSessions() {
 /**
  * Resolve the real current working directory of a session's shell.
  *
- * Preferred path: the shell tells us via OSC 7 on every prompt, captured into
- * `s.shellCwd`. That works for any platform where the user's shell init emits
- * OSC 7 — on macOS we trigger it by setting `TERM_PROGRAM=Apple_Terminal` so
- * `/etc/zshrc_Apple_Terminal` installs the hook automatically.
- *
- * Fallback: ask the OS by pid. Note this is currently dead code with
- * tauri-plugin-pty, since `s.pty.pid` is a session-handle, not an OS pid —
- * left here for future work that exposes the real pid or for shells that
- * don't emit OSC 7.
+ * Preferred path: ask the OS by pid. The bundled tauri-plugin-pty patch keys
+ * sessions by the real child process id, so `s.pty.pid` can be passed to
+ * `process_cwd`. OSC 7 remains as a fallback for environments where process
+ * cwd probing is unsupported.
  */
 export async function getSessionCwd(paneId: string): Promise<string | null> {
   const s = sessions.get(paneId);
   if (!s || s.disposed) return null;
-  if (s.shellCwd) return s.shellCwd;
   const pid = s.pty.pid;
-  if (typeof pid !== "number" || pid <= 0) return null;
-  try {
-    const cwd = await invoke<string>("process_cwd", { pid });
-    return cwd && cwd.trim() ? cwd : null;
-  } catch {
-    return null;
+  if (typeof pid === "number" && pid > 0) {
+    try {
+      const cwd = await invoke<string>("process_cwd", { pid });
+      if (cwd && cwd.trim()) return cwd;
+    } catch {
+      /* fall through to shell-reported cwd */
+    }
   }
+  return s.shellCwd ?? null;
 }
 
 /**
@@ -589,18 +586,24 @@ export async function addTabInheritingCwd(workspaceId: string) {
   const activeTab = ws.tabs.find((t) => t.id === ws.activeTabId);
   if (activeTab) {
     const real = await getSessionCwd(activeTab.activePaneId);
-    if (real) cwd = real;
-    else if (activeTab.cwd && activeTab.cwd !== "~") cwd = activeTab.cwd;
+    const activeLeaf = findLeaf(activeTab.root, activeTab.activePaneId);
+    if (real) {
+      cwd = real;
+      store.updatePaneCwd(ws.id, activeTab.id, activeTab.activePaneId, real);
+    } else if (activeLeaf?.cwd && activeLeaf.cwd !== "~") {
+      cwd = activeLeaf.cwd;
+    } else if (activeTab.cwd && activeTab.cwd !== "~") {
+      cwd = activeTab.cwd;
+    }
   }
   store.addTab(workspaceId, undefined, cwd);
 }
 
 /** Walk every live session, query its real cwd, and push it into the store. */
-let cwdSnapshotInFlight = false;
+let cwdSnapshotPromise: Promise<void> | null = null;
 export async function snapshotAllCwds() {
-  if (cwdSnapshotInFlight) return;
-  cwdSnapshotInFlight = true;
-  try {
+  if (cwdSnapshotPromise) return cwdSnapshotPromise;
+  cwdSnapshotPromise = (async () => {
     const paneIds = Array.from(sessions.keys());
     const cwds = await Promise.all(paneIds.map(getSessionCwd));
     for (let i = 0; i < paneIds.length; i++) {
@@ -609,9 +612,10 @@ export async function snapshotAllCwds() {
       if (!cwd) continue;
       recordPaneCwd(paneId, cwd);
     }
-  } finally {
-    cwdSnapshotInFlight = false;
-  }
+  })().finally(() => {
+    cwdSnapshotPromise = null;
+  });
+  return cwdSnapshotPromise;
 }
 
 /**
@@ -665,4 +669,29 @@ if (typeof window !== "undefined") {
     // catch the recent state in practice.
     void snapshotAllCwds();
   });
+
+  // Tauri's close event is async-capable. Intercept it once so we can flush the
+  // current process cwd before the webview disappears; this closes the gap where
+  // the user `cd`s and immediately quits before the 15s autosave tick.
+  try {
+    const appWindow = getCurrentWindow();
+    let closing = false;
+    appWindow
+      .onCloseRequested(async (event) => {
+        if (closing) return;
+        closing = true;
+        event.preventDefault();
+        try {
+          await snapshotAllCwds();
+          persistAllSessions();
+        } finally {
+          await appWindow.destroy();
+        }
+      })
+      .catch(() => {
+        /* not running inside Tauri */
+      });
+  } catch {
+    /* not running inside Tauri */
+  }
 }

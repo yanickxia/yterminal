@@ -336,7 +336,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
 
-              {/* default working directory for newly created tabs */}
+              {/* fallback working directory when no pane cwd can be inherited */}
               <div className="field">
                 <label className="field-label" htmlFor="cwd-mode-select">
                   Default working directory
@@ -365,8 +365,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   />
                 )}
                 <p className="field-hint">
-                  Applies when opening a new tab (⌘T). Restored tabs use their
-                  last saved directory.
+                  New tabs inherit the active pane in this workspace. This is
+                  used only when no pane directory is available.
                 </p>
               </div>
             </>

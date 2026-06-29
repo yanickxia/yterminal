@@ -92,7 +92,6 @@ fn write_config(contents: String) -> Result<(), String> {
 /// representative face per family and keep only the monospaced ones (a terminal
 /// only wants fixed-width fonts), returning a sorted, de-duplicated list.
 fn enumerate_fonts() -> Vec<String> {
-    use font_kit::loader::Loader; // brings is_monospace() into scope
     use font_kit::source::SystemSource;
 
     let source = SystemSource::new();
@@ -178,7 +177,9 @@ fn refresh_fonts() -> Vec<String> {
 ///
 /// Used by the frontend so a new tab can inherit the *actual* cwd of the
 /// active shell (not just the cwd it was spawned in), and so a restarted
-/// session can reopen in the directory where the user left off.
+/// session can reopen in the directory where the user left off. The bundled
+/// tauri-plugin-pty patch returns the child process id to the frontend, so this
+/// command receives a real OS pid rather than the plugin's original session id.
 ///
 /// macOS: shell out to `lsof -a -p PID -d cwd -F n`. `-F n` formats output as
 ///   `pPID\nfcwd\nn<path>` — we grab the `n`-prefixed line. `lsof` is

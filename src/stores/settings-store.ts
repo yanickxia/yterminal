@@ -22,11 +22,12 @@ export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const SCROLLBACK_UNLIMITED = 0;
 
 /**
- * Policy for the cwd a newly created tab starts in. Restore-on-launch uses the
- * saved pane cwd instead, so old tabs reopen where they were left.
+ * Fallback policy for shells that cannot inherit a live pane cwd. Normal new
+ * tabs inherit the active pane in their own workspace; restore-on-launch uses
+ * the saved pane cwd.
  *
  *   home    — always $HOME (the shell's default if you pass no cwd)
- *   inherit — carry forward: new tab uses the active pane's current cwd
+ *   inherit — carry forward when a scoped cwd is available, else $HOME
  *   fixed   — always `defaultCwdFixed` (e.g. a project root you live in)
  */
 export type DefaultCwdMode = "home" | "inherit" | "fixed";
