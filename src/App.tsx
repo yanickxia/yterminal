@@ -11,6 +11,7 @@ import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
 import { registerSystemFonts } from "./lib/themes";
 import { detectSystemFonts } from "./lib/system-fonts";
+import { scheduleAutoCheck } from "./lib/updater-auto-check";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -57,6 +58,7 @@ export default function App() {
       }
       pruneScrollback(live);
       setReady(true);
+      scheduleAutoCheck();
 
       // probe installed monospace fonts in the background — the native call is
       // cached to disk on the Rust side so subsequent launches are ~instant,
