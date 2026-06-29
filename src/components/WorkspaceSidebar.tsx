@@ -2,6 +2,10 @@ import { useEffect, useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import type { Workspace } from "../lib/types";
+import { disposeSession } from "../lib/terminal-manager";
+import { collectLeafIds } from "../lib/pane-tree";
 
 const COLLAPSE_KEY = "yterminal.sidebar.collapsed";
 
@@ -25,12 +29,27 @@ export function WorkspaceSidebar({
   const renameWorkspace = useWorkspaceStore((s) => s.renameWorkspace);
   const reorderWorkspace = useWorkspaceStore((s) => s.reorderWorkspace);
   const setWorkspaceIcon = useWorkspaceStore((s) => s.setWorkspaceIcon);
+  const toggleWorkspacePin = useWorkspaceStore((s) => s.toggleWorkspacePin);
+  const closeOtherWorkspaces = useWorkspaceStore(
+    (s) => s.closeOtherWorkspaces
+  );
+  const closeWorkspacesBefore = useWorkspaceStore(
+    (s) => s.closeWorkspacesBefore
+  );
+  const closeWorkspacesAfter = useWorkspaceStore(
+    (s) => s.closeWorkspacesAfter
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{
+    wsId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   // manual double-click detection: WebKit (macOS WKWebView) does NOT fire the
   // native `dblclick` event on `draggable` elements, so we time clicks here.
   const lastClick = useRef<{ id: string; t: number }>({ id: "", t: 0 });
@@ -98,6 +117,71 @@ export function WorkspaceSidebar({
     setIconPicker({ id: wsId, anchor: { x: r.left, y: r.bottom } });
   }
 
+  /** Dispose every pty session inside a workspace's tabs before dropping it. */
+  function disposeWorkspaces(list: Workspace[]) {
+    for (const w of list) {
+      for (const t of w.tabs)
+        for (const id of collectLeafIds(t.root)) disposeSession(id);
+    }
+  }
+
+  function buildMenu(w: Workspace, allowRename: boolean): MenuItem[] {
+    const idx = workspaces.findIndex((x) => x.id === w.id);
+    const closableOthers = workspaces.filter(
+      (x) => x.id !== w.id && !x.pinned
+    );
+    const closableBefore = workspaces.filter(
+      (x, i) => i < idx && !x.pinned
+    );
+    const closableAfter = workspaces.filter(
+      (x, i) => i > idx && !x.pinned
+    );
+    return [
+      {
+        label: w.pinned ? "Unpin" : "Pin",
+        onClick: () => toggleWorkspacePin(w.id),
+      },
+      {
+        label: "Rename",
+        disabled: !allowRename,
+        onClick: () => beginEdit(w.id, w.name),
+      },
+      { separator: true },
+      {
+        label: "Close",
+        danger: true,
+        onClick: () => {
+          disposeWorkspaces([w]);
+          removeWorkspace(w.id);
+        },
+      },
+      {
+        label: "Close Others",
+        disabled: closableOthers.length === 0,
+        onClick: () => {
+          disposeWorkspaces(closableOthers);
+          closeOtherWorkspaces(w.id);
+        },
+      },
+      {
+        label: "Close Before",
+        disabled: closableBefore.length === 0,
+        onClick: () => {
+          disposeWorkspaces(closableBefore);
+          closeWorkspacesBefore(w.id);
+        },
+      },
+      {
+        label: "Close After",
+        disabled: closableAfter.length === 0,
+        onClick: () => {
+          disposeWorkspaces(closableAfter);
+          closeWorkspacesAfter(w.id);
+        },
+      },
+    ];
+  }
+
   // collapsed rail: a narrow strip of workspace icons (emoji or first letter)
   // plus the expand + settings affordances, so the chrome stays usable.
   if (collapsed) {
@@ -121,9 +205,18 @@ export function WorkspaceSidebar({
           {workspaces.map((w) => (
             <button
               key={w.id}
-              className={"rail-item" + (w.id === activeId ? " active" : "")}
-              title={w.name}
+              className={
+                "rail-item" +
+                (w.id === activeId ? " active" : "") +
+                (w.pinned ? " pinned" : "")
+              }
+              title={w.pinned ? `${w.name} (pinned)` : w.name}
               onClick={() => setActive(w.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setActive(w.id);
+                setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
+              }}
             >
               {railGlyph(w.name, w.icon)}
             </button>
@@ -139,6 +232,18 @@ export function WorkspaceSidebar({
         {showSettings && (
           <SettingsPanel onClose={() => setShowSettings(false)} />
         )}
+        {ctxMenu && (() => {
+          const w = workspaces.find((x) => x.id === ctxMenu.wsId);
+          if (!w) return null;
+          return (
+            <ContextMenu
+              items={buildMenu(w, false)}
+              x={ctxMenu.x}
+              y={ctxMenu.y}
+              onClose={() => setCtxMenu(null)}
+            />
+          );
+        })()}
       </div>
     );
   }
@@ -179,7 +284,8 @@ export function WorkspaceSidebar({
               "ws-item" +
               (w.id === activeId ? " active" : "") +
               (w.id === dragId ? " dragging" : "") +
-              (w.id === overId && dragId && w.id !== dragId ? " drag-over" : "")
+              (w.id === overId && dragId && w.id !== dragId ? " drag-over" : "") +
+              (w.pinned ? " pinned" : "")
             }
             draggable={editingId !== w.id}
             onDragStart={(e) => {
@@ -201,6 +307,11 @@ export function WorkspaceSidebar({
             }}
             onClick={() => onRowClick(w.id, w.name)}
             onDoubleClick={() => beginEdit(w.id, w.name)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setActive(w.id);
+              setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
+            }}
           >
             {editingId === w.id ? (
               <input
@@ -224,13 +335,17 @@ export function WorkspaceSidebar({
                 >
                   {railGlyph(w.name, w.icon)}
                 </button>
-                <span className="ws-name">{w.name}</span>
+                <span className="ws-name">
+                  {w.pinned && <span className="ws-pin" title="Pinned">📌</span>}
+                  {w.name}
+                </span>
                 <span className="ws-count">{w.tabs.length}</span>
                 <button
                   className="icon-btn ws-close"
                   title="Delete workspace"
                   onClick={(e) => {
                     e.stopPropagation();
+                    disposeWorkspaces([w]);
                     removeWorkspace(w.id);
                   }}
                 >
@@ -260,6 +375,18 @@ export function WorkspaceSidebar({
       </div>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {ctxMenu && (() => {
+        const w = workspaces.find((x) => x.id === ctxMenu.wsId);
+        if (!w) return null;
+        return (
+          <ContextMenu
+            items={buildMenu(w, true)}
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            onClose={() => setCtxMenu(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

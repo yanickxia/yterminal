@@ -201,6 +201,19 @@ body {
   text-overflow: ellipsis;
 }
 
+.ws-pin {
+  font-size: 10px;
+  margin-right: 4px;
+  line-height: 1;
+}
+
+.rail-item.pinned {
+  box-shadow: inset 0 0 0 1px var(--fg-dim);
+}
+.rail-item.pinned.active {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .ws-count {
   font-size: 10px;
   color: var(--fg-dim);
@@ -283,6 +296,15 @@ body {
   font-size: 14px;
   line-height: 1;
   padding: 0;
+}
+
+.tab-pin {
+  font-size: 11px;
+  line-height: 1;
+  margin-right: 2px;
+}
+.tab.pinned .tab-name {
+  font-style: italic;
 }
 
 /* the "set icon" placeholder stays subtle until hovered */
@@ -740,6 +762,70 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* ---------- settings tabs ---------- */
+.modal-tabs {
+  width: 520px;
+}
+.settings-tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0;
+  border-bottom: 1px solid var(--bg-light);
+}
+.settings-tab {
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.settings-tab:hover {
+  color: var(--fg);
+}
+.settings-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.scrollback-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.scrollback-input {
+  width: 140px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox-label input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.config-footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bg-light);
+}
+
 /* ---------- workspace palette (Cmd+K) ---------- */
 .palette {
   width: 520px;
@@ -830,4 +916,49 @@ body {
   font-size: 11px;
   color: var(--fg-dim);
   text-align: center;
+}
+
+/* ---------- context menu ---------- */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 180px;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  font-size: 13px;
+  user-select: none;
+}
+.ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--fg);
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+.ctx-item:hover:not(.disabled) {
+  background: var(--bg-light);
+}
+.ctx-item.disabled {
+  color: var(--fg-dim);
+  cursor: default;
+}
+.ctx-item.danger {
+  color: #f7768e;
+}
+.ctx-item.danger:hover:not(.disabled) {
+  background: rgba(247, 118, 142, 0.12);
+}
+.ctx-sep {
+  height: 1px;
+  background: var(--bg-light);
+  margin: 4px 2px;
 }

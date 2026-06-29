@@ -19,6 +19,12 @@ import {
   MAX_DIVIDER_WIDTH,
   DEFAULT_DIVIDER_WIDTH,
   DEFAULT_DIVIDER_COLOR,
+  MIN_SCROLLBACK_LINES,
+  MAX_SCROLLBACK_LINES,
+  DEFAULT_SCROLLBACK_LINES,
+  SCROLLBACK_UNLIMITED,
+  DEFAULT_CWD_MODE,
+  type DefaultCwdMode,
 } from "../stores/settings-store";
 
 /** The on-disk schema. Kept intentionally small and stable. */
@@ -36,6 +42,17 @@ export interface YterminalConfig {
     dividerWidth: number;
     /** pane divider line color (any CSS color string) */
     dividerColor: string;
+    /** xterm scrollback lines; 0 = unlimited */
+    scrollbackLines: number;
+  };
+  /** Terminal behavior — currently just the default-cwd policy. */
+  terminal: {
+    defaultCwd: {
+      /** "home" | "inherit" | "fixed" */
+      mode: DefaultCwdMode;
+      /** absolute path used when mode === "fixed" */
+      fixedPath: string;
+    };
   };
 }
 
@@ -52,6 +69,13 @@ export function configFromStore(): YterminalConfig {
       fontSize: s.fontSize,
       dividerWidth: s.dividerWidth,
       dividerColor: s.dividerColor,
+      scrollbackLines: s.scrollbackLines,
+    },
+    terminal: {
+      defaultCwd: {
+        mode: s.defaultCwdMode,
+        fixedPath: s.defaultCwdFixed,
+      },
     },
   };
 }
@@ -76,6 +100,25 @@ function validDividerColor(c: unknown): string {
     : DEFAULT_DIVIDER_COLOR;
 }
 
+function clampScrollback(n: unknown): number {
+  if (typeof n !== "number" || !Number.isFinite(n)) {
+    return DEFAULT_SCROLLBACK_LINES;
+  }
+  if (n === SCROLLBACK_UNLIMITED) return SCROLLBACK_UNLIMITED;
+  return Math.max(
+    MIN_SCROLLBACK_LINES,
+    Math.min(MAX_SCROLLBACK_LINES, Math.round(n))
+  );
+}
+
+function validCwdMode(m: unknown): DefaultCwdMode {
+  return m === "home" || m === "inherit" || m === "fixed" ? m : DEFAULT_CWD_MODE;
+}
+
+function validFixedPath(p: unknown): string {
+  return typeof p === "string" ? p : "";
+}
+
 /**
  * Parse + validate raw JSON text into a normalized config. Unknown/invalid
  * values fall back to defaults, so a malformed or partial file is always safe.
@@ -90,6 +133,8 @@ export function parseConfig(text: string): YterminalConfig | null {
   }
   if (!raw || typeof raw !== "object") return null;
   const ap = raw.appearance ?? {};
+  const tm = raw.terminal ?? {};
+  const dc = tm.defaultCwd ?? {};
 
   const themeOk = THEMES.some((t) => t.id === ap.theme);
   // accept any built-in preset OR a detected system font; an unknown id is kept
@@ -107,6 +152,13 @@ export function parseConfig(text: string): YterminalConfig | null {
       fontSize: clampFontSize(ap.fontSize),
       dividerWidth: clampDividerWidth(ap.dividerWidth),
       dividerColor: validDividerColor(ap.dividerColor),
+      scrollbackLines: clampScrollback(ap.scrollbackLines),
+    },
+    terminal: {
+      defaultCwd: {
+        mode: validCwdMode(dc.mode),
+        fixedPath: validFixedPath(dc.fixedPath),
+      },
     },
   };
 }
@@ -114,12 +166,23 @@ export function parseConfig(text: string): YterminalConfig | null {
 /** Push a parsed config into the settings store (only if values differ). */
 export function applyConfigToStore(cfg: YterminalConfig) {
   const s = useSettingsStore.getState();
-  const { theme, font, fontSize, dividerWidth, dividerColor } = cfg.appearance;
+  const {
+    theme,
+    font,
+    fontSize,
+    dividerWidth,
+    dividerColor,
+    scrollbackLines,
+  } = cfg.appearance;
   if (theme !== s.themeId) s.setTheme(theme);
   if (font !== s.fontId) s.setFont(font);
   if (fontSize !== s.fontSize) s.setFontSize(fontSize);
   if (dividerWidth !== s.dividerWidth) s.setDividerWidth(dividerWidth);
   if (dividerColor !== s.dividerColor) s.setDividerColor(dividerColor);
+  if (scrollbackLines !== s.scrollbackLines) s.setScrollbackLines(scrollbackLines);
+  const { mode, fixedPath } = cfg.terminal.defaultCwd;
+  if (mode !== s.defaultCwdMode) s.setDefaultCwdMode(mode);
+  if (fixedPath !== s.defaultCwdFixed) s.setDefaultCwdFixed(fixedPath);
 }
 
 /** Absolute path of the config file (for display in the UI). */

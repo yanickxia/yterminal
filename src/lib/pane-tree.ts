@@ -139,3 +139,18 @@ export function setSizesAt(
   }
   return recur(root);
 }
+
+/** Return a copy of the tree with the leaf `id`'s cwd field overwritten. */
+export function setLeafCwd(
+  root: PaneTree,
+  id: string,
+  cwd: string
+): PaneTree {
+  function recur(node: PaneTree): PaneTree {
+    if (node.type === "leaf") {
+      return node.id === id ? { ...node, cwd } : node;
+    }
+    return { ...node, children: node.children.map(recur) };
+  }
+  return recur(root);
+}

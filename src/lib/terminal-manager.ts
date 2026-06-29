@@ -24,6 +24,9 @@ import {
   type ThemePalette,
 } from "./themes";
 import { useSettingsStore } from "../stores/settings-store";
+import { resolveScrollback } from "../stores/settings-store";
+import { useWorkspaceStore } from "../stores/workspace-store";
+import { collectLeafIds } from "./pane-tree";
 
 interface Session {
   term: Terminal;
@@ -36,6 +39,21 @@ interface Session {
   disposed: boolean;
   /** the shell process has exited (user typed `exit` or it died) */
   exited: boolean;
+  /**
+   * Viewport scroll state captured at detach so we can restore it on the next
+   * attach. The browser zeroes scrollTop on every scrollable div inside a
+   * detached subtree, which would otherwise snap xterm to the top of the
+   * scrollback whenever the user switches tabs.
+   */
+  savedViewportY?: number;
+  savedAtBottom?: boolean;
+  /**
+   * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
+   * refreshed on every prompt. This is how we know a pane's *real* cwd —
+   * tauri-plugin-pty's `pty.pid` is an internal session handle, not the OS
+   * pid, so /proc/<pid>/cwd and `lsof -p <pid>` can't be used directly.
+   */
+  shellCwd?: string;
 }
 
 /**
@@ -142,7 +160,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     cursorBlink: true,
     allowProposedApi: true,
     theme: toXtermTheme(theme.palette),
-    scrollback: 10000,
+    scrollback: resolveScrollback(useSettingsStore.getState().scrollbackLines),
   });
   const fit = new FitAddon();
   const serialize = new SerializeAddon();
@@ -161,13 +179,67 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   }
 
   const { cmd, args } = pickShell();
-  const resolvedCwd = cwd && cwd !== "~" ? cwd : undefined;
+  // Apply the user's default-cwd policy. The same setting governs Cmd+T,
+  // the +-button, and the restore-on-launch path because all three end up
+  // here. `home` and a blank `fixed` collapse to undefined so portable-pty
+  // inherits the user's HOME via getpwuid.
+  const { defaultCwdMode, defaultCwdFixed } = useSettingsStore.getState();
+  let effectiveCwd = cwd;
+  if (defaultCwdMode === "home") {
+    effectiveCwd = "~";
+  } else if (defaultCwdMode === "fixed") {
+    const trimmed = defaultCwdFixed.trim();
+    effectiveCwd = trimmed || "~";
+  }
+  const resolvedCwd =
+    effectiveCwd && effectiveCwd !== "~" ? effectiveCwd : undefined;
 
   const pty = spawn(cmd, args, {
     cols: term.cols || 80,
     rows: term.rows || 24,
     cwd: resolvedCwd,
-    env: { ...((globalThis as any).process?.env ?? {}), TERM: "xterm-256color" },
+    // TERM_PROGRAM=Apple_Terminal makes /etc/zshrc (which on macOS ends with
+    // `. /etc/zshrc_$TERM_PROGRAM`) install `update_terminal_cwd` as a precmd
+    // hook. That hook emits OSC 7 on every prompt, which the OSC handler
+    // below turns into a live `shellCwd` per pane — replacing the previous
+    // lsof/pid path that never worked (plugin-pty's `pid` is a handle, not
+    // an OS pid). On Linux distros that ship a similar zshrc hook this is a
+    // no-op; on bare systems the lsof fallback still kicks in.
+    env: {
+      ...((globalThis as any).process?.env ?? {}),
+      TERM: "xterm-256color",
+      TERM_PROGRAM: "Apple_Terminal",
+    },
+  });
+
+  // Capture OSC 7 (`\e]7;file://host/percent-encoded-path\a`) emitted by the
+  // shell on each prompt. Standard mechanism used by Apple Terminal, iTerm2,
+  // Wezterm, Kitty, GNOME Terminal (via VTE) etc. Returning true tells xterm
+  // we consumed the sequence so it isn't dispatched anywhere else.
+  term.parser.registerOscHandler(7, (data) => {
+    if (!data.startsWith("file://")) return false;
+    const slash = data.indexOf("/", "file://".length);
+    if (slash === -1) return false;
+    try {
+      const path = decodeURIComponent(data.slice(slash));
+      if (s) s.shellCwd = path;
+    } catch {
+      /* malformed percent-encoding — leave shellCwd untouched */
+    }
+    return true;
+  });
+
+  // Multi-line input bridge for TUIs (Claude Code, Ink-based prompts, fish/zsh
+  // continuation, etc.): plain Enter sends CR (submit). Cmd/Ctrl/Shift+Enter
+  // sends ESC+CR — the canonical Alt+Enter sequence those apps interpret as
+  // "newline within input" rather than submit.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown" || e.key !== "Enter") return true;
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      pty.write("\x1b\r");
+      return false; // skip xterm's default \r dispatch
+    }
+    return true;
   });
 
   // wire data both directions.
@@ -205,6 +277,18 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   requestAnimationFrame(() => {
     try {
       s.fit.fit();
+      // Browsers reset scrollTop on every scrollable child of a detached
+      // subtree, so xterm's viewport is sitting at row 0 right now. Push it
+      // back to where the user left it. If they were tailing the live prompt,
+      // re-pin to bottom — baseY can shift after a fit, and the user expects
+      // to keep seeing fresh output, not whatever the old absolute line was.
+      if (s.savedAtBottom) {
+        s.term.scrollToBottom();
+      } else if (typeof s.savedViewportY === "number") {
+        s.term.scrollToLine(s.savedViewportY);
+      }
+      s.savedViewportY = undefined;
+      s.savedAtBottom = undefined;
       // don't steal focus from an open rename/search input (xterm's textarea
       // is allowed — that's the terminal itself getting focus).
       const ae = document.activeElement as HTMLElement | null;
@@ -224,6 +308,13 @@ export function detachSession(tabId: string) {
   const s = sessions.get(tabId);
   if (s && s.el.parentElement) {
     persist(tabId, s);
+    try {
+      const buf = s.term.buffer.active;
+      s.savedViewportY = buf.viewportY;
+      s.savedAtBottom = buf.viewportY === buf.baseY;
+    } catch {
+      /* buffer not ready */
+    }
     s.el.parentElement.removeChild(s.el);
   }
 }
@@ -330,6 +421,85 @@ export function persistAllSessions() {
 }
 
 /**
+ * Resolve the real current working directory of a session's shell.
+ *
+ * Preferred path: the shell tells us via OSC 7 on every prompt, captured into
+ * `s.shellCwd`. That works for any platform where the user's shell init emits
+ * OSC 7 — on macOS we trigger it by setting `TERM_PROGRAM=Apple_Terminal` so
+ * `/etc/zshrc_Apple_Terminal` installs the hook automatically.
+ *
+ * Fallback: ask the OS by pid. Note this is currently dead code with
+ * tauri-plugin-pty, since `s.pty.pid` is a session-handle, not an OS pid —
+ * left here for future work that exposes the real pid or for shells that
+ * don't emit OSC 7.
+ */
+export async function getSessionCwd(paneId: string): Promise<string | null> {
+  const s = sessions.get(paneId);
+  if (!s || s.disposed) return null;
+  if (s.shellCwd) return s.shellCwd;
+  const pid = s.pty.pid;
+  if (typeof pid !== "number" || pid <= 0) return null;
+  try {
+    const cwd = await invoke<string>("process_cwd", { pid });
+    return cwd && cwd.trim() ? cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add a new tab in `workspaceId`, inheriting the cwd of that workspace's
+ * currently active pane. Probes the real shell cwd first; falls back to the
+ * tab's last-known cwd. Inheritance is scoped to the given workspace, so
+ * switching workspaces doesn't leak cwd across them.
+ */
+export async function addTabInheritingCwd(workspaceId: string) {
+  const store = useWorkspaceStore.getState();
+  const ws = store.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  let cwd: string | undefined;
+  const activeTab = ws.tabs.find((t) => t.id === ws.activeTabId);
+  if (activeTab) {
+    const real = await getSessionCwd(activeTab.activePaneId);
+    if (real) cwd = real;
+    else if (activeTab.cwd && activeTab.cwd !== "~") cwd = activeTab.cwd;
+  }
+  store.addTab(workspaceId, undefined, cwd);
+}
+
+/** Walk every live session, query its real cwd, and push it into the store. */
+let cwdSnapshotInFlight = false;
+export async function snapshotAllCwds() {
+  if (cwdSnapshotInFlight) return;
+  cwdSnapshotInFlight = true;
+  try {
+    const store = useWorkspaceStore.getState();
+    const paneIds = Array.from(sessions.keys());
+    const cwds = await Promise.all(paneIds.map(getSessionCwd));
+    for (let i = 0; i < paneIds.length; i++) {
+      const paneId = paneIds[i];
+      const cwd = cwds[i];
+      if (!cwd) continue;
+      // locate which workspace/tab owns this paneId so the store action knows
+      // where to write. paneId is unique across the whole tree.
+      for (const w of store.workspaces) {
+        let found = false;
+        for (const t of w.tabs) {
+          if (collectLeafIds(t.root).includes(paneId)) {
+            store.updatePaneCwd(w.id, t.id, paneId, cwd);
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+    }
+  } finally {
+    cwdSnapshotInFlight = false;
+  }
+}
+
+/**
  * Apply the current appearance settings to the app chrome and every live
  * terminal. Called whenever theme / font / font size changes so the update is
  * instant, without re-spawning shells.
@@ -339,11 +509,15 @@ export function applyAppearance() {
   applyChromeVars(theme.palette);
   applyDividerVars();
   const xtermTheme = toXtermTheme(theme.palette);
+  const scrollback = resolveScrollback(
+    useSettingsStore.getState().scrollbackLines
+  );
   for (const [, s] of sessions) {
     if (s.disposed) continue;
     s.term.options.theme = xtermTheme;
     s.term.options.fontFamily = font.stack;
     s.term.options.fontSize = fontSize;
+    s.term.options.scrollback = scrollback;
     try {
       s.fit.fit();
     } catch {
@@ -362,8 +536,18 @@ function applyDividerVars() {
 }
 
 // Autosave every 15s and flush once more right before the window goes away,
-// so a crash or hard-quit still leaves a recent snapshot to restore.
+// so a crash or hard-quit still leaves a recent snapshot to restore. Cwd is
+// captured on the same cadence so restoring a session lands in the directory
+// the user actually `cd`'d to, not the one the shell was originally spawned in.
 if (typeof window !== "undefined") {
-  window.setInterval(persistAllSessions, 15_000);
-  window.addEventListener("beforeunload", persistAllSessions);
+  window.setInterval(() => {
+    persistAllSessions();
+    void snapshotAllCwds();
+  }, 15_000);
+  window.addEventListener("beforeunload", () => {
+    persistAllSessions();
+    // beforeunload can't await — fire-and-forget; we rely on the 15s tick to
+    // catch the recent state in practice.
+    void snapshotAllCwds();
+  });
 }

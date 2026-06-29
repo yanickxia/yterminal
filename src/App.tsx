@@ -5,9 +5,9 @@ import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
-import { disposeSession, applyAppearance, initShell } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance, initShell, addTabInheritingCwd } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
-import { pruneScrollback } from "./lib/scrollback";
+import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
 import { registerSystemFonts } from "./lib/themes";
 import { detectSystemFonts } from "./lib/system-fonts";
@@ -19,6 +19,7 @@ export default function App() {
   const closePane = useWorkspaceStore((s) => s.closePane);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
+  const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
@@ -40,6 +41,11 @@ export default function App() {
       // (config.ts keeps any non-empty string), so we can defer font detection
       // to after the UI is up.
       await loadConfigFromDisk();
+      if (cancelled) return;
+      // Prime the in-memory scrollback cache from SQLite BEFORE any pane mounts,
+      // so loadScrollback (which the React lifecycle calls synchronously) sees
+      // the saved data. Also handles the one-time localStorage migration.
+      await preloadScrollbacks();
       if (cancelled) return;
       ensureSeedWorkspace();
       // sync app-chrome colors to the saved theme before any terminal opens
@@ -64,6 +70,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Suppress the WKWebView native context menu (Cut/Copy/Paste/Spelling/…)
+  // globally. macOS treats Ctrl+click — and sometimes Ctrl-modified keys on
+  // editable text — as a secondary click, which would otherwise pop the
+  // system menu on top of the terminal. Our own right-click menus (TabBar,
+  // WorkspaceSidebar) handle onContextMenu themselves, so blocking the
+  // default here doesn't break them.
+  useEffect(() => {
+    const block = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("contextmenu", block);
+    return () => window.removeEventListener("contextmenu", block);
   }, []);
 
   // re-read the config file whenever the window regains focus, so syncing the
@@ -92,6 +110,20 @@ export default function App() {
       if (key === "k") {
         e.preventDefault();
         setPaletteOpen((open) => !open);
+        return;
+      }
+      // Cmd/Ctrl+N: new workspace. Independent of any active workspace/tab
+      // so it works from a fully empty state too.
+      if (key === "n" && !e.shiftKey) {
+        e.preventDefault();
+        addWorkspace();
+        return;
+      }
+      // Cmd/Ctrl+T: new tab in the current workspace, inheriting the active
+      // pane's cwd. Cwd inheritance is scoped to this workspace only.
+      if (key === "t" && !e.shiftKey) {
+        e.preventDefault();
+        if (ws) void addTabInheritingCwd(ws.id);
         return;
       }
       if (!ws || !ws.activeTabId) return;
@@ -133,7 +165,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ws, workspaces, splitActivePane, closePane, removeTab, removeWorkspace]);
+  }, [ws, workspaces, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace]);
 
   // refit terminals whenever the active tab's tree changes
   useEffect(() => {

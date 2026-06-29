@@ -41,6 +41,8 @@ export interface Tab {
   root: PaneTree;
   /** id of the currently focused pane (leaf id) */
   activePaneId: string;
+  /** pinned tabs are rendered before unpinned ones and survive bulk-close */
+  pinned?: boolean;
 }
 
 export interface Workspace {
@@ -52,6 +54,8 @@ export interface Workspace {
   tabs: Tab[];
   /** id of the currently visible tab inside this workspace */
   activeTabId: string | null;
+  /** pinned workspaces are rendered before unpinned ones and survive bulk-close */
+  pinned?: boolean;
 }
 
 export interface PersistedState {

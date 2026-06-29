@@ -4,18 +4,19 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Tab, Workspace } from "../lib/types";
 import { uid } from "../lib/uid";
-import { makeLeaf, splitPane, removePane, setSizesAt } from "../lib/pane-tree";
+import { makeLeaf, splitPane, removePane, setSizesAt, setLeafCwd } from "../lib/pane-tree";
 
 function defaultCwd(): string {
   return "~";
 }
 
-function makeTab(name: string, cwd = defaultCwd()): Tab {
-  const leaf = makeLeaf(cwd);
+function makeTab(name: string, cwd?: string): Tab {
+  const resolved = cwd && cwd.trim() ? cwd : defaultCwd();
+  const leaf = makeLeaf(resolved);
   return {
     id: uid("tab"),
     name,
-    cwd,
+    cwd: resolved,
     root: leaf,
     activePaneId: leaf.id,
   };
@@ -42,14 +43,22 @@ interface WorkspaceState {
   setWorkspaceIcon: (id: string, icon: string) => void;
   setActiveWorkspace: (id: string) => void;
   reorderWorkspace: (fromId: string, toId: string) => void;
+  toggleWorkspacePin: (id: string) => void;
+  closeOtherWorkspaces: (keepId: string) => void;
+  closeWorkspacesBefore: (anchorId: string) => void;
+  closeWorkspacesAfter: (anchorId: string) => void;
 
   // ---- tab ops ----
-  addTab: (workspaceId: string, name?: string) => void;
+  addTab: (workspaceId: string, name?: string, cwd?: string) => void;
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   setTabIcon: (workspaceId: string, tabId: string, icon: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
   reorderTab: (workspaceId: string, fromId: string, toId: string) => void;
+  toggleTabPin: (workspaceId: string, tabId: string) => void;
+  closeOtherTabs: (workspaceId: string, keepTabId: string) => void;
+  closeTabsBefore: (workspaceId: string, anchorTabId: string) => void;
+  closeTabsAfter: (workspaceId: string, anchorTabId: string) => void;
 
   // ---- pane ops ----
   splitActivePane: (
@@ -64,6 +73,13 @@ interface WorkspaceState {
     tabId: string,
     splitId: string,
     sizes: number[]
+  ) => void;
+  /** record the *current* shell cwd on a leaf so a restart respawns there. */
+  updatePaneCwd: (
+    workspaceId: string,
+    tabId: string,
+    paneId: string,
+    cwd: string
   ) => void;
 
   // ---- selectors ----
@@ -97,6 +113,29 @@ function moveById<T extends { id: string }>(
   const next = [...list];
   const [moved] = next.splice(from, 1);
   next.splice(to, 0, moved);
+  return next;
+}
+
+/**
+ * Toggle `pinned` on the item with `id` and reinsert it at the boundary
+ * between pinned and unpinned segments — so pinned items always appear before
+ * unpinned ones in render order, with relative order otherwise preserved.
+ */
+function togglePinAndReorder<T extends { id: string; pinned?: boolean }>(
+  list: T[],
+  id: string
+): T[] {
+  const idx = list.findIndex((x) => x.id === id);
+  if (idx === -1) return list;
+  const next = [...list];
+  const flipped = { ...next[idx], pinned: !next[idx].pinned };
+  next.splice(idx, 1);
+  // boundary is the index of the first unpinned item in the remaining list;
+  // both "newly pinned" and "newly unpinned" land at this exact index, which
+  // places them at the end of the pinned segment / start of the unpinned one.
+  let boundary = next.findIndex((x) => !x.pinned);
+  if (boundary === -1) boundary = next.length;
+  next.splice(boundary, 0, flipped);
   return next;
 }
 
@@ -146,11 +185,57 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           workspaces: moveById(s.workspaces, fromId, toId),
         })),
 
-      addTab: (workspaceId, name) =>
+      toggleWorkspacePin: (id) =>
+        set((s) => ({ workspaces: togglePinAndReorder(s.workspaces, id) })),
+
+      closeOtherWorkspaces: (keepId) =>
+        set((s) => {
+          const workspaces = s.workspaces.filter(
+            (w) => w.id === keepId || w.pinned
+          );
+          const activeWorkspaceId = workspaces.some(
+            (w) => w.id === s.activeWorkspaceId
+          )
+            ? s.activeWorkspaceId
+            : keepId;
+          return { workspaces, activeWorkspaceId };
+        }),
+
+      closeWorkspacesBefore: (anchorId) =>
+        set((s) => {
+          const idx = s.workspaces.findIndex((w) => w.id === anchorId);
+          if (idx === -1) return s;
+          const workspaces = s.workspaces.filter(
+            (w, i) => i >= idx || w.pinned
+          );
+          const activeWorkspaceId = workspaces.some(
+            (w) => w.id === s.activeWorkspaceId
+          )
+            ? s.activeWorkspaceId
+            : anchorId;
+          return { workspaces, activeWorkspaceId };
+        }),
+
+      closeWorkspacesAfter: (anchorId) =>
+        set((s) => {
+          const idx = s.workspaces.findIndex((w) => w.id === anchorId);
+          if (idx === -1) return s;
+          const workspaces = s.workspaces.filter(
+            (w, i) => i <= idx || w.pinned
+          );
+          const activeWorkspaceId = workspaces.some(
+            (w) => w.id === s.activeWorkspaceId
+          )
+            ? s.activeWorkspaceId
+            : anchorId;
+          return { workspaces, activeWorkspaceId };
+        }),
+
+      addTab: (workspaceId, name, cwd) =>
         set((s) => ({
           workspaces: s.workspaces.map((w) => {
             if (w.id !== workspaceId) return w;
-            const tab = makeTab(name ?? "shell");
+            const tab = makeTab(name ?? "shell", cwd);
             return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
           }),
         })),
@@ -199,6 +284,55 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               ? { ...w, tabs: moveById(w.tabs, fromId, toId) }
               : w
           ),
+        })),
+
+      toggleTabPin: (workspaceId, tabId) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) =>
+            w.id === workspaceId
+              ? { ...w, tabs: togglePinAndReorder(w.tabs, tabId) }
+              : w
+          ),
+        })),
+
+      closeOtherTabs: (workspaceId, keepTabId) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const tabs = w.tabs.filter((t) => t.id === keepTabId || t.pinned);
+            const activeTabId = tabs.some((t) => t.id === w.activeTabId)
+              ? w.activeTabId
+              : keepTabId;
+            return { ...w, tabs, activeTabId };
+          }),
+        })),
+
+      closeTabsBefore: (workspaceId, anchorTabId) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const idx = w.tabs.findIndex((t) => t.id === anchorTabId);
+            if (idx === -1) return w;
+            const tabs = w.tabs.filter((t, i) => i >= idx || t.pinned);
+            const activeTabId = tabs.some((t) => t.id === w.activeTabId)
+              ? w.activeTabId
+              : anchorTabId;
+            return { ...w, tabs, activeTabId };
+          }),
+        })),
+
+      closeTabsAfter: (workspaceId, anchorTabId) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const idx = w.tabs.findIndex((t) => t.id === anchorTabId);
+            if (idx === -1) return w;
+            const tabs = w.tabs.filter((t, i) => i <= idx || t.pinned);
+            const activeTabId = tabs.some((t) => t.id === w.activeTabId)
+              ? w.activeTabId
+              : anchorTabId;
+            return { ...w, tabs, activeTabId };
+          }),
         })),
 
       splitActivePane: (workspaceId, tabId, direction) =>
@@ -258,6 +392,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
             ...t,
             root: setSizesAt(t.root, splitId, sizes),
+          })),
+        })),
+
+      updatePaneCwd: (workspaceId, tabId, paneId, cwd) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            root: setLeafCwd(t.root, paneId, cwd),
+            // also bump tab.cwd when the snapshot is for the tab's active pane,
+            // so future new-tab calls fall back to the most relevant directory
+            cwd: paneId === t.activePaneId ? cwd : t.cwd,
           })),
         })),
 

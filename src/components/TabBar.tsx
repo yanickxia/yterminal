@@ -1,18 +1,22 @@
 import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
-import type { Workspace } from "../lib/types";
-import { disposeSession } from "../lib/terminal-manager";
+import type { Tab, Workspace } from "../lib/types";
+import { addTabInheritingCwd, disposeSession } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { EmojiPicker } from "./EmojiPicker";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 export function TabBar({ workspace }: { workspace: Workspace }) {
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
-  const addTab = useWorkspaceStore((s) => s.addTab);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const renameTab = useWorkspaceStore((s) => s.renameTab);
   const setTabIcon = useWorkspaceStore((s) => s.setTabIcon);
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
   const reorderTab = useWorkspaceStore((s) => s.reorderTab);
+  const toggleTabPin = useWorkspaceStore((s) => s.toggleTabPin);
+  const closeOtherTabs = useWorkspaceStore((s) => s.closeOtherTabs);
+  const closeTabsBefore = useWorkspaceStore((s) => s.closeTabsBefore);
+  const closeTabsAfter = useWorkspaceStore((s) => s.closeTabsAfter);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -28,6 +32,11 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const [iconPicker, setIconPicker] = useState<{
     id: string;
     anchor: { x: number; y: number };
+  } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{
+    tabId: string;
+    x: number;
+    y: number;
   } | null>(null);
 
   function toggleIconPicker(tabId: string, e: MouseEvent) {
@@ -73,6 +82,66 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
     removeTab(workspace.id, tabId);
   }
 
+  /** Dispose all sessions in a set of tabs (used by bulk-close menu items). */
+  function disposeTabs(tabs: Tab[]) {
+    for (const t of tabs) {
+      for (const paneId of collectLeafIds(t.root)) disposeSession(paneId);
+    }
+  }
+
+  function buildMenu(tab: Tab): MenuItem[] {
+    const idx = workspace.tabs.findIndex((t) => t.id === tab.id);
+    const closableOthers = workspace.tabs.filter(
+      (t) => t.id !== tab.id && !t.pinned
+    );
+    const closableBefore = workspace.tabs.filter(
+      (t, i) => i < idx && !t.pinned
+    );
+    const closableAfter = workspace.tabs.filter(
+      (t, i) => i > idx && !t.pinned
+    );
+    return [
+      {
+        label: tab.pinned ? "Unpin" : "Pin",
+        onClick: () => toggleTabPin(workspace.id, tab.id),
+      },
+      {
+        label: "Rename",
+        onClick: () => beginEdit(tab.id, tab.name),
+      },
+      { separator: true },
+      {
+        label: "Close",
+        danger: true,
+        onClick: () => closeTab(tab.id),
+      },
+      {
+        label: "Close Others",
+        disabled: closableOthers.length === 0,
+        onClick: () => {
+          disposeTabs(closableOthers);
+          closeOtherTabs(workspace.id, tab.id);
+        },
+      },
+      {
+        label: "Close Before",
+        disabled: closableBefore.length === 0,
+        onClick: () => {
+          disposeTabs(closableBefore);
+          closeTabsBefore(workspace.id, tab.id);
+        },
+      },
+      {
+        label: "Close After",
+        disabled: closableAfter.length === 0,
+        onClick: () => {
+          disposeTabs(closableAfter);
+          closeTabsAfter(workspace.id, tab.id);
+        },
+      },
+    ];
+  }
+
   function onDrop(targetId: string) {
     if (dragId && dragId !== targetId) {
       reorderTab(workspace.id, dragId, targetId);
@@ -90,7 +159,8 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
             "tab" +
             (t.id === workspace.activeTabId ? " active" : "") +
             (t.id === dragId ? " dragging" : "") +
-            (t.id === overId && dragId && t.id !== dragId ? " drag-over" : "")
+            (t.id === overId && dragId && t.id !== dragId ? " drag-over" : "") +
+            (t.pinned ? " pinned" : "")
           }
           draggable={editingId !== t.id}
           onDragStart={(e) => {
@@ -112,6 +182,11 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
           }}
           onClick={() => onTabClick(t.id, t.name)}
           onDoubleClick={() => beginEdit(t.id, t.name)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setActiveTab(workspace.id, t.id);
+            setCtxMenu({ tabId: t.id, x: e.clientX, y: e.clientY });
+          }}
         >
           {editingId === t.id ? (
             <input
@@ -128,6 +203,7 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
             />
           ) : (
             <>
+              {t.pinned && <span className="tab-pin" title="Pinned">📌</span>}
               {t.icon ? (
                 <button
                   className="tab-icon"
@@ -169,8 +245,8 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
       ))}
       <button
         className="icon-btn tab-add"
-        title="New tab"
-        onClick={() => addTab(workspace.id)}
+        title="New tab (⌘T)"
+        onClick={() => addTabInheritingCwd(workspace.id)}
       >
         +
       </button>
@@ -199,6 +275,19 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
           </button>
         </>
       )}
+
+      {ctxMenu && (() => {
+        const tab = workspace.tabs.find((t) => t.id === ctxMenu.tabId);
+        if (!tab) return null;
+        return (
+          <ContextMenu
+            items={buildMenu(tab)}
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            onClose={() => setCtxMenu(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

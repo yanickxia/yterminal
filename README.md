@@ -214,5 +214,5 @@ works on most macOS versions.
 - [x] Drag-and-drop reorder — tabs within a workspace and workspaces in the
       sidebar, via native HTML5 DnD
 - [x] CI — automated multi-platform release builds via GitHub Actions
-- [ ] Scale scrollback to a Rust + SQLite store (unbounded history, cross-device)
+- [x] Scale scrollback to a Rust + SQLite store (unbounded history)
 - [ ] SSH sessions
