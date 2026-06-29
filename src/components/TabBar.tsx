@@ -207,16 +207,22 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
               {t.icon ? (
                 <button
                   className="tab-icon"
-                  title="Change icon"
-                  onClick={(e) => toggleIconPicker(t.id, e)}
+                  title="Right-click to change icon"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    toggleIconPicker(t.id, e);
+                  }}
                 >
                   {t.icon}
                 </button>
               ) : (
                 <button
                   className="tab-icon tab-icon-add"
-                  title="Set icon"
-                  onClick={(e) => toggleIconPicker(t.id, e)}
+                  title="Right-click to set icon"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    toggleIconPicker(t.id, e);
+                  }}
                 >
                   ☺
                 </button>

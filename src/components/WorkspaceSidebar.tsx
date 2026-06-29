@@ -330,8 +330,11 @@ export function WorkspaceSidebar({
               <>
                 <button
                   className="ws-icon"
-                  title="Set icon"
-                  onClick={(e) => toggleIconPicker(w.id, e)}
+                  title="Right-click to set icon"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    toggleIconPicker(w.id, e);
+                  }}
                 >
                   {railGlyph(w.name, w.icon)}
                 </button>
