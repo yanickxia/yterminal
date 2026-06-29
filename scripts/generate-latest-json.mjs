@@ -150,6 +150,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const manifest = await buildManifest(release, fetchSig);
 
+  // Draft releases have no publishedAt yet; use the current time so the
+  // manifest carries a valid ISO 8601 pub_date before the draft is published.
+  if (!manifest.pub_date) {
+    manifest.pub_date = new Date().toISOString();
+  }
+
   // buildManifest used the release asset URLs, which for a draft contain an
   // untagged-* slug that breaks once the release is published. Rewrite them to
   // stable tag-based URLs.
