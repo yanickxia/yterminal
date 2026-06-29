@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "os:default",
-    "pty:default"
+    "pty:default",
+    "updater:default",
+    "process:default"
   ]
 }
