@@ -1,3 +1,14 @@
+//! Native pseudo-terminal commands for the frontend.
+//!
+//! Replaces the `tauri-plugin-pty` plugin (and its tauri-pty JS package). We
+//! own this layer outright so the frontend can rely on `pty.pid` being a real
+//! OS child pid — that's what makes `process_cwd(pid)` (lsof / /proc) able to
+//! resolve a session's actual cwd, which the upstream plugin foreclosed by
+//! returning an internal session counter instead.
+//!
+//! Commands are exposed at the top level (no plugin namespace), invoked from
+//! TS as `invoke('pty_spawn', ...)` etc.
+
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -8,16 +19,14 @@ use std::{
 };
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, PtyPair, PtySize};
-use tauri::{
-    async_runtime::{Mutex, RwLock},
-    plugin::{Builder, TauriPlugin},
-    AppHandle, Manager, Runtime,
-};
+use tauri::async_runtime::{Mutex, RwLock};
 
 #[derive(Default)]
-struct PluginState {
-    session_id: AtomicU32,
-    sessions: RwLock<BTreeMap<PtyHandler, Arc<Session>>>,
+pub struct PtyState {
+    /// Fallback id source for the (rare) case where portable-pty cannot give
+    /// us a real OS pid. Keeps every session keyable even on broken platforms.
+    fallback_id: AtomicU32,
+    sessions: RwLock<BTreeMap<u32, Arc<Session>>>,
 }
 
 struct Session {
@@ -28,34 +37,17 @@ struct Session {
     reader: Mutex<Box<dyn std::io::Read + Send>>,
 }
 
-type PtyHandler = u32;
-
 #[tauri::command]
-async fn spawn<R: Runtime>(
+pub async fn pty_spawn(
     file: String,
     args: Vec<String>,
-    term_name: Option<String>,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
     env: BTreeMap<String, String>,
-    encoding: Option<String>,
-    handle_flow_control: Option<bool>,
-    flow_control_pause: Option<String>,
-    flow_control_resume: Option<String>,
-
-    state: tauri::State<'_, PluginState>,
-    _app_handle: AppHandle<R>,
-) -> Result<PtyHandler, String> {
-    // TODO: Support these parameters
-    let _ = term_name;
-    let _ = encoding;
-    let _ = handle_flow_control;
-    let _ = flow_control_pause;
-    let _ = flow_control_resume;
-
+    state: tauri::State<'_, PtyState>,
+) -> Result<u32, String> {
     let pty_system = native_pty_system();
-    // Create PTY, get the writer and reader
     let pair = pty_system
         .openpty(PtySize {
             rows,
@@ -76,40 +68,43 @@ async fn spawn<R: Runtime>(
         cmd.env(OsString::from(k), OsString::from(v));
     }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    // The upstream JS API exposes this value as `pty.pid`. Returning an
-    // internal session counter makes it impossible for embedders to query the
-    // shell process (for example to read its current working directory). Use
-    // the real child pid as the handler key whenever portable-pty can provide
-    // one; all plugin commands still work because the sessions map is keyed by
-    // the same value we return to the frontend.
-    let handler = child
-        .process_id()
-        .unwrap_or_else(|| state.session_id.fetch_add(1, Ordering::Relaxed));
+
+    // Use the real OS pid as the session handle so the frontend can pass it
+    // straight into `process_cwd(pid)`. Fallback path only fires if portable-pty
+    // can't surface a pid (shouldn't happen on macOS/Linux/Windows ConPTY).
+    let id = match child.process_id() {
+        Some(pid) => pid,
+        None => {
+            let synthetic = state.fallback_id.fetch_add(1, Ordering::Relaxed);
+            eprintln!("pty_spawn: no OS pid from portable-pty, using synthetic id {synthetic}");
+            synthetic
+        }
+    };
     let child_killer = child.clone_killer();
 
-    let pair = Arc::new(Session {
+    let session = Arc::new(Session {
         pair: Mutex::new(pair),
         child: Mutex::new(child),
         child_killer: Mutex::new(child_killer),
         writer: Mutex::new(writer),
         reader: Mutex::new(reader),
     });
-    state.sessions.write().await.insert(handler, pair);
-    Ok(handler)
+    state.sessions.write().await.insert(id, session);
+    Ok(id)
 }
 
 #[tauri::command]
-async fn write(
-    pid: PtyHandler,
+pub async fn pty_write(
+    pid: u32,
     data: String,
-    state: tauri::State<'_, PluginState>,
+    state: tauri::State<'_, PtyState>,
 ) -> Result<(), String> {
     let session = state
         .sessions
         .read()
         .await
         .get(&pid)
-        .ok_or("Unavaliable pid")?
+        .ok_or("Unavailable pid")?
         .clone();
     session
         .writer
@@ -120,17 +115,18 @@ async fn write(
     Ok(())
 }
 
+/// Long-poll: blocks until the pty has data (or EOF). Frontend loops on this.
 #[tauri::command]
-async fn read(
-    pid: PtyHandler,
-    state: tauri::State<'_, PluginState>,
+pub async fn pty_read(
+    pid: u32,
+    state: tauri::State<'_, PtyState>,
 ) -> Result<tauri::ipc::Response, String> {
     let session = state
         .sessions
         .read()
         .await
         .get(&pid)
-        .ok_or("Unavaliable pid")?
+        .ok_or("Unavailable pid")?
         .clone();
     let mut buf = vec![0u8; 4096];
     let n = session
@@ -148,18 +144,18 @@ async fn read(
 }
 
 #[tauri::command]
-async fn resize(
-    pid: PtyHandler,
+pub async fn pty_resize(
+    pid: u32,
     cols: u16,
     rows: u16,
-    state: tauri::State<'_, PluginState>,
+    state: tauri::State<'_, PtyState>,
 ) -> Result<(), String> {
     let session = state
         .sessions
         .read()
         .await
         .get(&pid)
-        .ok_or("Unavaliable pid")?
+        .ok_or("Unavailable pid")?
         .clone();
     session
         .pair
@@ -177,13 +173,13 @@ async fn resize(
 }
 
 #[tauri::command]
-async fn kill(pid: PtyHandler, state: tauri::State<'_, PluginState>) -> Result<(), String> {
+pub async fn pty_kill(pid: u32, state: tauri::State<'_, PtyState>) -> Result<(), String> {
     let session = state
         .sessions
         .read()
         .await
         .get(&pid)
-        .ok_or("Unavaliable pid")?
+        .ok_or("Unavailable pid")?
         .clone();
     session
         .child_killer
@@ -194,34 +190,22 @@ async fn kill(pid: PtyHandler, state: tauri::State<'_, PluginState>) -> Result<(
     Ok(())
 }
 
+/// Long-poll: blocks until the child exits, returns the exit code.
 #[tauri::command]
-async fn exitstatus(pid: PtyHandler, state: tauri::State<'_, PluginState>) -> Result<u32, String> {
+pub async fn pty_exitstatus(pid: u32, state: tauri::State<'_, PtyState>) -> Result<u32, String> {
     let session = state
         .sessions
         .read()
         .await
         .get(&pid)
-        .ok_or("Unavaliable pid")?
+        .ok_or("Unavailable pid")?
         .clone();
-    let exitstatus = session
+    let exit_code = session
         .child
         .lock()
         .await
         .wait()
         .map_err(|e| e.to_string())?
         .exit_code();
-    Ok(exitstatus)
-}
-
-/// Initializes the plugin.
-pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::<R>::new("pty")
-        .invoke_handler(tauri::generate_handler![
-            spawn, write, read, resize, kill, exitstatus
-        ])
-        .setup(|app_handle, _api| {
-            app_handle.manage(PluginState::default());
-            Ok(())
-        })
-        .build()
+    Ok(exit_code)
 }

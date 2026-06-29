@@ -10,7 +10,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
-import { spawn, type IPty } from "tauri-pty";
+import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -62,9 +62,8 @@ interface Session {
   savedAtBottom?: boolean;
   /**
    * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
-   * refreshed on every prompt. This is how we know a pane's *real* cwd —
-   * yterminal patches tauri-plugin-pty to expose the OS child pid, so when
-   * this signal is stale or absent we can also query the process directly.
+   * refreshed on every prompt. Our native pty layer exposes the OS child pid,
+   * so when this signal is stale or absent we can query the process directly.
    */
   shellCwd?: string;
 }
@@ -348,7 +347,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
 
   // wire data both directions.
-  // tauri-pty emits Uint8Array; xterm's write() accepts Uint8Array directly.
+  // pty.onData yields Uint8Array; xterm's write() accepts Uint8Array directly.
   pty.onData((data: Uint8Array) => term.write(data));
   term.onWriteParsed(() => {
     if (s) syncXtermViewport(s);
@@ -552,10 +551,10 @@ export function persistAllSessions() {
 /**
  * Resolve the real current working directory of a session's shell.
  *
- * Preferred path: ask the OS by pid. The bundled tauri-plugin-pty patch keys
- * sessions by the real child process id, so `s.pty.pid` can be passed to
- * `process_cwd`. OSC 7 remains as a fallback for environments where process
- * cwd probing is unsupported.
+ * Preferred path: ask the OS by pid. Our native pty layer keys sessions by the
+ * real child process id, so `s.pty.pid` can be passed to `process_cwd`. OSC 7
+ * remains as a fallback for environments where process cwd probing is
+ * unsupported.
  */
 export async function getSessionCwd(paneId: string): Promise<string | null> {
   const s = sessions.get(paneId);

@@ -2584,8 +2584,6 @@ dependencies = [
  "libc",
  "log",
  "nix 0.28.0",
- "serde",
- "serde_derive",
  "serial2",
  "shared_library",
  "shell-words",
@@ -3719,17 +3717,6 @@ version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55511a7bf6cd70c8767b02c97bf8134fa434daf3926cfc1be0a0f94132d165a"
 dependencies = [
- "tauri",
- "tauri-plugin",
-]
-
-[[package]]
-name = "tauri-plugin-pty"
-version = "0.3.0"
-dependencies = [
- "portable-pty",
- "serde",
- "serde_json",
  "tauri",
  "tauri-plugin",
 ]
@@ -5217,6 +5204,7 @@ name = "yterminal"
 version = "0.5.2"
 dependencies = [
  "font-kit",
+ "portable-pty",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5224,7 +5212,6 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-os",
  "tauri-plugin-process",
- "tauri-plugin-pty",
  "tauri-plugin-updater",
 ]
 

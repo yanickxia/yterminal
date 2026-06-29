@@ -11,11 +11,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-os = "2"
-tauri-plugin-pty = { path = "../vendor/tauri-plugin-pty" }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# pseudo-terminal: spawn the user's shell, stream IO, propagate resize/exit.
+# upstream `tauri-plugin-pty` wraps this same crate but hides the real OS pid;
+# we depend on portable-pty directly so cwd lookups via /proc and lsof work.
+portable-pty = "0.9"
 # enumerate installed system fonts natively (the WebViews Tauri uses don't
 # expose the Local Font Access API). source-only to keep the build self-contained.
 font-kit = "0.14"

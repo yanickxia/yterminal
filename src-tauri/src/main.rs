@@ -1,11 +1,14 @@
 // yterminal Tauri backend.
-// The heavy lifting (PTY spawn/IO) is provided by tauri-plugin-pty, which the
-// frontend talks to via the `tauri-pty` JS package. We just register plugins.
+// PTY (shell spawn / IO) lives in `pty.rs`. We invoke `portable-pty` directly
+// instead of going through `tauri-plugin-pty`, which exposed an internal
+// session counter as `pty.pid` and broke `process_cwd` lookups.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+
+mod pty;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -177,9 +180,10 @@ fn refresh_fonts() -> Vec<String> {
 ///
 /// Used by the frontend so a new tab can inherit the *actual* cwd of the
 /// active shell (not just the cwd it was spawned in), and so a restarted
-/// session can reopen in the directory where the user left off. The bundled
-/// tauri-plugin-pty patch returns the child process id to the frontend, so this
-/// command receives a real OS pid rather than the plugin's original session id.
+/// session can reopen in the directory where the user left off. Our `pty_spawn`
+/// returns the real OS child pid to the frontend, so this command always
+/// receives a queryable pid (the upstream `tauri-plugin-pty` returned an
+/// internal session counter and made this command effectively dead code).
 ///
 /// macOS: shell out to `lsof -a -p PID -d cwd -F n`. `-F n` formats output as
 ///   `pPID\nfcwd\nn<path>` — we grab the `n`-prefixed line. `lsof` is
@@ -375,8 +379,8 @@ fn scrollback_prune(live_pane_ids: Vec<String>) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(pty::PtyState::default())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_pty::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -390,7 +394,13 @@ fn main() {
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,
-            scrollback_prune
+            scrollback_prune,
+            pty::pty_spawn,
+            pty::pty_read,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            pty::pty_exitstatus
         ])
         .run(tauri::generate_context!())
         .expect("error while running yterminal");
