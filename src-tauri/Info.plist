@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the Tauri-generated Info.plist at bundle time. We only declare
+  the macOS TCC usage descriptions a terminal app realistically needs — these
+  drive the text shown in the system permission prompts when a child shell
+  touches a network share, USB stick, ~/Documents, ~/Downloads, or ~/Desktop.
+
+  Important: declaring these keys does NOT make the prompts stop repeating.
+  TCC persists each grant against the app's code-signature cdhash; ad-hoc /
+  unsigned builds (the default for our CI pipeline) have no stable identity,
+  so the OS re-asks on every launch. The only real fix is signing with a
+  Developer ID + notarization. Until then, users can suppress the prompts by
+  granting access manually in System Settings → Privacy & Security →
+  Files and Folders → yterminal.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>yterminal needs access so the shells you run can read and write files on mounted network shares.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>yterminal needs access so the shells you run can read and write files on USB drives and other removable volumes.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>yterminal needs access so the shells you run can read and write files in your Documents folder.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>yterminal needs access so the shells you run can read and write files in your Downloads folder.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>yterminal needs access so the shells you run can read and write files on your Desktop.</string>
+</dict>
+</plist>

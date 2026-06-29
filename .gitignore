@@ -2,6 +2,8 @@
 node_modules
 # build output
 dist
+# CI updater manifest, regenerated per release
+latest.json
 # rust / tauri
 src-tauri/target
 src-tauri/gen
