@@ -266,18 +266,12 @@ This task requires the maintainer to run a command and copy values into a config
   }));
 
   import { check } from "@tauri-apps/plugin-updater";
-  import { useUpdaterStore } from "./updater-store";
+  import { useUpdaterStore, __resetUpdaterForTests } from "./updater-store";
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // reset store between tests
-    useUpdaterStore.setState({
-      state: "idle",
-      manifest: null,
-      progress: null,
-      errorMessage: null,
-      lastCheckedAt: null,
-    });
+    // reset both store state AND the module-scope pendingUpdate handle
+    __resetUpdaterForTests();
   });
 
   describe("updater-store", () => {
@@ -345,9 +339,10 @@ This task requires the maintainer to run a command and copy values into a config
     dismiss: () => void;
   }
 
-  // The check() call returns an `Update` object whose contentHandle is opaque;
-  // we keep it on the side so startDownload() can use the same instance the
-  // plugin already validated.
+  // The check() call returns an `Update` instance that holds an opaque
+  // IPC handle; we keep it in module scope so startDownload() can use the
+  // same instance the plugin already validated. (It's not serializable,
+  // so it can't live in the persisted Zustand state.)
   let pendingUpdate: Awaited<ReturnType<typeof check>> | null = null;
 
   export const useUpdaterStore = create<UpdaterStore>()(
@@ -438,6 +433,18 @@ This task requires the maintainer to run a command and copy values into a config
       }
     )
   );
+
+  /** Test-only helper. Resets store state AND the module-scope handle. */
+  export function __resetUpdaterForTests(): void {
+    pendingUpdate = null;
+    useUpdaterStore.setState({
+      state: "idle",
+      manifest: null,
+      progress: null,
+      errorMessage: null,
+      lastCheckedAt: null,
+    });
+  }
   ```
 
 - [ ] **Step 4: Run the test, confirm it passes**
@@ -785,12 +792,17 @@ This task requires the maintainer to run a command and copy values into a config
 
 - [ ] **Step 3: Inject `__APP_VERSION__` from Vite**
 
-  Modify `vite.config.ts` to expose the app version at build time. Add a `define` block:
+  Modify `vite.config.ts` to expose the app version at build time. Read `package.json` via `fs.readFileSync` (avoiding the JSON import-attribute syntax, which has shifted between Node versions — `with` is Node 22+, `assert` is deprecated/removed in newer Node):
 
   ```ts
   import { defineConfig } from "vite";
   import react from "@vitejs/plugin-react";
-  import pkg from "./package.json" with { type: "json" };
+  import { readFileSync } from "node:fs";
+  import { fileURLToPath } from "node:url";
+
+  const pkg = JSON.parse(
+    readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf-8"),
+  );
 
   export default defineConfig({
     plugins: [react()],
@@ -801,7 +813,7 @@ This task requires the maintainer to run a command and copy values into a config
   });
   ```
 
-  And add a small TS declaration so the `(window as any)` cast above isn't needed in the long run. Replace `(window as any).__APP_VERSION__ ?? "dev"` with `__APP_VERSION__`, and add to `src/vite-env.d.ts` (create it if missing):
+  And add a small TS declaration so the compiler knows about the global. Replace `(window as any).__APP_VERSION__ ?? "dev"` in the new `UpdateTab` (Task 10 Step 2) with `__APP_VERSION__`, and add to `src/vite-env.d.ts` (create it if missing):
 
   ```ts
   declare const __APP_VERSION__: string;
