@@ -11,3 +11,5 @@ src-tauri/gen
 .DS_Store
 *.log
 .env
+# Claude Code session state / worktrees
+.claude
