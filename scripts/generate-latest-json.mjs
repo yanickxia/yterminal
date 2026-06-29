@@ -37,8 +37,8 @@ export async function buildManifest(release, fetchSig) {
 
   const darwinBundle = findAsset(
     release,
-    (a) => a.name.endsWith(".app.tar.gz") && a.name.includes("universal"),
-    "darwin universal .app.tar.gz"
+    (a) => a.name.endsWith(".app.tar.gz"),
+    "darwin .app.tar.gz"
   );
   const darwinSig = findAsset(
     release,
