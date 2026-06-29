@@ -12,6 +12,8 @@ import { loadConfigFromDisk } from "./lib/config";
 import { registerSystemFonts } from "./lib/themes";
 import { detectSystemFonts } from "./lib/system-fonts";
 import { scheduleAutoCheck } from "./lib/updater-auto-check";
+import { useUpdaterStore } from "./stores/updater-store";
+import { UpdateDialog } from "./components/UpdateDialog";
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -30,6 +32,7 @@ export default function App() {
   // when set, the in-terminal search box is open for this pane id
   const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,6 +100,15 @@ export default function App() {
     window.addEventListener("focus", reload);
     return () => window.removeEventListener("focus", reload);
   }, [ready]);
+
+  // Subscribe to store; show dialog when an update becomes available.
+  useEffect(() => {
+    return useUpdaterStore.subscribe((s, prev) => {
+      if (s.state === "available" && prev.state !== "available") {
+        setUpdateDialogOpen(true);
+      }
+    });
+  }, []);
 
   const ws = workspaces.find((w) => w.id === activeWorkspaceId);
   const activeTab = ws?.tabs.find((t) => t.id === ws.activeTabId);
@@ -225,6 +237,10 @@ export default function App() {
       {paletteOpen && (
         <WorkspacePalette onClose={() => setPaletteOpen(false)} />
       )}
+      <UpdateDialog
+        open={updateDialogOpen}
+        onClose={() => setUpdateDialogOpen(false)}
+      />
     </div>
   );
 }
