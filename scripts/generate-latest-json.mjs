@@ -2,7 +2,12 @@
 // Build latest.json for the Tauri updater from a GitHub release's assets.
 //
 // Usage (in CI):
-//   TAG=v0.4.0 node scripts/generate-latest-json.mjs > latest.json
+//   GITHUB_TOKEN=<token> TAG=v0.4.0 node scripts/generate-latest-json.mjs
+//
+// The release is kept as a draft, so asset downloads must be authenticated
+// via the GitHub API. The emitted manifest uses stable tag-based URLs so it
+// stays valid once the draft is published (draft URLs contain an untagged-*
+// slug that disappears on publish).
 //
 // The pure logic lives in `buildManifest` so it's unit-testable without
 // shelling out to gh / fetching the network.
@@ -103,19 +108,39 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error("TAG env var is required (e.g. v0.4.0)");
     process.exit(1);
   }
-  const json = execFileSync("gh", [
-    "release",
-    "view",
-    tag,
-    "--json",
-    "tagName,publishedAt,body,assets",
-  ], { encoding: "utf-8" });
+
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (!token) {
+    console.error(
+      "GITHUB_TOKEN or GH_TOKEN env var is required to download draft release assets"
+    );
+    process.exit(1);
+  }
+
+  const repoJson = execFileSync(
+    "gh",
+    ["repo", "view", "--json", "nameWithOwner"],
+    { encoding: "utf-8" }
+  );
+  const { nameWithOwner } = JSON.parse(repoJson);
+  const stableBaseUrl = `https://github.com/${nameWithOwner}/releases/download/${tag}`;
+
+  const json = execFileSync(
+    "gh",
+    ["release", "view", tag, "--json", "tagName,publishedAt,body,assets"],
+    { encoding: "utf-8" }
+  );
   const release = JSON.parse(json);
 
   const fetchSig = async (asset) => {
-    const res = await fetch(asset.url, {
+    // Draft release assets are not public; use the authenticated API URL and
+    // let GitHub redirect to a signed short-lived download URL.
+    const res = await fetch(asset.apiUrl, {
       redirect: "follow",
-      headers: { Accept: "application/octet-stream" },
+      headers: {
+        Accept: "application/octet-stream",
+        Authorization: `Bearer ${token}`,
+      },
     });
     if (!res.ok) {
       throw new Error(`fetch ${asset.name}: HTTP ${res.status}`);
@@ -124,6 +149,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
 
   const manifest = await buildManifest(release, fetchSig);
+
+  // buildManifest used the release asset URLs, which for a draft contain an
+  // untagged-* slug that breaks once the release is published. Rewrite them to
+  // stable tag-based URLs.
+  for (const platform of Object.values(manifest.platforms)) {
+    const filename = platform.url.split("/").pop();
+    platform.url = `${stableBaseUrl}/${filename}`;
+  }
+
   writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
   console.error(`Wrote latest.json for ${tag}`);
 }
