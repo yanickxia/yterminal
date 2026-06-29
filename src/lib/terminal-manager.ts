@@ -49,11 +49,15 @@ interface Session {
   exited: boolean;
   /**
    * Viewport scroll state captured at detach so we can restore it on the next
-   * attach. The browser zeroes scrollTop on every scrollable div inside a
-   * detached subtree, which would otherwise snap xterm to the top of the
-   * scrollback whenever the user switches tabs.
+   * attach. We snapshot the `.xterm-viewport` div's raw `scrollTop` rather
+   * than xterm's `buffer.viewportY`/`scrollToLine`, because xterm only
+   * recomputes `ydisp` from scrollTop when the viewport DOM emits a scroll
+   * event — assigning scrollTop directly keeps xterm's internal state in
+   * sync, whereas `scrollToLine` can leave `scrollTop` lagging behind on
+   * first frame after re-attach and the very next wheel event then snaps to
+   * the top because the listener reads a stale (≈0) scrollTop.
    */
-  savedViewportY?: number;
+  savedScrollTop?: number;
   savedAtBottom?: boolean;
   /**
    * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
@@ -296,17 +300,38 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   requestAnimationFrame(() => {
     try {
       s.fit.fit();
-      // Browsers reset scrollTop on every scrollable child of a detached
-      // subtree, so xterm's viewport is sitting at row 0 right now. Push it
-      // back to where the user left it. If they were tailing the live prompt,
-      // re-pin to bottom — baseY can shift after a fit, and the user expects
-      // to keep seeing fresh output, not whatever the old absolute line was.
+      // xterm's RenderService pauses painting via IntersectionObserver when
+      // the screen element isn't visible. Detaching the host el on a tab
+      // switch fires the IO with isIntersecting=false and flips _isPaused
+      // to true — every subsequent PTY write then just stamps
+      // _needsFullRefresh and skips the actual draw. The IO is supposed to
+      // fire again when we re-attach, but in WKWebView (Tauri on macOS) the
+      // callback can be delayed for minutes, during which the pane stays
+      // blank even though the shell is alive and accepting input. Reach in
+      // and clear the paused flag ourselves, then ask xterm to repaint from
+      // the buffer so the queued rows hit the screen on the next frame.
+      try {
+        const core = (s.term as unknown as {
+          _core?: { _renderService?: { _isPaused: boolean } };
+        })._core;
+        if (core?._renderService) core._renderService._isPaused = false;
+      } catch {
+        /* internals moved in a future xterm; the IO will eventually fire */
+      }
+      s.term.refresh(0, s.term.rows - 1);
+      // Restore the underlying viewport scrollTop. We do this rather than
+      // calling `scrollToLine` because scrollTop is the source of truth for
+      // xterm's scroll listener; writing it directly fires that listener
+      // which then computes `ydisp` consistently with the DOM. Going through
+      // scrollToLine can leave the two out of sync on first frame after
+      // re-attach so the next wheel event teleports to the top.
+      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
       if (s.savedAtBottom) {
         s.term.scrollToBottom();
-      } else if (typeof s.savedViewportY === "number") {
-        s.term.scrollToLine(s.savedViewportY);
+      } else if (viewport && typeof s.savedScrollTop === "number") {
+        viewport.scrollTop = s.savedScrollTop;
       }
-      s.savedViewportY = undefined;
+      s.savedScrollTop = undefined;
       s.savedAtBottom = undefined;
       // don't steal focus from an open rename/search input (xterm's textarea
       // is allowed — that's the terminal itself getting focus).
@@ -329,8 +354,9 @@ export function detachSession(tabId: string) {
     persist(tabId, s);
     try {
       const buf = s.term.buffer.active;
-      s.savedViewportY = buf.viewportY;
       s.savedAtBottom = buf.viewportY === buf.baseY;
+      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
+      if (viewport) s.savedScrollTop = viewport.scrollTop;
     } catch {
       /* buffer not ready */
     }
