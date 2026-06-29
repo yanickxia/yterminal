@@ -36,6 +36,14 @@ interface Session {
   pty: IPty;
   /** the detached DOM element that hosts this terminal */
   el: HTMLDivElement;
+  /**
+   * Whether xterm's `open()` has been called for this session. xterm's
+   * documented contract is that the parent passed to `open()` must already be
+   * in the DOM; calling it on a detached node leaves the renderer with zero
+   * dimensions and certain addon hooks misbehaving. We therefore defer
+   * `open()` until the first real `attachSession` call.
+   */
+  opened: boolean;
   disposed: boolean;
   /** the shell process has exited (user typed `exit` or it died) */
   exited: boolean;
@@ -168,7 +176,11 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(fit);
   term.loadAddon(serialize);
   term.loadAddon(search);
-  term.open(el);
+  // NOTE: `term.open(el)` is intentionally deferred to attachSession's first
+  // real DOM insertion. The hookups below (parser/key/data wiring, scrollback
+  // replay) don't depend on the renderer being live — they touch the parser,
+  // the buffer and event emitters, all of which exist from Terminal
+  // construction.
 
   // replay any persisted scrollback from a previous launch before wiring the
   // live shell, so old output appears above the fresh prompt.
@@ -262,7 +274,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (cb) cb(tabId);
   });
 
-  s = { term, fit, serialize, search, pty, el, disposed: false, exited: false };
+  s = { term, fit, serialize, search, pty, el, opened: false, disposed: false, exited: false };
   sessions.set(tabId, s);
   return s;
 }
@@ -272,6 +284,13 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   const s = getOrCreateSession(tabId, cwd);
   if (s.el.parentElement !== container) {
     container.appendChild(s.el);
+  }
+  // First attach: now that `el` is in the DOM, it's finally safe to call
+  // `term.open()`. This is what wires up the renderer with real dimensions.
+  // Subsequent re-attaches (tab switches) leave the renderer in place.
+  if (!s.opened) {
+    s.term.open(s.el);
+    s.opened = true;
   }
   // defer fit until layout settles
   requestAnimationFrame(() => {

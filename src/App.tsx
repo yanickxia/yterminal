@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
@@ -189,6 +189,37 @@ export default function App() {
     }
   }, [activeTab?.root]);
 
+  // Stable callbacks passed into PaneRenderer / PaneTerminal. Without these,
+  // every App re-render (e.g. the 15s cwd snapshot tick that updates the
+  // workspace store) would hand PaneTerminal fresh arrow refs and trip its
+  // useEffect deps, tearing down and re-mounting the xterm session.
+  const wsId = ws?.id;
+  const tabId = activeTab?.id;
+  const tabRoot = activeTab?.root;
+  const onFocusPane = useCallback(
+    (paneId: string) => {
+      if (!wsId || !tabId) return;
+      setActivePane(wsId, tabId, paneId);
+    },
+    [wsId, tabId, setActivePane]
+  );
+  const onExitPane = useCallback(
+    (paneId: string) => {
+      if (!wsId || !tabId) return;
+      // shell exited -> tear down its session and close the pane
+      disposeSession(paneId);
+      closePane(wsId, tabId, paneId);
+    },
+    [wsId, tabId, closePane]
+  );
+  const onResizePane = useCallback(
+    (splitId: string, sizes: number[]) => {
+      if (!wsId || !tabId || !tabRoot) return;
+      resizeSplit(wsId, tabId, splitId, sizes);
+      requestAnimationFrame(() => refitTree(tabRoot));
+    },
+    [wsId, tabId, tabRoot, resizeSplit]
+  );
   return (
     <div className="app">
       <WorkspaceSidebar onOpenPalette={() => setPaletteOpen(true)} />
@@ -203,18 +234,9 @@ export default function App() {
                 <PaneRenderer
                   node={activeTab.root}
                   activePaneId={activeTab.activePaneId}
-                  onFocusPane={(paneId) =>
-                    setActivePane(ws.id, activeTab.id, paneId)
-                  }
-                  onExitPane={(paneId) => {
-                    // shell exited -> tear down its session and close the pane
-                    disposeSession(paneId);
-                    closePane(ws.id, activeTab.id, paneId);
-                  }}
-                  onResize={(splitId, sizes) => {
-                    resizeSplit(ws.id, activeTab.id, splitId, sizes);
-                    requestAnimationFrame(() => refitTree(activeTab.root));
-                  }}
+                  onFocusPane={onFocusPane}
+                  onExitPane={onExitPane}
+                  onResize={onResizePane}
                 />
               ) : (
                 <div className="empty">No tab. Press + to open a shell.</div>
