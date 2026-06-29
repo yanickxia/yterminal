@@ -1,7 +1,10 @@
 name: release
 
 # Build native bundles on every pushed v* tag (or manual dispatch) and publish
-# them to a GitHub Release as a draft.
+# them to a single draft GitHub Release. The matrix runs three OS jobs; they
+# all upload into the same draft via `releaseId` so a) the assets aren't split
+# across multiple drafts (race-on-create that tauri-action has historically
+# fallen into) and b) `publish-latest-json` can see all assets in one place.
 
 on:
   push:
@@ -13,7 +16,38 @@ permissions:
   contents: write
 
 jobs:
+  # Single job that owns the draft release. Outputs its id for the matrix to
+  # target with `releaseId`, so all platform bundles land in one draft.
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.find_or_create.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find existing draft or create one
+        id: find_or_create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh release view <tag>` works for both draft and published releases
+          # whose tag_name matches; it errors with exit 1 if none found.
+          if existing=$(gh release view "$TAG" --json id --jq '.id' 2>/dev/null); then
+            echo "Found existing release for $TAG: id=$existing"
+            echo "id=$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --draft \
+            --title "yterminal $TAG" \
+            --notes "See the assets below to download and install this version of yterminal."
+          id=$(gh release view "$TAG" --json id --jq '.id')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -75,19 +109,40 @@ jobs:
             exit 1
           fi
 
-      - name: Build and release
+      - name: Build and upload bundle assets
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "yterminal ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install this version of yterminal."
-          releaseDraft: true
-          prerelease: false
+          # Upload into the shared draft created above. Without releaseId the
+          # action would otherwise race on draft creation and we'd end up with
+          # one draft per matrix runner.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      # tauri-action has historically skipped uploading the `.sig` companions
+      # for some bundle targets (notably universal-apple-darwin). Sweep the
+      # bundle output and upload every `.sig` explicitly so the updater
+      # manifest always has a signature to embed.
+      - name: Upload signature files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          count=0
+          while IFS= read -r -d '' sig; do
+            echo "Uploading $sig"
+            gh release upload "$TAG" "$sig" --clobber
+            count=$((count + 1))
+          done < <(find src-tauri/target -type f -name "*.sig" -print0)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No .sig files found under src-tauri/target — bundle did not sign artifacts"
+            exit 1
+          fi
 
   publish-latest-json:
     needs: [build]
