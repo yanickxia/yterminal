@@ -5547,7 +5547,7 @@ dependencies = [
 
 [[package]]
 name = "yterminal"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "font-kit",
  "portable-pty",
