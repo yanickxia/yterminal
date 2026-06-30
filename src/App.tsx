@@ -16,6 +16,7 @@ import { detectSystemFonts } from "./lib/system-fonts";
 import { scheduleAutoCheck } from "./lib/updater-auto-check";
 import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
+import { FileViewer } from "./components/FileViewer";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 
 export default function App() {
@@ -278,6 +279,7 @@ export default function App() {
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}
       />
+      <FileViewer />
     </div>
   );
 }

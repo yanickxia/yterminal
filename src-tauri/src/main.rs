@@ -751,6 +751,68 @@ fn scrollback_prune(live_pane_ids: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================================
+// Read-only file viewing.
+//
+// Backs the in-app file viewer: a user Cmd/Ctrl-clicks a file path printed in
+// the terminal, and we read it here so the WebView can render it (Markdown /
+// syntax-highlighted text) without shelling out to an external editor. Reads
+// are capped and binary-sniffed so a stray click on a huge log or a binary
+// never freezes the UI or floods the IPC channel.
+// ============================================================================
+
+/// Largest file we'll load into the in-app viewer. Beyond this the frontend
+/// falls back to opening the file with the OS default app.
+const MAX_VIEWER_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+
+/// Result of a viewer read: the decoded text plus the byte length we read.
+#[derive(serde::Serialize)]
+struct FileContents {
+    text: String,
+    bytes: u64,
+}
+
+/// True when `path` exists and is a regular file (not a dir / symlink-to-dir).
+#[tauri::command]
+fn path_is_file(path: String) -> bool {
+    std::fs::metadata(&path)
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+/// Read a text file for the in-app viewer. Errors (rather than returning
+/// partial/garbage) when the file is missing, too large, or looks binary, so
+/// the caller can cleanly fall back to an external open.
+#[tauri::command]
+fn read_text_file(path: String) -> Result<FileContents, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("stat {path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{path} is not a regular file"));
+    }
+    let len = meta.len();
+    if len > MAX_VIEWER_BYTES {
+        return Err(format!(
+            "file too large for viewer ({} bytes > {} limit)",
+            len, MAX_VIEWER_BYTES
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    // Binary sniff: a NUL byte in the first chunk is the classic heuristic
+    // (used by git) for "this isn't text". Cheap and good enough to keep the
+    // viewer text-only.
+    let sniff = &bytes[..bytes.len().min(8000)];
+    if sniff.contains(&0) {
+        return Err(format!("{path} appears to be binary"));
+    }
+    // Decode lossily so a file with a few stray non-UTF8 bytes still opens
+    // (replaced with U+FFFD) rather than failing outright.
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(FileContents {
+        text,
+        bytes: bytes.len() as u64,
+    })
+}
+
 fn main() {
     logger::info(
         "main",
@@ -773,6 +835,8 @@ fn main() {
             pane_process_tree,
             agent_session_id,
             process_env,
+            path_is_file,
+            read_text_file,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

@@ -977,3 +977,237 @@ body {
   background: var(--bg-light);
   margin: 4px 2px;
 }
+
+/* ---------- built-in file viewer ---------- */
+.modal.file-viewer {
+  width: 820px;
+  max-width: 92vw;
+  height: 80vh;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.file-viewer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.file-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.file-viewer-toggle {
+  background: var(--bg-dark);
+  border: 1px solid var(--bg-light);
+  color: var(--fg-dim);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.file-viewer-toggle:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.file-viewer-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-viewer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+  display: block;
+}
+
+.file-viewer-status {
+  padding: 16px;
+  color: var(--fg-dim);
+}
+.file-viewer-error {
+  color: #f7768e;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.file-viewer-raw,
+.file-viewer-code {
+  margin: 0;
+  padding: 14px 16px;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--fg);
+}
+.file-viewer-code code {
+  font: inherit;
+  background: none;
+  padding: 0;
+}
+
+/* Markdown rendered body */
+.file-viewer-markdown {
+  padding: 14px 20px 28px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--fg);
+  word-wrap: break-word;
+}
+.file-viewer-markdown h1,
+.file-viewer-markdown h2,
+.file-viewer-markdown h3,
+.file-viewer-markdown h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.25;
+}
+.file-viewer-markdown h1 {
+  font-size: 1.7em;
+  border-bottom: 1px solid var(--bg-light);
+  padding-bottom: 0.25em;
+}
+.file-viewer-markdown h2 {
+  font-size: 1.4em;
+  border-bottom: 1px solid var(--bg-light);
+  padding-bottom: 0.2em;
+}
+.file-viewer-markdown h3 {
+  font-size: 1.2em;
+}
+.file-viewer-markdown p {
+  margin: 0.6em 0;
+}
+.file-viewer-markdown a {
+  color: var(--accent);
+}
+.file-viewer-markdown ul,
+.file-viewer-markdown ol {
+  padding-left: 1.6em;
+  margin: 0.6em 0;
+}
+.file-viewer-markdown li {
+  margin: 0.25em 0;
+}
+.file-viewer-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--bg-light);
+  color: var(--fg-dim);
+}
+.file-viewer-markdown code {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg-dark);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+.file-viewer-markdown pre {
+  background: var(--bg-dark);
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow: auto;
+  margin: 0.8em 0;
+}
+.file-viewer-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.file-viewer-markdown table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  display: block;
+  overflow: auto;
+}
+.file-viewer-markdown th,
+.file-viewer-markdown td {
+  border: 1px solid var(--bg-light);
+  padding: 6px 12px;
+}
+.file-viewer-markdown th {
+  background: var(--bg-dark);
+}
+.file-viewer-markdown img {
+  max-width: 100%;
+}
+.file-viewer-markdown hr {
+  border: none;
+  border-top: 1px solid var(--bg-light);
+  margin: 1.2em 0;
+}
+
+/* highlight.js token colors (Tokyo Night-ish, matched to the app palette).
+   Self-contained so we don't ship a separate hljs theme stylesheet. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-literal {
+  color: #bb9af7;
+}
+.hljs-string,
+.hljs-meta-string,
+.hljs-regexp {
+  color: #9ece6a;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #ff9e64;
+}
+.hljs-title,
+.hljs-section,
+.hljs-function .hljs-title,
+.hljs-title.function_ {
+  color: #7aa2f7;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: #73daca;
+}
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+  color: #2ac3de;
+}
+.hljs-tag,
+.hljs-name {
+  color: #f7768e;
+}
+.hljs-meta,
+.hljs-doctag {
+  color: #565f89;
+}
+.hljs-deletion {
+  color: #f7768e;
+}
+.hljs-addition {
+  color: #9ece6a;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}

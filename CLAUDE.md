@@ -91,9 +91,18 @@ Appearance flow: `loadConfigFromDisk()` runs at startup and on `window` `focus` 
 `terminal-manager.ts` loads `@xterm/addon-web-links` on every new `Terminal`. The click handler delegates to:
 
 - `src/lib/link-modifier.ts` — pure predicate `shouldOpenLink(event, isMac)`; `isMac` is detected once at module load via `navigator.userAgent` (matches the existing UA-based platform check used by `pickShell`). Belt-and-suspenders: the predicate also calls `event.getModifierState(...)` because Tauri's WKWebView on macOS occasionally drops `metaKey`.
-- `src/lib/opener.ts` — thin wrapper over `@tauri-apps/plugin-opener` `openUrl`, mirroring the `src/lib/pty.ts` shape so the IPC surface is centralized and mockable in vitest.
+- `src/lib/opener.ts` — thin wrapper over `@tauri-apps/plugin-opener` (`openUrl` for web links, `openPath` for OS-opening local files), mirroring the `src/lib/pty.ts` shape so the IPC surface is centralized and mockable in vitest.
 
-The Tauri capability `opener:allow-open-url` in `src-tauri/capabilities/default.json` is scoped to `http://*` and `https://*`. **Keep this lock-down when adding new schemes** — widening the scope (to `file://`, `mailto:`, etc.) is a security decision, not a cleanup task.
+The Tauri capability `opener:allow-open-url` in `src-tauri/capabilities/default.json` is scoped to `http://*` and `https://*`. **Keep this lock-down when adding new schemes** — widening the scope (to `file://`, `mailto:`, etc.) is a security decision, not a cleanup task. `opener:allow-open-path` is also granted so recognized non-text files (images, binaries) can be handed to the OS default app.
+
+### File links + built-in viewer
+
+Path-like tokens in terminal output are clickable (same Cmd/Ctrl+click gate as web links), opening recognized text/code/markdown in a read-only built-in viewer and handing anything else to the OS. Four concerns, kept separate (pure logic / IO split mirrors the rest of the codebase):
+
+- **Classification (pure)** — `src/lib/file-link-classify.ts`: `findPathSpans(line)` scans a line of terminal text for path-like tokens (trims wrapping quotes/punctuation, keeps a `:line:col` suffix); `looksLikePath`, `classifyViewable` (ext → highlight.js language via `VIEW_EXT_LANGUAGE`, markdown flagged in `MARKDOWN_EXTS`, bare names like `Dockerfile`/`.bashrc` in `VIEWABLE_BASENAMES`), `classifyFilePath` (→ `view` | `os-open`), and `resolvePath` (expands `~`, joins against cwd, collapses `.`/`..`, strips `:line:col`). Fully unit-tested in `file-link-classify.test.ts`.
+- **Backend read (Rust, SYNC)** — `src-tauri/src/main.rs`: `path_is_file(path)` and `read_text_file(path)`. The reader rejects (rather than returning partial data) when the file is missing, larger than `MAX_VIEWER_BYTES` (2 MiB), or binary (NUL-byte sniff over the first 8 KB), decoding lossily so a few stray bytes still open. Wrapped by `src/lib/file-reader.ts`.
+- **Routing (IO)** — `src/lib/file-link.ts` `handleClickedToken(token, cwd, home?)`: web URL → `openUrl`; otherwise resolve + `path_is_file` probe, then a viewable type opens the viewer, a non-viewable file is `openPath`-ed, and a non-existent/dir token is ignored. `terminal-manager.ts` registers an xterm `LinkProvider` that maps `findPathSpans` results to clickable ranges and calls this on activate, resolving against the pane's live `shellCwd` and a lazily-cached `homeDir()`.
+- **Viewer (read-only UI)** — `src/stores/viewer-store.ts` (transient zustand; a single viewer at a time, stale reads guarded by path compare) drives `src/components/FileViewer.tsx`, mounted at the App root next to `<UpdateDialog>`. `src/lib/file-render.ts` does the rendering: Markdown via `marked` → `DOMPurify.sanitize` (the source is an arbitrary on-disk file, so it must never inject active content), source via `highlight.js` (escaped/structural output, safe to inject). A "Raw" toggle shows unrendered text. hljs token colors live in `styles.css` (`.file-viewer-*` / `.hljs-*`), no separate theme stylesheet shipped.
 
 ### Agent session resume
 
