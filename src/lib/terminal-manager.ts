@@ -10,6 +10,9 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { detectIsMac, shouldOpenLink } from "./link-modifier";
+import { openUrl } from "./opener";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -29,6 +32,8 @@ import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
+
+const isMac = detectIsMac();
 
 interface Session {
   term: Terminal;
@@ -268,6 +273,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(fit);
   term.loadAddon(serialize);
   term.loadAddon(search);
+  term.loadAddon(
+    new WebLinksAddon((event, uri) => {
+      if (shouldOpenLink(event, isMac)) {
+        void openUrl(uri).catch((err) => {
+          console.warn("openUrl failed", err);
+        });
+      }
+    }),
+  );
   // NOTE: `term.open(el)` is intentionally deferred to attachSession's first
   // real DOM insertion. The hookups below (parser/key/data wiring, scrollback
   // replay) don't depend on the renderer being live — they touch the parser,
