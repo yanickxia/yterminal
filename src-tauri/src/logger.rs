@@ -47,7 +47,6 @@ static VERBOSE: AtomicBool = AtomicBool::new(true);
 struct LogState {
     ring: VecDeque<String>,
     file: Option<File>,
-    dir: PathBuf,
 }
 
 static STATE: OnceLock<Mutex<LogState>> = OnceLock::new();
@@ -89,7 +88,6 @@ fn state() -> &'static Mutex<LogState> {
         Mutex::new(LogState {
             ring: VecDeque::with_capacity(RING_CAPACITY),
             file,
-            dir,
         })
     })
 }
@@ -129,7 +127,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as i64; // [1, 12]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
     (if m <= 2 { y + 1 } else { y }, m as u32, d)
 }
 
