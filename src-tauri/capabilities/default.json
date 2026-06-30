@@ -7,6 +7,13 @@
     "core:default",
     "os:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" }
+      ]
+    }
   ]
 }
