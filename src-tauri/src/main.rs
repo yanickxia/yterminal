@@ -13,6 +13,14 @@ mod pty;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use tauri::Manager;
+
+#[tauri::command]
+fn open_devtools(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        window.open_devtools();
+    }
+}
 
 /// Return the user's preferred login shell.
 ///
@@ -412,7 +420,8 @@ fn main() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
-            pty::pty_exitstatus
+            pty::pty_exitstatus,
+            open_devtools
         ])
         .run(tauri::generate_context!())
         .expect("error while running yterminal");

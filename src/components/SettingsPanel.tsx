@@ -497,6 +497,25 @@ function DebugTab() {
           <code className="config-path">{dir}</code>
         </div>
       )}
+
+      <div className="field">
+        <label className="field-label">Developer tools</label>
+        <p className="field-hint">
+          Opens the WebView devtools window. Useful for inspecting
+          localStorage state when triaging persistence issues.
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => {
+              invoke("open_devtools").catch((e) =>
+                setStatus(`Open DevTools failed: ${String(e)}`)
+              );
+            }}
+          >
+            Open DevTools
+          </button>
+        </div>
+      </div>
     </>
   );
 }
