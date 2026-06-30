@@ -107,23 +107,54 @@ function shellQuote(s: string): string {
 }
 
 /**
+ * Looser check used when we *already* know which agent kind is running and
+ * just want to decide whether a user-typed token plausibly refers to it
+ * (e.g. an alias `claude-yolo` or `cclaude`). The token's basename must
+ * contain the kind name as a substring. Filters out tokens captured during
+ * shell autocompletion/history-selection, where xterm.onData only sees the
+ * user's literal keystrokes (e.g. `cla`) and never the shell-completed line.
+ */
+export function tokenMatchesKind(token: string, kind: AgentKind): boolean {
+  return basename(token).toLowerCase().includes(kind);
+}
+
+/**
+ * Format a captured env-var map as the leading portion of a shell command
+ * (each entry as `KEY='value'`, separated by spaces, trailing space). Empty
+ * input -> empty string. Values are shell-quoted defensively.
+ */
+function formatEnvPrefix(env: Record<string, string> | undefined): string {
+  if (!env) return "";
+  const entries = Object.entries(env);
+  if (entries.length === 0) return "";
+  // Stable order so the same captured env produces the same resume line.
+  entries.sort(([a], [b]) => a.localeCompare(b));
+  return (
+    entries.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ") + " "
+  );
+}
+
+/**
  * Build the shell command line that resumes an agent's prior session. Run
  * through the user's shell (not spawned directly) so an alias in `command`
- * resolves naturally.
+ * resolves naturally. When env vars were captured at snapshot time, they are
+ * prepended as `KEY='value' KEY='value' <cmd> ...` so a wrapper alias that
+ * only sets env vars is not strictly needed for resume.
  *
- *   claude   -> `<cmd> --resume <id>`
- *   codex    -> `<cmd> resume <id>`
- *   opencode -> `<cmd> --session <id>`
+ *   claude   -> `[env...]<cmd> --resume <id>`
+ *   codex    -> `[env...]<cmd> resume <id>`
+ *   opencode -> `[env...]<cmd> --session <id>`
  */
 export function buildResumeCommand(agent: PaneAgent): string {
   const cmd = agent.command.trim() || agent.kind;
   const id = shellQuote(agent.sessionId);
+  const envPrefix = formatEnvPrefix(agent.env);
   switch (agent.kind) {
     case "claude":
-      return `${cmd} --resume ${id}`;
+      return `${envPrefix}${cmd} --resume ${id}`;
     case "codex":
-      return `${cmd} resume ${id}`;
+      return `${envPrefix}${cmd} resume ${id}`;
     case "opencode":
-      return `${cmd} --session ${id}`;
+      return `${envPrefix}${cmd} --session ${id}`;
   }
 }

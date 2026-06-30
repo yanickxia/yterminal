@@ -33,11 +33,12 @@ import { useWorkspaceStore } from "../stores/workspace-store";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
 import type { AgentKind, PaneAgent } from "./types";
-import { paneProcessTree, agentSessionId } from "./agent";
+import { paneProcessTree, agentSessionId, processEnv } from "./agent";
 import {
   detectAgent,
   classifyCommandToken,
   buildResumeCommand,
+  tokenMatchesKind,
 } from "./agent-detect";
 import {
   makeInputLineState,
@@ -96,6 +97,13 @@ interface Session {
    * Paired with a live detection at snapshot time to recover the alias.
    */
   typedCommands: Map<AgentKind, string>;
+  /**
+   * Recent first-tokens of submitted shell lines (newest at the end). We keep
+   * a small history rather than a single field so an alias the user typed at
+   * a shell prompt survives subsequent in-TUI Enter submissions: the snapshot
+   * picks the most recent entry whose basename contains the detected kind.
+   */
+  recentSubmits: string[];
   /**
    * Resume command queued for a restored pane. Injected once the shell is
    * ready (first OSC 7 prompt, or a timeout fallback for bare shells).
@@ -430,8 +438,16 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       s.inputLine = state;
       if (submitted) {
         const token = firstToken(submitted);
-        const kind = classifyCommandToken(token);
-        if (kind) s.typedCommands.set(kind, token);
+        if (token) {
+          s.recentSubmits.push(token);
+          // Bound the history; agent launches are always near the top.
+          if (s.recentSubmits.length > 16) s.recentSubmits.shift();
+          const kind = classifyCommandToken(token);
+          if (kind) s.typedCommands.set(kind, token);
+          // Trigger an early agent re-detection so we capture an alias
+          // (e.g. `claude-yolo`) before the user types many TUI lines.
+          scheduleQuickAgentSnapshot();
+        }
       }
     }
     pty.write(data);
@@ -468,6 +484,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     exited: false,
     inputLine: makeInputLineState(),
     typedCommands: new Map(),
+    recentSubmits: [],
     resumeInjected: false,
   };
   sessions.set(tabId, s);
@@ -764,6 +781,46 @@ export async function snapshotAllCwds() {
  * spuriously resumed.
  */
 let agentSnapshotPromise: Promise<void> | null = null;
+let quickAgentSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Env-var name prefixes captured from the running agent process and replayed
+ * on resume. Covers the keys an alias-style launcher typically sets to route
+ * a coding agent at a custom endpoint / model — ANTHROPIC_* / CLAUDE_* for
+ * Claude Code, CODEX_* / OPENAI_* for Codex (OpenAI compat), OPENCODE_* for
+ * OpenCode. Captured values may include AUTH_TOKEN-style secrets; persisted at
+ * the same security level as the user's shell-rc config.
+ */
+const AGENT_ENV_PREFIXES = [
+  "ANTHROPIC_",
+  "CLAUDE_",
+  "CODEX_",
+  "OPENAI_",
+  "OPENCODE_",
+];
+
+function filterAgentEnv(
+  env: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (AGENT_ENV_PREFIXES.some((p) => k.startsWith(p))) out[k] = v;
+  }
+  return out;
+}
+/**
+ * Run an agent snapshot ~1s after the next call, debounced. Used right after
+ * the user submits a shell line so we attribute the launch token early — but
+ * we don't rely on it: `s.recentSubmits` keeps a history precisely because a
+ * slow-starting agent may not be in the process tree at the 1s mark.
+ */
+function scheduleQuickAgentSnapshot() {
+  if (quickAgentSnapshotTimer) return;
+  quickAgentSnapshotTimer = setTimeout(() => {
+    quickAgentSnapshotTimer = null;
+    void snapshotAllAgents();
+  }, 1000);
+}
 export async function snapshotAllAgents() {
   if (agentSnapshotPromise) return agentSnapshotPromise;
   agentSnapshotPromise = (async () => {
@@ -798,13 +855,40 @@ export async function snapshotAllAgents() {
         const sessionId = await agentSessionId(detected.kind, cwd);
         if (!sessionId) return;
 
-        // Prefer the literal token the user typed (an alias survives this way);
-        // fall back to the agent's canonical name when we never saw the launch.
-        const command = s.typedCommands.get(detected.kind) ?? detected.kind;
+        // Prefer the literal token the user typed (so an alias survives).
+        // classifyCommandToken at submit time only stores tokens whose basename
+        // exactly equals the kind (e.g. `claude`), so an alias like
+        // `claude-yolo` or `claude-by-kimi-...` won't be in typedCommands.
+        // Fall back to scanning recentSubmits newest-first for an entry whose
+        // basename contains the detected kind — this both recovers aliases and
+        // skips in-TUI Enter submissions (their tokens won't contain the kind
+        // name). Cache the hit so subsequent ticks are stable.
+        let command = s.typedCommands.get(detected.kind);
+        if (!command) {
+          for (let i = s.recentSubmits.length - 1; i >= 0; i--) {
+            const t = s.recentSubmits[i];
+            if (tokenMatchesKind(t, detected.kind)) {
+              command = t;
+              s.typedCommands.set(detected.kind, t);
+              break;
+            }
+          }
+        }
+        command = command ?? detected.kind;
+
+        // Capture the agent process's env vars (whitelisted prefixes only) so
+        // a wrapper alias that mainly exports env config (BASE_URL, MODEL,
+        // AUTH_TOKEN, custom headers) replays correctly on resume even when we
+        // never recovered the alias name. Skipping prefixes we don't care about
+        // keeps the captured map small and avoids persisting unrelated env.
+        const rawEnv = await processEnv(detected.pid);
+        const env = filterAgentEnv(rawEnv);
+
         const agent: PaneAgent = {
           kind: detected.kind,
           command,
           sessionId,
+          ...(Object.keys(env).length > 0 ? { env } : {}),
         };
         located.store.setPaneAgent(
           located.workspaceId,

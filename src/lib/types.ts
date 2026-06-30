@@ -20,6 +20,14 @@ export interface PaneAgent {
   command: string;
   /** the agent's on-disk session id, resolved at snapshot time. */
   sessionId: string;
+  /**
+   * Selected env vars captured from the running agent process (whitelisted
+   * prefixes only — ANTHROPIC_/CLAUDE_/CODEX_/OPENCODE_). Replayed on resume
+   * so configuration that lived in an alias function (BASE_URL, AUTH_TOKEN,
+   * model overrides) carries over without needing to identify the alias name.
+   * Treat as sensitive: AUTH_TOKEN-style values may be present.
+   */
+  env?: Record<string, string>;
 }
 
 /** A leaf node: one terminal/shell. Its id is the terminal session key. */

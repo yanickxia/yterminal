@@ -486,13 +486,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: "yterminal-workspaces",
-      version: 3,
+      version: 4,
       partialize: (s) => ({
         workspaces: s.workspaces,
         activeWorkspaceId: s.activeWorkspaceId,
       }),
       // v1 (flat tabs, no pane tree) -> v2: rebuild tabs with a single leaf.
       // v2 -> v3: PaneLeaf.agent is additive/optional; nothing to rewrite.
+      // v3 -> v4: PaneAgent.env is additive/optional; nothing to rewrite.
       migrate: (persisted: any, version) => {
         if (!persisted) return persisted;
         if (version < 2 && Array.isArray(persisted.workspaces)) {

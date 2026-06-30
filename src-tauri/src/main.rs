@@ -376,6 +376,79 @@ fn descendants_of(root: u32, all: Vec<ProcInfo>) -> Vec<ProcInfo> {
         .collect()
 }
 
+/// Read environment variables for a single process. Used to recover env-var
+/// configuration (e.g. ANTHROPIC_BASE_URL) the user's launcher alias set on
+/// the agent, so we can replay it on resume even when we don't know the alias
+/// name. Returned as a list of (key, value) pairs.
+///
+/// Linux: read `/proc/<pid>/environ` (NUL-separated KEY=VAL entries).
+/// macOS: `ps eww -p <pid> -o command=` — env vars follow the argv,
+///   space-separated as KEY=VAL tokens. Heuristic: a token whose substring
+///   before the first `=` is a valid env-var name shape is treated as an env
+///   entry. Values with spaces are mangled by this approach; for our caller's
+///   whitelist (Anthropic / Claude / Codex / OpenCode keys) that's acceptable.
+///   Caller filters by key whitelist anyway, so a stray argv look-alike is
+///   harmless.
+/// Other: empty.
+#[tauri::command]
+fn process_env(pid: u32) -> Vec<(String, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = format!("/proc/{pid}/environ");
+        match std::fs::read(&path) {
+            Ok(bytes) => bytes
+                .split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| {
+                    let s = String::from_utf8_lossy(s).into_owned();
+                    let eq = s.find('=')?;
+                    Some((s[..eq].to_string(), s[eq + 1..].to_string()))
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = match std::process::Command::new("/bin/ps")
+            .args(["eww", "-p", &pid.to_string(), "-o", "command="])
+            .output()
+        {
+            Ok(o) if o.status.success() => o.stdout,
+            _ => return Vec::new(),
+        };
+        let stdout = String::from_utf8_lossy(&out);
+        let mut seen = std::collections::HashSet::new();
+        let mut result: Vec<(String, String)> = Vec::new();
+        for token in stdout.split_whitespace() {
+            let Some(eq) = token.find('=') else { continue };
+            if eq == 0 {
+                continue;
+            }
+            let key = &token[..eq];
+            let valid_key = key.chars().enumerate().all(|(i, c)| {
+                if i == 0 {
+                    c.is_ascii_uppercase() || c == '_'
+                } else {
+                    c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+                }
+            });
+            if !valid_key {
+                continue;
+            }
+            if seen.insert(key.to_string()) {
+                result.push((key.to_string(), token[eq + 1..].to_string()));
+            }
+        }
+        result
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        Vec::new()
+    }
+}
+
 /// Resolve the current on-disk session id for `kind` ("claude" | "codex" |
 /// "opencode"), bound to `cwd` where the agent needs it (Claude). Returns the
 /// id string, or `None` if no session store is found.
@@ -699,6 +772,7 @@ fn main() {
             process_cwd,
             pane_process_tree,
             agent_session_id,
+            process_env,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

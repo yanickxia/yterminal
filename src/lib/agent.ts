@@ -29,3 +29,20 @@ export async function agentSessionId(
     return null;
   }
 }
+
+/**
+ * Read environment variables for a process by pid. Used to capture the env
+ * config (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, etc.) the user's launcher
+ * alias set on a coding-agent process, so we can replay it on resume without
+ * knowing the alias name.
+ */
+export async function processEnv(pid: number): Promise<Record<string, string>> {
+  try {
+    const pairs = await invoke<Array<[string, string]>>("process_env", { pid });
+    const env: Record<string, string> = {};
+    for (const [k, v] of pairs) env[k] = v;
+    return env;
+  } catch {
+    return {};
+  }
+}

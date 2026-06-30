@@ -4,6 +4,7 @@ import {
   classifyCommandToken,
   detectAgent,
   buildResumeCommand,
+  tokenMatchesKind,
   type ProcInfo,
 } from "./agent-detect";
 import type { PaneAgent } from "./types";
@@ -78,6 +79,24 @@ describe("detectAgent", () => {
   });
 });
 
+describe("tokenMatchesKind", () => {
+  it("accepts the canonical name", () => {
+    expect(tokenMatchesKind("claude", "claude")).toBe(true);
+    expect(tokenMatchesKind("codex", "codex")).toBe(true);
+  });
+  it("accepts aliases that embed the kind name", () => {
+    expect(tokenMatchesKind("claude-yolo", "claude")).toBe(true);
+    expect(tokenMatchesKind("cclaude", "claude")).toBe(true);
+    expect(tokenMatchesKind("/opt/bin/claude-yolo", "claude")).toBe(true);
+  });
+  it("rejects tokens that don't contain the kind name", () => {
+    expect(tokenMatchesKind("cla", "claude")).toBe(false);
+    expect(tokenMatchesKind("cy", "claude")).toBe(false);
+    expect(tokenMatchesKind("ls", "claude")).toBe(false);
+    expect(tokenMatchesKind("", "claude")).toBe(false);
+  });
+});
+
 describe("buildResumeCommand", () => {
   const make = (over: Partial<PaneAgent>): PaneAgent => ({
     kind: "claude",
@@ -118,5 +137,39 @@ describe("buildResumeCommand", () => {
     expect(
       buildResumeCommand(make({ sessionId: "a b;rm" }))
     ).toBe("claude --resume 'a b;rm'");
+  });
+
+  it("prepends captured env vars in sorted order, shell-quoted", () => {
+    const cmd = buildResumeCommand(
+      make({
+        command: "claude",
+        env: {
+          ANTHROPIC_BASE_URL: "https://example.com/api",
+          ANTHROPIC_AUTH_TOKEN: "secret-tok",
+        },
+      })
+    );
+    expect(cmd).toBe(
+      "ANTHROPIC_AUTH_TOKEN=secret-tok ANTHROPIC_BASE_URL='https://example.com/api' claude --resume abc"
+    );
+  });
+
+  it("quotes env values that contain shell metacharacters", () => {
+    const cmd = buildResumeCommand(
+      make({
+        command: "claude",
+        env: { ANTHROPIC_CUSTOM_HEADERS: "x: a b; rm -rf /" },
+      })
+    );
+    expect(cmd).toBe(
+      "ANTHROPIC_CUSTOM_HEADERS='x: a b; rm -rf /' claude --resume abc"
+    );
+  });
+
+  it("omits env prefix entirely when no env is captured", () => {
+    expect(buildResumeCommand(make({ env: {} }))).toBe("claude --resume abc");
+    expect(buildResumeCommand(make({ env: undefined }))).toBe(
+      "claude --resume abc"
+    );
   });
 });
