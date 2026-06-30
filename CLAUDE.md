@@ -52,6 +52,10 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 - `term.open()` requires its parent to be in the DOM; sessions track an `opened` flag and defer `open()` until the first `attachSession`.
 - App-wide re-renders must not pass fresh callback identities into `PaneTerminal` — App.tsx wraps `onFocusPane`/`onExitPane`/`onResizePane` in `useCallback` for exactly this reason.
 
+### HTML5 drag-and-drop requires `dragDropEnabled: false`
+
+`src-tauri/tauri.conf.json` sets `app.windows[0].dragDropEnabled = false`. Tauri's default is `true`, which makes wry/WKWebView capture OS-level drag events at the native layer and **swallow the WebView's `drop` event** — the symptom is "drag visual feedback works (`dragstart`/`dragover` fire) but the list never reorders". This affects tab and workspace reorder in `TabBar.tsx` / `WorkspaceSidebar.tsx`. Don't re-enable it without rewriting both reorder paths against Tauri's native drag events.
+
 ### PTY layer is in-tree, not `tauri-plugin-pty`
 
 `src-tauri/src/pty.rs` calls `portable-pty` directly and exposes `pty_spawn` / `pty_read` / `pty_write` / `pty_resize` / `pty_kill` / `pty_exitstatus` as top-level Tauri commands. The frontend wraps these in `src/lib/pty.ts` (note: NOT the `tauri-pty` npm package). The reason this layer was rewritten: the upstream plugin returned an internal session counter as `pty.pid` instead of the real OS pid, which broke `process_cwd(pid)` (lsof on macOS / `/proc/<pid>/cwd` on Linux). Cwd lookup is what powers "new tab inherits the active shell's cwd" and "restart in the directory I left off".
