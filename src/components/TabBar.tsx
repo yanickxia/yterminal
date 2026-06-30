@@ -21,7 +21,13 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
+  // The drop target plus which side of it the cursor is on. Encoding "anchor +
+  // side" (instead of a single index) gives symmetric drop semantics: the left
+  // half of any tab inserts before it, the right half after it.
+  const [over, setOver] = useState<{
+    id: string;
+    side: "before" | "after";
+  } | null>(null);
   // manual double-click detection: WebKit (macOS WKWebView) does NOT fire the
   // native `dblclick` event on `draggable` elements, so we time consecutive
   // clicks ourselves to trigger rename.
@@ -142,43 +148,75 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
     ];
   }
 
-  function onDrop(targetId: string) {
+  function onDrop(targetId: string, side: "before" | "after") {
     if (dragId && dragId !== targetId) {
-      reorderTab(workspace.id, dragId, targetId);
+      reorderTab(workspace.id, dragId, targetId, side);
     }
     setDragId(null);
-    setOverId(null);
+    setOver(null);
   }
 
   return (
     <div className="tabbar">
-      {workspace.tabs.map((t) => (
+      {workspace.tabs.map((t) => {
+        const isOver = over?.id === t.id && dragId && t.id !== dragId;
+        const dragSrc = dragId
+          ? workspace.tabs.find((x) => x.id === dragId)
+          : null;
+        // Cross-segment drops (pinned vs unpinned) are rejected — see store.
+        // We mirror that here so the indicator stays hidden and the dropEffect
+        // shows "no entry" before the user even releases.
+        const allowed =
+          !dragSrc || Boolean(dragSrc.pinned) === Boolean(t.pinned);
+        return (
         <div
           key={t.id}
           className={
             "tab" +
             (t.id === workspace.activeTabId ? " active" : "") +
             (t.id === dragId ? " dragging" : "") +
-            (t.id === overId && dragId && t.id !== dragId ? " drag-over" : "") +
+            (isOver && allowed && over!.side === "before" ? " drag-over-before" : "") +
+            (isOver && allowed && over!.side === "after" ? " drag-over-after" : "") +
             (t.pinned ? " pinned" : "")
           }
           draggable={editingId !== t.id}
           onDragStart={(e) => {
             setDragId(t.id);
             e.dataTransfer.effectAllowed = "move";
+            // WebKit (WKWebView) silently cancels the drop event unless
+            // setData was called at least once during dragstart. The actual
+            // payload doesn't matter — we read state from React, not from
+            // dataTransfer — but the call has to happen.
+            e.dataTransfer.setData("text/plain", t.id);
           }}
           onDragOver={(e) => {
+            if (!allowed) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "none";
+              if (over) setOver(null);
+              return;
+            }
             e.preventDefault();
             e.dataTransfer.dropEffect = "move";
-            if (overId !== t.id) setOverId(t.id);
+            const r = e.currentTarget.getBoundingClientRect();
+            const side: "before" | "after" =
+              e.clientX < r.left + r.width / 2 ? "before" : "after";
+            if (over?.id !== t.id || over?.side !== side) {
+              setOver({ id: t.id, side });
+            }
           }}
           onDrop={(e) => {
             e.preventDefault();
-            onDrop(t.id);
+            if (!allowed || !over) {
+              setDragId(null);
+              setOver(null);
+              return;
+            }
+            onDrop(t.id, over.side);
           }}
           onDragEnd={() => {
             setDragId(null);
-            setOverId(null);
+            setOver(null);
           }}
           onClick={() => onTabClick(t.id, t.name)}
           onDoubleClick={() => beginEdit(t.id, t.name)}
@@ -248,7 +286,8 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
             </>
           )}
         </div>
-      ))}
+        );
+      })}
       <button
         className="icon-btn tab-add"
         title="New tab (⌘T)"

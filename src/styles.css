@@ -186,12 +186,20 @@ body {
   opacity: 0.4;
 }
 
-.ws-item.drag-over {
+/* sidebar is vertical: indicator is a horizontal bar at the top/bottom edge */
+.ws-item.drag-over-before {
   box-shadow: inset 0 2px 0 var(--accent);
 }
+.ws-item.drag-over-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 
-.tab.drag-over {
+/* tabbar is horizontal: indicator is a vertical bar at the left/right edge */
+.tab.drag-over-before {
   box-shadow: inset 2px 0 0 var(--accent);
+}
+.tab.drag-over-after {
+  box-shadow: inset -2px 0 0 var(--accent);
 }
 
 .ws-name {

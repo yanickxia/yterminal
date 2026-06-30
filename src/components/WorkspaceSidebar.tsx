@@ -44,7 +44,12 @@ export function WorkspaceSidebar({
   const [draft, setDraft] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
+  // Drop target plus which side of it the cursor is on. Sidebar is vertical,
+  // so "before" / "after" map to top half / bottom half of the row.
+  const [over, setOver] = useState<{
+    id: string;
+    side: "before" | "after";
+  } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{
     wsId: string;
     x: number;
@@ -101,10 +106,12 @@ export function WorkspaceSidebar({
     }
   }
 
-  function onDrop(targetId: string) {
-    if (dragId && dragId !== targetId) reorderWorkspace(dragId, targetId);
+  function onDrop(targetId: string, side: "before" | "after") {
+    if (dragId && dragId !== targetId) {
+      reorderWorkspace(dragId, targetId, side);
+    }
     setDragId(null);
-    setOverId(null);
+    setOver(null);
   }
 
   function toggleIconPicker(wsId: string, e: MouseEvent) {
@@ -277,33 +284,63 @@ export function WorkspaceSidebar({
         </div>
       </div>
       <div className="ws-list">
-        {workspaces.map((w) => (
+        {workspaces.map((w) => {
+          const isOver = over?.id === w.id && dragId && w.id !== dragId;
+          const dragSrc = dragId
+            ? workspaces.find((x) => x.id === dragId)
+            : null;
+          // Cross-segment drops (pinned vs unpinned) are rejected by the store
+          // to preserve the "pinned items render before unpinned" invariant —
+          // mirror it here so we don't paint a misleading insertion line.
+          const allowed =
+            !dragSrc || Boolean(dragSrc.pinned) === Boolean(w.pinned);
+          return (
           <div
             key={w.id}
             className={
               "ws-item" +
               (w.id === activeId ? " active" : "") +
               (w.id === dragId ? " dragging" : "") +
-              (w.id === overId && dragId && w.id !== dragId ? " drag-over" : "") +
+              (isOver && allowed && over!.side === "before" ? " drag-over-before" : "") +
+              (isOver && allowed && over!.side === "after" ? " drag-over-after" : "") +
               (w.pinned ? " pinned" : "")
             }
             draggable={editingId !== w.id}
             onDragStart={(e) => {
               setDragId(w.id);
               e.dataTransfer.effectAllowed = "move";
+              // WKWebView swallows the drop event unless setData is called at
+              // least once during dragstart — see TabBar for the same fix.
+              e.dataTransfer.setData("text/plain", w.id);
             }}
             onDragOver={(e) => {
+              if (!allowed) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "none";
+                if (over) setOver(null);
+                return;
+              }
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
-              if (overId !== w.id) setOverId(w.id);
+              const r = e.currentTarget.getBoundingClientRect();
+              const side: "before" | "after" =
+                e.clientY < r.top + r.height / 2 ? "before" : "after";
+              if (over?.id !== w.id || over?.side !== side) {
+                setOver({ id: w.id, side });
+              }
             }}
             onDrop={(e) => {
               e.preventDefault();
-              onDrop(w.id);
+              if (!allowed || !over) {
+                setDragId(null);
+                setOver(null);
+                return;
+              }
+              onDrop(w.id, over.side);
             }}
             onDragEnd={() => {
               setDragId(null);
-              setOverId(null);
+              setOver(null);
             }}
             onClick={() => onRowClick(w.id, w.name)}
             onDoubleClick={() => beginEdit(w.id, w.name)}
@@ -364,7 +401,8 @@ export function WorkspaceSidebar({
               </>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="sidebar-footer">

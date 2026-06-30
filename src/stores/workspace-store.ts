@@ -60,7 +60,11 @@ interface WorkspaceState {
   renameWorkspace: (id: string, name: string) => void;
   setWorkspaceIcon: (id: string, icon: string) => void;
   setActiveWorkspace: (id: string) => void;
-  reorderWorkspace: (fromId: string, toId: string) => void;
+  reorderWorkspace: (
+    fromId: string,
+    anchorId: string,
+    side: "before" | "after"
+  ) => void;
   toggleWorkspacePin: (id: string) => void;
   closeOtherWorkspaces: (keepId: string) => void;
   closeWorkspacesBefore: (anchorId: string) => void;
@@ -72,7 +76,12 @@ interface WorkspaceState {
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   setTabIcon: (workspaceId: string, tabId: string, icon: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
-  reorderTab: (workspaceId: string, fromId: string, toId: string) => void;
+  reorderTab: (
+    workspaceId: string,
+    fromId: string,
+    anchorId: string,
+    side: "before" | "after"
+  ) => void;
   toggleTabPin: (workspaceId: string, tabId: string) => void;
   closeOtherTabs: (workspaceId: string, keepTabId: string) => void;
   closeTabsBefore: (workspaceId: string, anchorTabId: string) => void;
@@ -118,19 +127,36 @@ function mapTab(
   );
 }
 
-/** helper: move the item with id `fromId` to the slot occupied by `toId`. */
-function moveById<T extends { id: string }>(
+/**
+ * Move `fromId` to the slot immediately before/after `anchorId`.
+ *
+ * Why this signature instead of a single target index: the UI needs symmetric
+ * drop behavior — dropping on the left half of an item should land before it,
+ * the right half after, regardless of which side the item came from. Encoding
+ * "anchor + side" lets the caller speak in those visual terms; the splice
+ * math (which has to compensate for the anchor shifting after `from` is
+ * removed) lives here once.
+ */
+export function insertAtAnchor<T extends { id: string }>(
   list: T[],
   fromId: string,
-  toId: string
+  anchorId: string,
+  side: "before" | "after"
 ): T[] {
-  if (fromId === toId) return list;
+  if (fromId === anchorId) return list;
   const from = list.findIndex((x) => x.id === fromId);
-  const to = list.findIndex((x) => x.id === toId);
-  if (from === -1 || to === -1) return list;
+  const anchor = list.findIndex((x) => x.id === anchorId);
+  if (from === -1 || anchor === -1) return list;
+
   const next = [...list];
   const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved);
+  // anchor index shifts left by 1 if we removed an item before it
+  const anchorAfter = from < anchor ? anchor - 1 : anchor;
+  const insertAt = side === "before" ? anchorAfter : anchorAfter + 1;
+  // landing in the original slot is a no-op (e.g. dropping A "before" B when
+  // A was already directly before B)
+  if (insertAt === from) return list;
+  next.splice(insertAt, 0, moved);
   return next;
 }
 
@@ -198,10 +224,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         })),
 
       setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
-      reorderWorkspace: (fromId, toId) =>
-        set((s) => ({
-          workspaces: moveById(s.workspaces, fromId, toId),
-        })),
+      reorderWorkspace: (fromId, anchorId, side) =>
+        set((s) => {
+          // pinned-segment guard: refuse drops that would cross the pinned
+          // boundary, so the invariant "pinned items render before unpinned"
+          // (maintained by togglePinAndReorder) is preserved.
+          const src = s.workspaces.find((w) => w.id === fromId);
+          const anc = s.workspaces.find((w) => w.id === anchorId);
+          if (!src || !anc) return s;
+          if (Boolean(src.pinned) !== Boolean(anc.pinned)) return s;
+          return {
+            workspaces: insertAtAnchor(s.workspaces, fromId, anchorId, side),
+          };
+        }),
 
       toggleWorkspacePin: (id) =>
         set((s) => ({ workspaces: togglePinAndReorder(s.workspaces, id) })),
@@ -295,13 +330,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           ),
         })),
 
-      reorderTab: (workspaceId, fromId, toId) =>
+      reorderTab: (workspaceId, fromId, anchorId, side) =>
         set((s) => ({
-          workspaces: s.workspaces.map((w) =>
-            w.id === workspaceId
-              ? { ...w, tabs: moveById(w.tabs, fromId, toId) }
-              : w
-          ),
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const src = w.tabs.find((t) => t.id === fromId);
+            const anc = w.tabs.find((t) => t.id === anchorId);
+            if (!src || !anc) return w;
+            if (Boolean(src.pinned) !== Boolean(anc.pinned)) return w;
+            return { ...w, tabs: insertAtAnchor(w.tabs, fromId, anchorId, side) };
+          }),
         })),
 
       toggleTabPin: (workspaceId, tabId) =>
