@@ -57,6 +57,21 @@ export interface SplitNode {
 
 export type PaneTree = PaneLeaf | SplitNode;
 
+/**
+ * A read-only file opened inside a tab. When a Tab carries this, it renders the
+ * built-in file viewer instead of its terminal pane tree. The `root` leaf is
+ * kept as an inert placeholder so the workspace store's tree-walking code
+ * (cwd/agent snapshots, leaf collection, session disposal) keeps treating the
+ * tab uniformly without spawning a shell — no PaneTerminal ever mounts for it.
+ */
+export interface TabFile {
+  /** absolute path of the file being viewed */
+  path: string;
+  /** highlight.js language id; "markdown" is rendered rather than highlighted */
+  language: string;
+  markdown: boolean;
+}
+
 export interface Tab {
   id: string;
   /** display name; auto-derived from shell title unless customName is set */
@@ -73,6 +88,11 @@ export interface Tab {
   activePaneId: string;
   /** pinned tabs are rendered before unpinned ones and survive bulk-close */
   pinned?: boolean;
+  /**
+   * When set, this tab is a read-only file viewer rather than a terminal. The
+   * `root` leaf still exists but is never mounted as a shell.
+   */
+  file?: TabFile;
 }
 
 export interface Workspace {

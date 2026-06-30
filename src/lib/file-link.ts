@@ -11,7 +11,7 @@ import {
 } from "./file-link-classify";
 import { pathIsFile } from "./file-reader";
 import { openUrl, openPath } from "./opener";
-import { useViewerStore } from "../stores/viewer-store";
+import { useWorkspaceStore } from "../stores/workspace-store";
 
 /**
  * Decide what a clicked terminal token is and act on it. `cwd`/`home` resolve
@@ -46,7 +46,11 @@ export async function handleClickedToken(
 
   const target = classifyFilePath(abs);
   if (target.kind === "view") {
-    await useViewerStore.getState().openFile({
+    // Open (or re-activate) a read-only file viewer tab in the active workspace.
+    const store = useWorkspaceStore.getState();
+    const wsId = store.activeWorkspaceId;
+    if (!wsId) return false;
+    store.openFileTab(wsId, {
       path: target.path,
       language: target.language,
       markdown: target.markdown,

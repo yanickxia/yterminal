@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Tab, Workspace, PaneAgent } from "../lib/types";
+import type { Tab, Workspace, PaneAgent, TabFile } from "../lib/types";
 import { uid } from "../lib/uid";
 import {
   findLeaf,
@@ -41,6 +41,27 @@ function makeTab(name: string, cwd?: string): Tab {
   };
 }
 
+/** Last path segment, e.g. "/a/b/notes.md" -> "notes.md". */
+function fileTabName(path: string): string {
+  const norm = path.replace(/[\\/]+$/, "");
+  const seg = norm.split(/[\\/]/).pop() ?? norm;
+  return seg || norm;
+}
+
+function makeFileTab(file: TabFile): Tab {
+  // File tabs keep an inert placeholder leaf so the tree-walking store/snapshot
+  // code treats every tab uniformly; it's never mounted as a shell.
+  const leaf = makeLeaf("~");
+  return {
+    id: uid("tab"),
+    name: fileTabName(file.path),
+    cwd: "~",
+    root: leaf,
+    activePaneId: leaf.id,
+    file,
+  };
+}
+
 function makeWorkspace(name: string): Workspace {
   const firstTab = makeTab("shell");
   return {
@@ -73,6 +94,12 @@ interface WorkspaceState {
 
   // ---- tab ops ----
   addTab: (workspaceId: string, name?: string, cwd?: string) => void;
+  /**
+   * Open a read-only file viewer tab in the given workspace. If a file tab for
+   * the same path already exists there, it's activated instead of duplicated.
+   * Returns the tab id that ended up active.
+   */
+  openFileTab: (workspaceId: string, file: TabFile) => string;
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   setTabIcon: (workspaceId: string, tabId: string, icon: string) => void;
@@ -301,6 +328,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           }),
         })),
 
+      openFileTab: (workspaceId, file) => {
+        let resultId = "";
+        set((s) => ({
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            // reuse an existing file tab for the same path instead of stacking
+            // duplicates — just re-activate it.
+            const existing = w.tabs.find((t) => t.file?.path === file.path);
+            if (existing) {
+              resultId = existing.id;
+              return { ...w, activeTabId: existing.id };
+            }
+            const tab = makeFileTab(file);
+            resultId = tab.id;
+            return { ...w, tabs: [...w.tabs, tab], activeTabId: tab.id };
+          }),
+        }));
+        return resultId;
+      },
+
       removeTab: (workspaceId, tabId) =>
         set((s) => ({
           workspaces: s.workspaces.map((w) => {
@@ -486,7 +533,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: "yterminal-workspaces",
-      version: 4,
+      version: 5,
       partialize: (s) => ({
         workspaces: s.workspaces,
         activeWorkspaceId: s.activeWorkspaceId,
@@ -494,6 +541,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       // v1 (flat tabs, no pane tree) -> v2: rebuild tabs with a single leaf.
       // v2 -> v3: PaneLeaf.agent is additive/optional; nothing to rewrite.
       // v3 -> v4: PaneAgent.env is additive/optional; nothing to rewrite.
+      // v4 -> v5: Tab.file is additive/optional; nothing to rewrite.
       migrate: (persisted: any, version) => {
         if (!persisted) return persisted;
         if (version < 2 && Array.isArray(persisted.workspaces)) {

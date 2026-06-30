@@ -17,6 +17,7 @@ import { scheduleAutoCheck } from "./lib/updater-auto-check";
 import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { FileViewer } from "./components/FileViewer";
+import { useViewerStore } from "./stores/viewer-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 
 export default function App() {
@@ -157,6 +158,19 @@ export default function App() {
         return;
       }
       if (!ws || !ws.activeTabId) return;
+      const curTab = ws.tabs.find((t) => t.id === ws.activeTabId);
+      // File-viewer tabs have no shell: split/search don't apply, and close
+      // skips session disposal (just forgets the cached content).
+      if (curTab?.file) {
+        if (key === "w") {
+          e.preventDefault();
+          useViewerStore.getState().drop(curTab.id);
+          if (ws.tabs.length > 1 || workspaces.length > 1) {
+            removeTab(ws.id, ws.activeTabId);
+          }
+        }
+        return;
+      }
       if (key === "d") {
         e.preventDefault();
         splitActivePane(ws.id, ws.activeTabId, e.shiftKey ? "column" : "row");
@@ -247,13 +261,17 @@ export default function App() {
             <TabBar workspace={ws} />
             <div className="terminal-area">
               {activeTab ? (
-                <PaneRenderer
-                  node={activeTab.root}
-                  activePaneId={activeTab.activePaneId}
-                  onFocusPane={onFocusPane}
-                  onExitPane={onExitPane}
-                  onResize={onResizePane}
-                />
+                activeTab.file ? (
+                  <FileViewer tabId={activeTab.id} file={activeTab.file} />
+                ) : (
+                  <PaneRenderer
+                    node={activeTab.root}
+                    activePaneId={activeTab.activePaneId}
+                    onFocusPane={onFocusPane}
+                    onExitPane={onExitPane}
+                    onResize={onResizePane}
+                  />
+                )
               ) : (
                 <div className="empty">No tab. Press + to open a shell.</div>
               )}
@@ -279,7 +297,6 @@ export default function App() {
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}
       />
-      <FileViewer />
     </div>
   );
 }
