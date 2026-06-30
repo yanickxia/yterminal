@@ -3,6 +3,7 @@ import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Tab, Workspace } from "../lib/types";
 import { addTabInheritingCwd, disposeSession } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
+import { useViewerStore } from "../stores/viewer-store";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
@@ -82,8 +83,13 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   function closeTab(tabId: string) {
     const tab = workspace.tabs.find((t) => t.id === tabId);
     if (tab) {
-      // kill every shell in this tab's split tree
-      for (const paneId of collectLeafIds(tab.root)) disposeSession(paneId);
+      if (tab.file) {
+        // file tabs have no live shell; just forget their cached content.
+        useViewerStore.getState().drop(tab.id);
+      } else {
+        // kill every shell in this tab's split tree
+        for (const paneId of collectLeafIds(tab.root)) disposeSession(paneId);
+      }
     }
     removeTab(workspace.id, tabId);
   }
@@ -91,6 +97,10 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   /** Dispose all sessions in a set of tabs (used by bulk-close menu items). */
   function disposeTabs(tabs: Tab[]) {
     for (const t of tabs) {
+      if (t.file) {
+        useViewerStore.getState().drop(t.id);
+        continue;
+      }
       for (const paneId of collectLeafIds(t.root)) disposeSession(paneId);
     }
   }
@@ -298,7 +308,8 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
 
       <div className="tabbar-spacer" />
 
-      {workspace.activeTabId && (
+      {workspace.activeTabId &&
+        !workspace.tabs.find((t) => t.id === workspace.activeTabId)?.file && (
         <>
           <button
             className="icon-btn"

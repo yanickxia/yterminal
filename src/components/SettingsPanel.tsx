@@ -15,6 +15,7 @@ import {
 import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
+import { detectIsMac } from "../lib/link-modifier";
 import { useUpdaterStore } from "../stores/updater-store";
 import {
   exportLogs,
@@ -48,6 +49,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const scrollbackLines = useSettingsStore((s) => s.scrollbackLines);
   const defaultCwdMode = useSettingsStore((s) => s.defaultCwdMode);
   const defaultCwdFixed = useSettingsStore((s) => s.defaultCwdFixed);
+  const requireModifierForLinks = useSettingsStore(
+    (s) => s.requireModifierForLinks
+  );
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
@@ -56,8 +60,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setScrollbackLines = useSettingsStore((s) => s.setScrollbackLines);
   const setDefaultCwdMode = useSettingsStore((s) => s.setDefaultCwdMode);
   const setDefaultCwdFixed = useSettingsStore((s) => s.setDefaultCwdFixed);
+  const setRequireModifierForLinks = useSettingsStore(
+    (s) => s.setRequireModifierForLinks
+  );
 
   const [tab, setTab] = useState<TabId>("appearance");
+  const isMac = detectIsMac();
   const [cfgPath, setCfgPath] = useState("");
   const [fontsBump, setFontsBump] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -115,6 +123,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     scrollbackLines,
     defaultCwdMode,
     defaultCwdFixed,
+    requireModifierForLinks,
   ]);
 
   // close on Escape
@@ -374,6 +383,26 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <p className="field-hint">
                   New tabs inherit the active pane in this workspace. This is
                   used only when no pane directory is available.
+                </p>
+              </div>
+
+              {/* link click modifier gate */}
+              <div className="field">
+                <label className="field-label">Opening links</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={requireModifierForLinks}
+                    onChange={(e) =>
+                      setRequireModifierForLinks(e.target.checked)
+                    }
+                  />
+                  Require {isMac ? "Cmd" : "Ctrl"} to open links
+                </label>
+                <p className="field-hint">
+                  When on, links and file paths in terminal output open only on{" "}
+                  {isMac ? "Cmd" : "Ctrl"}+click. When off, a plain
+                  click opens them.
                 </p>
               </div>
             </>

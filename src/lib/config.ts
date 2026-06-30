@@ -24,6 +24,7 @@ import {
   DEFAULT_SCROLLBACK_LINES,
   SCROLLBACK_UNLIMITED,
   DEFAULT_CWD_MODE,
+  DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
   type DefaultCwdMode,
 } from "../stores/settings-store";
 
@@ -53,6 +54,8 @@ export interface YterminalConfig {
       /** absolute path used when mode === "fixed" */
       fixedPath: string;
     };
+    /** require Cmd/Ctrl to open links from terminal output (false = plain click) */
+    requireModifierForLinks: boolean;
   };
 }
 
@@ -76,6 +79,7 @@ export function configFromStore(): YterminalConfig {
         mode: s.defaultCwdMode,
         fixedPath: s.defaultCwdFixed,
       },
+      requireModifierForLinks: s.requireModifierForLinks,
     },
   };
 }
@@ -119,6 +123,10 @@ function validFixedPath(p: unknown): string {
   return typeof p === "string" ? p : "";
 }
 
+function validBool(b: unknown, fallback: boolean): boolean {
+  return typeof b === "boolean" ? b : fallback;
+}
+
 /**
  * Parse + validate raw JSON text into a normalized config. Unknown/invalid
  * values fall back to defaults, so a malformed or partial file is always safe.
@@ -159,6 +167,10 @@ export function parseConfig(text: string): YterminalConfig | null {
         mode: validCwdMode(dc.mode),
         fixedPath: validFixedPath(dc.fixedPath),
       },
+      requireModifierForLinks: validBool(
+        tm.requireModifierForLinks,
+        DEFAULT_REQUIRE_MODIFIER_FOR_LINKS
+      ),
     },
   };
 }
@@ -183,6 +195,9 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   const { mode, fixedPath } = cfg.terminal.defaultCwd;
   if (mode !== s.defaultCwdMode) s.setDefaultCwdMode(mode);
   if (fixedPath !== s.defaultCwdFixed) s.setDefaultCwdFixed(fixedPath);
+  const { requireModifierForLinks } = cfg.terminal;
+  if (requireModifierForLinks !== s.requireModifierForLinks)
+    s.setRequireModifierForLinks(requireModifierForLinks);
 }
 
 /** Absolute path of the config file (for display in the UI). */

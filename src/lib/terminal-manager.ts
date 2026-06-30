@@ -13,6 +13,8 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
+import { handleClickedToken } from "./file-link";
+import { findPathSpans } from "./file-link-classify";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -48,6 +50,23 @@ import {
 } from "./input-line";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
+
+// Lazily-resolved, cached home directory. Used to expand `~`-prefixed paths in
+// clicked terminal tokens. Resolved once on first need; failures (non-Tauri /
+// no API) leave it undefined and `~` paths simply aren't expanded.
+let homeDirCache: string | undefined;
+let homeDirProbe: Promise<void> | null = null;
+function primeHomeDir(): void {
+  if (homeDirCache !== undefined || homeDirProbe) return;
+  homeDirProbe = (async () => {
+    try {
+      const { homeDir } = await import("@tauri-apps/api/path");
+      homeDirCache = (await homeDir()).replace(/\/+$/, "");
+    } catch {
+      /* non-Tauri or unavailable — leave undefined */
+    }
+  })();
+}
 
 interface Session {
   term: Terminal;
@@ -326,13 +345,65 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(search);
   term.loadAddon(
     new WebLinksAddon((event, uri) => {
-      if (shouldOpenLink(event, isMac)) {
+      if (
+        shouldOpenLink(
+          event,
+          isMac,
+          useSettingsStore.getState().requireModifierForLinks
+        )
+      ) {
         void openUrl(uri).catch((err) => {
           console.warn("openUrl failed", uri, err);
         });
       }
     }),
   );
+  // File-path link provider: makes path-like tokens in terminal output
+  // clickable (Cmd/Ctrl+click, same modifier gate as web links). Resolution
+  // is relative to the pane's live cwd; a recognized text type opens in the
+  // built-in viewer, anything else is handed to the OS.
+  primeHomeDir();
+  term.registerLinkProvider({
+    provideLinks(lineNumber, callback) {
+      const buf = term.buffer.active;
+      const bufLine = buf.getLine(lineNumber - 1);
+      if (!bufLine) {
+        callback(undefined);
+        return;
+      }
+      const text = bufLine.translateToString(true);
+      const spans = findPathSpans(text);
+      if (spans.length === 0) {
+        callback(undefined);
+        return;
+      }
+      callback(
+        spans.map((span) => ({
+          // IBufferRange is 1-based and end-inclusive.
+          range: {
+            start: { x: span.start + 1, y: lineNumber },
+            end: { x: span.end, y: lineNumber },
+          },
+          text: span.token,
+          activate: (event: MouseEvent, token: string) => {
+            if (
+              !shouldOpenLink(
+                event,
+                isMac,
+                useSettingsStore.getState().requireModifierForLinks
+              )
+            )
+              return;
+            const cur = sessions.get(tabId);
+            const cwd = cur?.shellCwd ?? "";
+            void handleClickedToken(token, cwd, homeDirCache).catch((err) =>
+              console.warn("file link open failed", token, err)
+            );
+          },
+        }))
+      );
+    },
+  });
   // NOTE: `term.open(el)` is intentionally deferred to attachSession's first
   // real DOM insertion. The hookups below (parser/key/data wiring, scrollback
   // replay) don't depend on the renderer being live — they touch the parser,

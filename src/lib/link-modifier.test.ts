@@ -48,4 +48,26 @@ describe("shouldOpenLink", () => {
       expect(shouldOpenLink(mkEvent({}), false)).toBe(false);
     });
   });
+
+  describe("requireModifier=false (plain-click sniffing)", () => {
+    it("returns true with no modifier on macOS", () => {
+      expect(shouldOpenLink(mkEvent({}), true, false)).toBe(true);
+    });
+    it("returns true with no modifier on Linux/Windows", () => {
+      expect(shouldOpenLink(mkEvent({}), false, false)).toBe(true);
+    });
+    it("returns true regardless of any modifier state", () => {
+      expect(shouldOpenLink(mkEvent({ ctrlKey: true }), true, false)).toBe(true);
+      expect(shouldOpenLink(mkEvent({ metaKey: true }), false, false)).toBe(
+        true
+      );
+    });
+  });
+
+  describe("requireModifier defaults to true", () => {
+    it("still gates on the modifier when omitted", () => {
+      expect(shouldOpenLink(mkEvent({}), true)).toBe(false);
+      expect(shouldOpenLink(mkEvent({ metaKey: true }), true)).toBe(true);
+    });
+  });
 });
