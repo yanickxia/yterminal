@@ -6,12 +6,42 @@
 //           └── PaneTree       binary-ish split tree of terminal panes
 //                 └── PaneLeaf each leaf == one live shell (terminal session)
 
+/** Coding agents whose session we can resume on tab restore. */
+export type AgentKind = "claude" | "codex" | "opencode";
+
+/**
+ * A coding agent that was running in a pane when the app was last persisted.
+ * Captured on the autosave tick so a restored tab can respawn the agent and
+ * resume its prior session.
+ */
+export interface PaneAgent {
+  kind: AgentKind;
+  /** literal launch token as the user typed it, e.g. "cc" or "claude". */
+  command: string;
+  /** the agent's on-disk session id, resolved at snapshot time. */
+  sessionId: string;
+  /**
+   * Selected env vars captured from the running agent process (whitelisted
+   * prefixes only — ANTHROPIC_/CLAUDE_/CODEX_/OPENCODE_). Replayed on resume
+   * so configuration that lived in an alias function (BASE_URL, AUTH_TOKEN,
+   * model overrides) carries over without needing to identify the alias name.
+   * Treat as sensitive: AUTH_TOKEN-style values may be present.
+   */
+  env?: Record<string, string>;
+}
+
 /** A leaf node: one terminal/shell. Its id is the terminal session key. */
 export interface PaneLeaf {
   type: "leaf";
   id: string;
   /** working directory the shell was spawned in */
   cwd: string;
+  /**
+   * Set when a coding agent was live in this pane at the last snapshot. On
+   * restore, the shell respawns and this agent is resumed via its CLI's
+   * resume flag. Cleared when no agent is running.
+   */
+  agent?: PaneAgent;
 }
 
 /** An internal node: splits its children along one axis. */

@@ -239,6 +239,371 @@ fn process_cwd(pid: u32) -> Result<String, String> {
 }
 
 // ============================================================================
+// Agent session resume support.
+//
+// Two read-only introspection commands used by the frontend to (a) detect a
+// coding agent (Claude Code / Codex / OpenCode) running inside a pane's shell
+// and (b) resolve that agent's current on-disk session id, so a restored tab
+// can respawn the agent with its resume flag. Both are SYNC commands (run on
+// Tauri's sync command pool, like `process_cwd`) — they only read /proc, run
+// `ps`, or stat files, so they never need the async runtime and can't starve
+// the PTY data plane.
+// ============================================================================
+
+/// One process in a pane's descendant tree. `argv` is the full command line
+/// (argv[0] first) so the frontend can match an agent even when it's launched
+/// via a node wrapper or a shell alias that resolves to a different binary.
+#[derive(serde::Serialize)]
+struct ProcInfo {
+    pid: u32,
+    ppid: u32,
+    argv: Vec<String>,
+}
+
+/// Return every descendant process of `pid` (not including `pid` itself) with
+/// its argv. Used to detect a coding agent running inside a pane's shell.
+///
+/// Linux: walk `/proc`, reading `/proc/<pid>/stat` for ppid and
+///   `/proc/<pid>/cmdline` (NUL-separated) for argv.
+/// macOS: one `ps -axo pid=,ppid=,command=` pass, then filter to descendants.
+/// Other: empty (feature inert, same as `process_cwd`).
+#[tauri::command]
+fn pane_process_tree(pid: u32) -> Vec<ProcInfo> {
+    let all = enumerate_processes();
+    descendants_of(pid, all)
+}
+
+/// Read every process on the machine as (pid, ppid, argv).
+#[cfg(target_os = "linux")]
+fn enumerate_processes() -> Vec<ProcInfo> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // `comm` (field 2) is parenthesized and can contain spaces/parens, so
+        // ppid (field 4) must be located relative to the LAST ')'.
+        let Some(close) = stat.rfind(')') else {
+            continue;
+        };
+        let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+        // rest[0] = state, rest[1] = ppid
+        let ppid = rest.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let argv = read_cmdline_linux(pid);
+        out.push(ProcInfo { pid, ppid, argv });
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn read_cmdline_linux(pid: u32) -> Vec<String> {
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => bytes
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn enumerate_processes() -> Vec<ProcInfo> {
+    let out = match std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+    let mut procs = Vec::new();
+    for line in String::from_utf8_lossy(&out).lines() {
+        let line = line.trim_start();
+        let mut it = line.splitn(3, char::is_whitespace);
+        let (Some(pid_s), Some(ppid_s), Some(cmd)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid)) = (pid_s.parse::<u32>(), ppid_s.parse::<u32>()) else {
+            continue;
+        };
+        // `ps command=` is the full command line as a single string; split on
+        // whitespace for a best-effort argv. Good enough for basename matching;
+        // paths with spaces are rare for agent binaries.
+        let argv = cmd.split_whitespace().map(|s| s.to_string()).collect();
+        procs.push(ProcInfo { pid, ppid, argv });
+    }
+    procs
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn enumerate_processes() -> Vec<ProcInfo> {
+    Vec::new()
+}
+
+/// Filter `all` to the transitive descendants of `root` (excluding `root`).
+fn descendants_of(root: u32, all: Vec<ProcInfo>) -> Vec<ProcInfo> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, p) in all.iter().enumerate() {
+        children.entry(p.ppid).or_default().push(i);
+    }
+    let mut keep: HashSet<usize> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(root);
+    while let Some(parent) = queue.pop_front() {
+        if let Some(idxs) = children.get(&parent) {
+            for &i in idxs {
+                if keep.insert(i) {
+                    queue.push_back(all[i].pid);
+                }
+            }
+        }
+    }
+    all.into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// Read environment variables for a single process. Used to recover env-var
+/// configuration (e.g. ANTHROPIC_BASE_URL) the user's launcher alias set on
+/// the agent, so we can replay it on resume even when we don't know the alias
+/// name. Returned as a list of (key, value) pairs.
+///
+/// Linux: read `/proc/<pid>/environ` (NUL-separated KEY=VAL entries).
+/// macOS: `ps eww -p <pid> -o command=` — env vars follow the argv,
+///   space-separated as KEY=VAL tokens. Heuristic: a token whose substring
+///   before the first `=` is a valid env-var name shape is treated as an env
+///   entry. Values with spaces are mangled by this approach; for our caller's
+///   whitelist (Anthropic / Claude / Codex / OpenCode keys) that's acceptable.
+///   Caller filters by key whitelist anyway, so a stray argv look-alike is
+///   harmless.
+/// Other: empty.
+#[tauri::command]
+fn process_env(pid: u32) -> Vec<(String, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = format!("/proc/{pid}/environ");
+        match std::fs::read(&path) {
+            Ok(bytes) => bytes
+                .split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| {
+                    let s = String::from_utf8_lossy(s).into_owned();
+                    let eq = s.find('=')?;
+                    Some((s[..eq].to_string(), s[eq + 1..].to_string()))
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = match std::process::Command::new("/bin/ps")
+            .args(["eww", "-p", &pid.to_string(), "-o", "command="])
+            .output()
+        {
+            Ok(o) if o.status.success() => o.stdout,
+            _ => return Vec::new(),
+        };
+        let stdout = String::from_utf8_lossy(&out);
+        let mut seen = std::collections::HashSet::new();
+        let mut result: Vec<(String, String)> = Vec::new();
+        for token in stdout.split_whitespace() {
+            let Some(eq) = token.find('=') else { continue };
+            if eq == 0 {
+                continue;
+            }
+            let key = &token[..eq];
+            let valid_key = key.chars().enumerate().all(|(i, c)| {
+                if i == 0 {
+                    c.is_ascii_uppercase() || c == '_'
+                } else {
+                    c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
+                }
+            });
+            if !valid_key {
+                continue;
+            }
+            if seen.insert(key.to_string()) {
+                result.push((key.to_string(), token[eq + 1..].to_string()));
+            }
+        }
+        result
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        Vec::new()
+    }
+}
+
+/// Resolve the current on-disk session id for `kind` ("claude" | "codex" |
+/// "opencode"), bound to `cwd` where the agent needs it (Claude). Returns the
+/// id string, or `None` if no session store is found.
+#[tauri::command]
+fn agent_session_id(kind: String, cwd: String) -> Option<String> {
+    match kind.as_str() {
+        "claude" => claude_session_id(&cwd),
+        "codex" => codex_session_id(),
+        "opencode" => opencode_session_id(&cwd),
+        _ => None,
+    }
+}
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Newest-mtime file under `dir` (non-recursive) whose name passes `accept`.
+fn newest_file_in<P: AsRef<std::path::Path>>(
+    dir: P,
+    accept: impl Fn(&str) -> bool,
+) -> Option<std::path::PathBuf> {
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !accept(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            best = Some((mtime, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Recursively collect the newest-mtime file under `root` whose name passes
+/// `accept`. Used for Codex (date-nested) and OpenCode (project-nested) stores.
+fn newest_file_recursive(
+    root: &std::path::Path,
+    accept: &dyn Fn(&str) -> bool,
+) -> Option<(std::time::SystemTime, std::path::PathBuf)> {
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !accept(&name) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                best = Some((mtime, path));
+            }
+        }
+    }
+    best
+}
+
+/// Map a cwd to Claude's escaped project-dir name: every run of non
+/// `[A-Za-z0-9]` characters becomes a single `-`. e.g. `/home/me/app` →
+/// `-home-me-app`.
+fn claude_escape_cwd(cwd: &str) -> String {
+    let mut out = String::with_capacity(cwd.len());
+    for ch in cwd.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// Claude: newest `*.jsonl` in `~/.claude/projects/<escaped-cwd>/`; the session
+/// id is the file stem (a UUID). We trust the stem here — reading the last
+/// JSONL line for the `sessionId` field is a future refinement.
+fn claude_session_id(cwd: &str) -> Option<String> {
+    let home = home_dir()?;
+    let dir = home
+        .join(".claude")
+        .join("projects")
+        .join(claude_escape_cwd(cwd));
+    let newest = newest_file_in(&dir, |n| n.ends_with(".jsonl"))?;
+    newest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+/// Codex: newest `rollout-*.jsonl` under `$CODEX_HOME`/`~/.codex/sessions`; the
+/// session id is the trailing UUID of the filename
+/// (`rollout-<ISO-ts>-<uuid>.jsonl`).
+fn codex_session_id() -> Option<String> {
+    let base = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".codex")))?;
+    let dir = base.join("sessions");
+    let (_, path) =
+        newest_file_recursive(&dir, &|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))?;
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    // trailing 36-char UUID after the last "rollout-<timestamp>-" boundary.
+    extract_trailing_uuid(&stem)
+}
+
+/// Pull a canonical 8-4-4-4-12 hex UUID off the end of `s`, if present.
+fn extract_trailing_uuid(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 36 {
+        return None;
+    }
+    let tail = &s[s.len() - 36..];
+    let ok = tail.chars().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == '-',
+        _ => c.is_ascii_hexdigit(),
+    });
+    if ok {
+        Some(tail.to_string())
+    } else {
+        None
+    }
+}
+
+/// OpenCode: ids are `ses_<ULID>`, stored per-project under
+/// `$OPENCODE_DATA_DIR`/`~/.local/share/opencode`. We scan for the newest file
+/// whose stem starts with `ses_` and return that stem. cwd is currently unused
+/// (the whole store is scanned) but kept in the signature for a future
+/// project-slug-scoped lookup.
+fn opencode_session_id(_cwd: &str) -> Option<String> {
+    let base = std::env::var_os("OPENCODE_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".local").join("share").join("opencode")))?;
+    let (_, path) = newest_file_recursive(&base, &|n| n.starts_with("ses_"))?;
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    if stem.starts_with("ses_") {
+        Some(stem)
+    } else {
+        None
+    }
+}
+
+// ============================================================================
 // Per-pane scrollback storage (SQLite).
 //
 // Each pane's serialized xterm buffer lives in a single SQLite database. The
@@ -405,6 +770,9 @@ fn main() {
             list_fonts,
             refresh_fonts,
             process_cwd,
+            pane_process_tree,
+            agent_session_id,
+            process_env,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

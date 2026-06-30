@@ -1,7 +1,7 @@
 // Pure functions for manipulating a Tab's pane split tree.
 // No React / no store here — just immutable tree transforms.
 
-import type { PaneTree, PaneLeaf, SplitNode } from "./types";
+import type { PaneTree, PaneLeaf, SplitNode, PaneAgent } from "./types";
 import { uid } from "./uid";
 
 export function makeLeaf(cwd: string): PaneLeaf {
@@ -149,6 +149,29 @@ export function setLeafCwd(
   function recur(node: PaneTree): PaneTree {
     if (node.type === "leaf") {
       return node.id === id ? { ...node, cwd } : node;
+    }
+    return { ...node, children: node.children.map(recur) };
+  }
+  return recur(root);
+}
+
+/**
+ * Return a copy of the tree with the leaf `id`'s agent set (or cleared when
+ * `agent` is undefined). Used to remember a resumable coding agent across
+ * relaunches.
+ */
+export function setLeafAgent(
+  root: PaneTree,
+  id: string,
+  agent: PaneAgent | undefined
+): PaneTree {
+  function recur(node: PaneTree): PaneTree {
+    if (node.type === "leaf") {
+      if (node.id !== id) return node;
+      const next = { ...node };
+      if (agent) next.agent = agent;
+      else delete next.agent;
+      return next;
     }
     return { ...node, children: node.children.map(recur) };
   }
