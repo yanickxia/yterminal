@@ -32,6 +32,19 @@ import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
+import type { AgentKind, PaneAgent } from "./types";
+import { paneProcessTree, agentSessionId } from "./agent";
+import {
+  detectAgent,
+  classifyCommandToken,
+  buildResumeCommand,
+} from "./agent-detect";
+import {
+  makeInputLineState,
+  feedInput,
+  firstToken,
+  type InputLineState,
+} from "./input-line";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 
@@ -72,6 +85,24 @@ interface Session {
    * so when this signal is stale or absent we can query the process directly.
    */
   shellCwd?: string;
+  /**
+   * Reconstructed current input line, fed from `term.onData` (user keystrokes
+   * only). Lets us capture the literal launch token — including a shell alias —
+   * the user typed to start an agent, which the process argv never reveals.
+   */
+  inputLine: InputLineState;
+  /**
+   * Launch token, per agent kind, as the user last typed it in this pane.
+   * Paired with a live detection at snapshot time to recover the alias.
+   */
+  typedCommands: Map<AgentKind, string>;
+  /**
+   * Resume command queued for a restored pane. Injected once the shell is
+   * ready (first OSC 7 prompt, or a timeout fallback for bare shells).
+   */
+  pendingResume?: string;
+  /** Whether the queued resume command has already been injected. */
+  resumeInjected: boolean;
 }
 
 interface XtermCoreInternals {
@@ -131,6 +162,18 @@ function recordPaneCwd(paneId: string, cwd: string) {
       return;
     }
   }
+}
+
+/** Locate a pane leaf and the workspace/tab it lives in. */
+function locatePane(paneId: string) {
+  const store = useWorkspaceStore.getState();
+  for (const w of store.workspaces) {
+    for (const t of w.tabs) {
+      const leaf = findLeaf(t.root, paneId);
+      if (leaf) return { store, workspaceId: w.id, tabId: t.id, leaf };
+    }
+  }
+  return null;
 }
 
 function closePaneForExitedSession(paneId: string) {
@@ -339,6 +382,9 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     } catch {
       /* malformed percent-encoding — leave shellCwd untouched */
     }
+    // The first prompt is the earliest moment the shell is ready to run a
+    // command, so this is where we inject a queued agent-resume command.
+    if (s) maybeInjectResume(s);
     return true;
   });
 
@@ -375,6 +421,19 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       "term",
       `input pane=${tabId} bytes=${data.length}`
     );
+    // Reconstruct the user's current input line so we can capture the literal
+    // launch token (possibly a shell alias) when a coding agent is started.
+    // The running process argv only ever shows the resolved binary, so this is
+    // the only place the alias is observable.
+    if (s) {
+      const { state, submitted } = feedInput(s.inputLine, data);
+      s.inputLine = state;
+      if (submitted) {
+        const token = firstToken(submitted);
+        const kind = classifyCommandToken(token);
+        if (kind) s.typedCommands.set(kind, token);
+      }
+    }
     pty.write(data);
   });
   term.onResize(({ cols, rows }) => {
@@ -397,8 +456,39 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     else closePaneForExitedSession(tabId);
   });
 
-  s = { term, fit, serialize, search, pty, el, opened: false, disposed: false, exited: false };
+  s = {
+    term,
+    fit,
+    serialize,
+    search,
+    pty,
+    el,
+    opened: false,
+    disposed: false,
+    exited: false,
+    inputLine: makeInputLineState(),
+    typedCommands: new Map(),
+    resumeInjected: false,
+  };
   sessions.set(tabId, s);
+
+  // If this pane was restored from persistence with a remembered agent, queue
+  // a resume command. It is injected once the shell signals readiness (first
+  // OSC 7 prompt) or after a short timeout fallback for bare shells that never
+  // emit OSC 7. We only do this for a freshly created session that owns a
+  // persisted agent — never on tab switches (the session is cached) — so a
+  // long-lived pane is never re-resumed.
+  const located = locatePane(tabId);
+  if (located?.leaf.agent) {
+    s.pendingResume = buildResumeCommand(located.leaf.agent);
+    // Fallback: if no OSC 7 prompt arrives within this window, inject anyway so
+    // bare shells (no cwd hook) still resume the agent.
+    const captured = s;
+    window.setTimeout(() => {
+      if (!captured.disposed) maybeInjectResume(captured);
+    }, 1500);
+  }
+
   logger.info("term", `session created pane=${tabId} live_sessions=${sessions.size}`);
   return s;
 }
@@ -626,6 +716,26 @@ export async function addTabInheritingCwd(workspaceId: string) {
   store.addTab(workspaceId, undefined, cwd);
 }
 
+/**
+ * Inject a queued agent-resume command into a restored pane's shell, exactly
+ * once. Fired from the first OSC 7 prompt (shell is ready) or a timeout
+ * fallback. We write straight to the pty rather than through xterm, so the
+ * injected line never re-enters `feedInput` (which would otherwise re-capture
+ * our own command as a "typed" launch token).
+ */
+function maybeInjectResume(s: Session) {
+  if (s.disposed || s.exited) return;
+  if (!s.pendingResume || s.resumeInjected) return;
+  s.resumeInjected = true;
+  const cmd = s.pendingResume;
+  s.pendingResume = undefined;
+  try {
+    s.pty.write(cmd + "\r");
+  } catch {
+    /* pty already gone */
+  }
+}
+
 /** Walk every live session, query its real cwd, and push it into the store. */
 let cwdSnapshotPromise: Promise<void> | null = null;
 export async function snapshotAllCwds() {
@@ -643,6 +753,71 @@ export async function snapshotAllCwds() {
     cwdSnapshotPromise = null;
   });
   return cwdSnapshotPromise;
+}
+
+/**
+ * Walk every live session, detect whether a coding agent (claude/codex/
+ * opencode) is currently running in its shell, and persist enough to resume it
+ * on next launch: the agent kind, the literal launch token the user typed
+ * (preserving an alias), and the agent's current on-disk session id. When no
+ * agent is detected the remembered agent is cleared, so a finished agent isn't
+ * spuriously resumed.
+ */
+let agentSnapshotPromise: Promise<void> | null = null;
+export async function snapshotAllAgents() {
+  if (agentSnapshotPromise) return agentSnapshotPromise;
+  agentSnapshotPromise = (async () => {
+    const entries = Array.from(sessions.entries());
+    await Promise.all(
+      entries.map(async ([paneId, s]) => {
+        if (s.disposed || s.exited) return;
+        const pid = s.pty.pid;
+        if (typeof pid !== "number" || pid <= 0) return;
+
+        const located = locatePane(paneId);
+        if (!located) return;
+
+        const tree = await paneProcessTree(pid);
+        const detected = detectAgent(tree);
+        if (!detected) {
+          // No agent running now — clear any stale remembered agent.
+          if (located.leaf.agent) {
+            located.store.setPaneAgent(
+              located.workspaceId,
+              located.tabId,
+              paneId,
+              undefined
+            );
+          }
+          return;
+        }
+
+        const cwd =
+          (await getSessionCwd(paneId)) ?? located.leaf.cwd ?? s.shellCwd;
+        if (!cwd) return;
+        const sessionId = await agentSessionId(detected.kind, cwd);
+        if (!sessionId) return;
+
+        // Prefer the literal token the user typed (an alias survives this way);
+        // fall back to the agent's canonical name when we never saw the launch.
+        const command = s.typedCommands.get(detected.kind) ?? detected.kind;
+        const agent: PaneAgent = {
+          kind: detected.kind,
+          command,
+          sessionId,
+        };
+        located.store.setPaneAgent(
+          located.workspaceId,
+          located.tabId,
+          paneId,
+          agent
+        );
+      })
+    );
+  })().finally(() => {
+    agentSnapshotPromise = null;
+  });
+  return agentSnapshotPromise;
 }
 
 /**
@@ -689,12 +864,14 @@ if (typeof window !== "undefined") {
   window.setInterval(() => {
     persistAllSessions();
     void snapshotAllCwds();
+    void snapshotAllAgents();
   }, 15_000);
   window.addEventListener("beforeunload", () => {
     persistAllSessions();
     // beforeunload can't await — fire-and-forget; we rely on the 15s tick to
     // catch the recent state in practice.
     void snapshotAllCwds();
+    void snapshotAllAgents();
   });
 
   // Tauri's close event is async-capable. Intercept it once so we can flush the
@@ -709,7 +886,7 @@ if (typeof window !== "undefined") {
         closing = true;
         event.preventDefault();
         try {
-          await snapshotAllCwds();
+          await Promise.all([snapshotAllCwds(), snapshotAllAgents()]);
           persistAllSessions();
         } finally {
           await appWindow.destroy();

@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Tab, Workspace } from "../lib/types";
+import type { Tab, Workspace, PaneAgent } from "../lib/types";
 import { uid } from "../lib/uid";
 import {
   findLeaf,
@@ -11,6 +11,7 @@ import {
   removePane,
   setSizesAt,
   setLeafCwd,
+  setLeafAgent,
 } from "../lib/pane-tree";
 import { useSettingsStore } from "./settings-store";
 
@@ -107,6 +108,13 @@ interface WorkspaceState {
     tabId: string,
     paneId: string,
     cwd: string
+  ) => void;
+  /** record (or clear) the agent running in a leaf so a restart resumes it. */
+  setPaneAgent: (
+    workspaceId: string,
+    tabId: string,
+    paneId: string,
+    agent: PaneAgent | undefined
   ) => void;
 
   // ---- selectors ----
@@ -463,6 +471,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           })),
         })),
 
+      setPaneAgent: (workspaceId, tabId, paneId, agent) =>
+        set((s) => ({
+          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+            ...t,
+            root: setLeafAgent(t.root, paneId, agent),
+          })),
+        })),
+
       activeWorkspace: () => {
         const s = get();
         return s.workspaces.find((w) => w.id === s.activeWorkspaceId);
@@ -470,12 +486,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }),
     {
       name: "yterminal-workspaces",
-      version: 2,
+      version: 3,
       partialize: (s) => ({
         workspaces: s.workspaces,
         activeWorkspaceId: s.activeWorkspaceId,
       }),
       // v1 (flat tabs, no pane tree) -> v2: rebuild tabs with a single leaf.
+      // v2 -> v3: PaneLeaf.agent is additive/optional; nothing to rewrite.
       migrate: (persisted: any, version) => {
         if (!persisted) return persisted;
         if (version < 2 && Array.isArray(persisted.workspaces)) {
