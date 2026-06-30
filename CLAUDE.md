@@ -60,6 +60,14 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 
 `src-tauri/src/pty.rs` calls `portable-pty` directly and exposes `pty_spawn` / `pty_read` / `pty_write` / `pty_resize` / `pty_kill` / `pty_exitstatus` as top-level Tauri commands. The frontend wraps these in `src/lib/pty.ts` (note: NOT the `tauri-pty` npm package). The reason this layer was rewritten: the upstream plugin returned an internal session counter as `pty.pid` instead of the real OS pid, which broke `process_cwd(pid)` (lsof on macOS / `/proc/<pid>/cwd` on Linux). Cwd lookup is what powers "new tab inherits the active shell's cwd" and "restart in the directory I left off".
 
+Blocking syscalls (`reader.read`, `child.wait`, `writer.write_all`) MUST stay off the async worker pool. Each live session has two long-running tasks in flight from the JS side (`readLoop` and `waitForExit`); if either parks an async worker via a sync syscall, ~8 sessions exhaust the default 16-worker tokio runtime on a 16-core Mac and the next shell's first read never schedules (its tab renders blank forever). The current shape:
+
+- Reader: `pty_spawn` starts a dedicated OS thread per session that loops `read()` and pushes chunks into a `tokio::sync::mpsc` channel; `pty_read` only `recv().await`s — never blocks a worker.
+- `pty_exitstatus` and `pty_write` run their sync calls inside `tauri::async_runtime::spawn_blocking`, dispatching to tokio's blocking-thread pool.
+- The reader thread self-terminates when the channel's receiver is dropped (session removed) or when `read()` returns EOF.
+
+Do not re-introduce a direct sync call inside any `#[tauri::command] async fn` here.
+
 If you need to change PTY behavior, edit `src-tauri/src/pty.rs` and `src/lib/pty.ts` together. Don't reintroduce the plugin.
 
 ### Persistence — three separate stores
