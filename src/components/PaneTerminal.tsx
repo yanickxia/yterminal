@@ -32,19 +32,23 @@ export function PaneTerminal({
   // with the user's wheel events and made scroll jump around mid-browse.
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
-  // Capture the initial cwd in a ref. After the session is spawned (first
-  // attach), this value is irrelevant — getOrCreateSession early-returns and
-  // ignores the cwd arg. Pulling it out of the effect deps means a later
-  // `cd` (which updates pane.cwd via the snapshot tick) won't gratuitously
-  // tear down and re-mount the running xterm session.
-  const initialCwdRef = useRef(pane.cwd);
+  // Mirror pane.cwd through a ref. Pane.cwd changes (the 15s snapshot tick,
+  // OSC 7 updates) must NOT trigger the effect below — that would tear down a
+  // live shell. But when the same PaneTerminal instance is reused for a
+  // different pane (React reconciliation: activeTab switch, no `key`), the
+  // effect re-runs with the new pane.id and needs the *new* pane's cwd to
+  // spawn its shell in the right place. Refreshing the ref on every render
+  // gives us both: the effect deps stay `[pane.id]` (no spurious re-runs) but
+  // we read the latest cwd when the effect actually fires.
+  const cwdRef = useRef(pane.cwd);
+  cwdRef.current = pane.cwd;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     // close this pane when its shell process exits (e.g. user types `exit`)
     onSessionExit(pane.id, (id) => onExitRef.current(id));
-    attachSession(pane.id, container, initialCwdRef.current);
+    attachSession(pane.id, container, cwdRef.current);
     return () => {
       offSessionExit(pane.id);
       detachSession(pane.id);
