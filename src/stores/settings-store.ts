@@ -33,6 +33,14 @@ export const SCROLLBACK_UNLIMITED = 0;
 export type DefaultCwdMode = "home" | "inherit" | "fixed";
 export const DEFAULT_CWD_MODE: DefaultCwdMode = "inherit";
 
+/**
+ * Whether opening links (web URLs and file paths) from terminal output
+ * requires the platform modifier key (Cmd on macOS, Ctrl elsewhere). When
+ * false, a plain click opens them — the terminal sniffs links directly with
+ * no helper key. Default true to match conventional terminal behavior.
+ */
+export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
+
 interface SettingsState {
   themeId: string;
   fontId: string;
@@ -44,6 +52,11 @@ interface SettingsState {
   defaultCwdMode: DefaultCwdMode;
   /** absolute path used when defaultCwdMode === "fixed"; empty falls back to home */
   defaultCwdFixed: string;
+  /**
+   * Require the platform modifier (Cmd/Ctrl) to open links from the terminal.
+   * When false, a plain click opens web URLs and file paths.
+   */
+  requireModifierForLinks: boolean;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
 
@@ -55,6 +68,7 @@ interface SettingsState {
   setScrollbackLines: (lines: number) => void;
   setDefaultCwdMode: (mode: DefaultCwdMode) => void;
   setDefaultCwdFixed: (path: string) => void;
+  setRequireModifierForLinks: (on: boolean) => void;
   setDebugVerbose: (on: boolean) => void;
 }
 
@@ -69,6 +83,7 @@ export const useSettingsStore = create<SettingsState>()(
       scrollbackLines: DEFAULT_SCROLLBACK_LINES,
       defaultCwdMode: DEFAULT_CWD_MODE,
       defaultCwdFixed: "",
+      requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       debugVerbose: true,
 
       setTheme: (id) => set({ themeId: id }),
@@ -97,9 +112,11 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setDefaultCwdMode: (mode) => set({ defaultCwdMode: mode }),
       setDefaultCwdFixed: (path) => set({ defaultCwdFixed: path }),
+      setRequireModifierForLinks: (on) =>
+        set({ requireModifierForLinks: on }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
     }),
-    { name: "yterminal-settings", version: 2 }
+    { name: "yterminal-settings", version: 3 }
   )
 );
 

@@ -345,7 +345,13 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(search);
   term.loadAddon(
     new WebLinksAddon((event, uri) => {
-      if (shouldOpenLink(event, isMac)) {
+      if (
+        shouldOpenLink(
+          event,
+          isMac,
+          useSettingsStore.getState().requireModifierForLinks
+        )
+      ) {
         void openUrl(uri).catch((err) => {
           console.warn("openUrl failed", uri, err);
         });
@@ -380,7 +386,14 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
           },
           text: span.token,
           activate: (event: MouseEvent, token: string) => {
-            if (!shouldOpenLink(event, isMac)) return;
+            if (
+              !shouldOpenLink(
+                event,
+                isMac,
+                useSettingsStore.getState().requireModifierForLinks
+              )
+            )
+              return;
             const cur = sessions.get(tabId);
             const cwd = cur?.shellCwd ?? "";
             void handleClickedToken(token, cwd, homeDirCache).catch((err) =>
