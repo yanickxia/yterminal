@@ -33,6 +33,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # blocking tasks already exceeds tokio's default 16-worker pool on a 16-core
 # Mac, leaving new shells unable to schedule their first read).
 tokio = { version = "1", features = ["sync"] }
+# HTTP client for the AI sidebar: POST to an OpenAI-compatible chat endpoint.
+# rustls (not native-tls) keeps the build self-contained — no system OpenSSL.
+# `stream` lets us consume Server-Sent-Events deltas for the streaming variant.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# StreamExt for iterating reqwest's byte stream while parsing SSE `data:` lines.
+futures-util = "0.3"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

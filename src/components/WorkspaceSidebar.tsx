@@ -1,13 +1,13 @@
-import { useEffect, useState, useRef, type MouseEvent } from "react";
+import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { useAiStore } from "../stores/ai-store";
+import { useLayoutStore } from "../stores/layout-store";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { Workspace } from "../lib/types";
 import { disposeSession } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
-
-const COLLAPSE_KEY = "yterminal.sidebar.collapsed";
 
 /** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
 function railGlyph(name: string, icon?: string): string {
@@ -39,6 +39,7 @@ export function WorkspaceSidebar({
   const closeWorkspacesAfter = useWorkspaceStore(
     (s) => s.closeWorkspacesAfter
   );
+  const toggleAi = useAiStore((s) => s.toggleOpen);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -64,23 +65,12 @@ export function WorkspaceSidebar({
     id: string;
     anchor: { x: number; y: number };
   } | null>(null);
-  // collapsed state persists across launches; restored synchronously so the
-  // sidebar doesn't flash open on startup.
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(COLLAPSE_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
-    } catch {
-      /* storage unavailable */
-    }
-  }, [collapsed]);
+  // collapsed state + width live in the shared layout store (persisted there),
+  // so the app-level divider can resize this panel and the collapse toggle
+  // stays in sync with App's divider visibility.
+  const collapsed = useLayoutStore((s) => s.sidebarCollapsed);
+  const setCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
+  const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
 
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
@@ -230,6 +220,13 @@ export function WorkspaceSidebar({
           ))}
         </div>
         <button
+          className="icon-btn rail-ai"
+          title="Toggle AI sidebar (⌘I)"
+          onClick={() => toggleAi()}
+        >
+          ✦
+        </button>
+        <button
           className="icon-btn rail-settings"
           title="Appearance settings"
           onClick={() => setShowSettings(true)}
@@ -256,7 +253,10 @@ export function WorkspaceSidebar({
   }
 
   return (
-    <div className="sidebar">
+    <div
+      className="sidebar"
+      style={{ width: sidebarWidth, minWidth: sidebarWidth }}
+    >
       <div className="sidebar-header">
         <span>WORKSPACES</span>
         <div className="sidebar-header-actions">
@@ -273,6 +273,13 @@ export function WorkspaceSidebar({
             onClick={() => addWorkspace()}
           >
             +
+          </button>
+          <button
+            className="icon-btn"
+            title="Toggle AI sidebar (⌘I)"
+            onClick={() => toggleAi()}
+          >
+            ✦
           </button>
           <button
             className="icon-btn"

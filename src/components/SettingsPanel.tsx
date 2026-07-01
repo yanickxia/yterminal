@@ -24,11 +24,12 @@ import {
   setVerbose,
 } from "../lib/logger";
 
-type TabId = "appearance" | "terminal" | "debug" | "update";
+type TabId = "appearance" | "terminal" | "ai" | "debug" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "ai", label: "AI" },
   { id: "debug", label: "Debug" },
   { id: "update", label: "Update" },
 ];
@@ -408,6 +409,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             </>
           )}
 
+          {tab === "ai" && <AiTab />}
+
           {tab === "update" && (
             <UpdateTab />
           )}
@@ -424,6 +427,101 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function AiTab() {
+  const providers = useSettingsStore((s) => s.aiProviders);
+  const activeId = useSettingsStore((s) => s.activeAiProviderId);
+  const addProvider = useSettingsStore((s) => s.addAiProvider);
+  const updateProvider = useSettingsStore((s) => s.updateAiProvider);
+  const removeProvider = useSettingsStore((s) => s.removeAiProvider);
+  const setActive = useSettingsStore((s) => s.setActiveAiProvider);
+
+  return (
+    <>
+      <div className="field">
+        <label className="field-label">AI providers</label>
+        <p className="field-hint">
+          Configure one or more OpenAI-compatible endpoints for the AI sidebar.
+          The base URL is the API root (e.g. https://api.openai.com/v1); the app
+          appends /chat/completions. API keys are stored locally and are never
+          written to the syncable JSON config.
+        </p>
+      </div>
+
+      {providers.length === 0 && (
+        <div className="field">
+          <p className="field-hint">No providers yet.</p>
+        </div>
+      )}
+
+      {providers.map((p) => (
+        <div key={p.id} className="field ai-provider-card">
+          <div className="ai-provider-head">
+            <label className="checkbox-label">
+              <input
+                type="radio"
+                name="ai-active-provider"
+                checked={activeId === p.id}
+                onChange={() => setActive(p.id)}
+              />
+              Active
+            </label>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => removeProvider(p.id)}
+              title="Remove this provider"
+            >
+              remove
+            </button>
+          </div>
+          <input
+            type="text"
+            className="select"
+            placeholder="Name (e.g. OpenAI)"
+            value={p.name}
+            onChange={(e) => updateProvider(p.id, { name: e.target.value })}
+            spellCheck={false}
+          />
+          <input
+            type="text"
+            className="select"
+            style={{ marginTop: 6 }}
+            placeholder="Base URL (https://api.openai.com/v1)"
+            value={p.baseUrl}
+            onChange={(e) => updateProvider(p.id, { baseUrl: e.target.value })}
+            spellCheck={false}
+          />
+          <input
+            type="text"
+            className="select"
+            style={{ marginTop: 6 }}
+            placeholder="Model (gpt-4o-mini)"
+            value={p.model}
+            onChange={(e) => updateProvider(p.id, { model: e.target.value })}
+            spellCheck={false}
+          />
+          <input
+            type="password"
+            className="select"
+            style={{ marginTop: 6 }}
+            placeholder="API key"
+            value={p.apiKey}
+            onChange={(e) => updateProvider(p.id, { apiKey: e.target.value })}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </div>
+      ))}
+
+      <div className="field">
+        <button type="button" onClick={() => addProvider()}>
+          Add provider
+        </button>
+      </div>
+    </>
   );
 }
 

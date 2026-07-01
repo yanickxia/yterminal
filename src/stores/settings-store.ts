@@ -41,6 +41,34 @@ export const DEFAULT_CWD_MODE: DefaultCwdMode = "inherit";
  */
 export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
 
+/**
+ * A configured AI provider for the sidebar. `baseUrl` is an OpenAI-compatible
+ * API root (e.g. "https://api.openai.com/v1"); the Rust `ai_chat` command
+ * appends "/chat/completions". `apiKey` lives in localStorage only — it is
+ * deliberately NOT mirrored to the syncable ~/.config JSON so it can't leak via
+ * git/Dropbox.
+ */
+export interface AiProvider {
+  id: string;
+  /** display label, e.g. "OpenAI" */
+  name: string;
+  /** API root, e.g. "https://api.openai.com/v1" */
+  baseUrl: string;
+  /** model id, e.g. "gpt-4o-mini" */
+  model: string;
+  /** bearer token; localStorage-only, never written to the JSON config */
+  apiKey: string;
+}
+
+/** Stable id for a fresh provider row. crypto.randomUUID when available. */
+function newProviderId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
 interface SettingsState {
   themeId: string;
   fontId: string;
@@ -59,6 +87,10 @@ interface SettingsState {
   requireModifierForLinks: boolean;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
+  /** configured AI providers for the sidebar (see AiProvider) */
+  aiProviders: AiProvider[];
+  /** id of the provider used for new AI requests; "" when none configured */
+  activeAiProviderId: string;
 
   setTheme: (id: string) => void;
   setFont: (id: string) => void;
@@ -70,6 +102,13 @@ interface SettingsState {
   setDefaultCwdFixed: (path: string) => void;
   setRequireModifierForLinks: (on: boolean) => void;
   setDebugVerbose: (on: boolean) => void;
+  /** append a blank provider row and make it active; returns its id */
+  addAiProvider: () => string;
+  /** merge partial fields into an existing provider by id */
+  updateAiProvider: (id: string, patch: Partial<Omit<AiProvider, "id">>) => void;
+  /** remove a provider; if it was active, active falls back to the first left */
+  removeAiProvider: (id: string) => void;
+  setActiveAiProvider: (id: string) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -85,6 +124,8 @@ export const useSettingsStore = create<SettingsState>()(
       defaultCwdFixed: "",
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       debugVerbose: true,
+      aiProviders: [],
+      activeAiProviderId: "",
 
       setTheme: (id) => set({ themeId: id }),
       setFont: (id) => set({ fontId: id }),
@@ -115,10 +156,53 @@ export const useSettingsStore = create<SettingsState>()(
       setRequireModifierForLinks: (on) =>
         set({ requireModifierForLinks: on }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
+      addAiProvider: () => {
+        const id = newProviderId();
+        set((s) => ({
+          aiProviders: [
+            ...s.aiProviders,
+            {
+              id,
+              name: "New provider",
+              baseUrl: "https://api.openai.com/v1",
+              model: "gpt-4o-mini",
+              apiKey: "",
+            },
+          ],
+          // first provider added becomes active automatically
+          activeAiProviderId: s.activeAiProviderId || id,
+        }));
+        return id;
+      },
+      updateAiProvider: (id, patch) =>
+        set((s) => ({
+          aiProviders: s.aiProviders.map((p) =>
+            p.id === id ? { ...p, ...patch } : p
+          ),
+        })),
+      removeAiProvider: (id) =>
+        set((s) => {
+          const aiProviders = s.aiProviders.filter((p) => p.id !== id);
+          const activeAiProviderId =
+            s.activeAiProviderId === id
+              ? aiProviders[0]?.id ?? ""
+              : s.activeAiProviderId;
+          return { aiProviders, activeAiProviderId };
+        }),
+      setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 3 }
+    { name: "yterminal-settings", version: 4 }
   )
 );
+
+/** The active AI provider, or undefined when none is configured/selected. */
+export function activeAiProvider(): AiProvider | undefined {
+  const s = useSettingsStore.getState();
+  return (
+    s.aiProviders.find((p) => p.id === s.activeAiProviderId) ??
+    s.aiProviders[0]
+  );
+}
 
 /** Resolve the persisted scrollback setting to a concrete number for xterm. */
 export function resolveScrollback(lines: number): number {

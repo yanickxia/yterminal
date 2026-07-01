@@ -17,7 +17,11 @@ import { scheduleAutoCheck } from "./lib/updater-auto-check";
 import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { FileViewer } from "./components/FileViewer";
+import { AiSidebar } from "./components/AiSidebar";
+import { AppDivider } from "./components/AppDivider";
 import { useViewerStore } from "./stores/viewer-store";
+import { useAiStore } from "./stores/ai-store";
+import { useLayoutStore } from "./stores/layout-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 
 export default function App() {
@@ -38,6 +42,12 @@ export default function App() {
   const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const aiOpen = useAiStore((s) => s.open);
+  const aiWidth = useLayoutStore((s) => s.aiWidth);
+  const setAiWidth = useLayoutStore((s) => s.setAiWidth);
+  const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
+  const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,6 +153,13 @@ export default function App() {
         setPaletteOpen((open) => !open);
         return;
       }
+      // Cmd/Ctrl+I: toggle the AI sidebar. Works regardless of focus, like the
+      // palette — you can open it from an empty state and ask a question.
+      if (key === "i" && !e.shiftKey) {
+        e.preventDefault();
+        useAiStore.getState().toggleOpen();
+        return;
+      }
       // Cmd/Ctrl+N: new workspace. Independent of any active workspace/tab
       // so it works from a fully empty state too.
       if (key === "n" && !e.shiftKey) {
@@ -219,6 +236,15 @@ export default function App() {
     }
   }, [activeTab?.root]);
 
+  // opening/closing the AI sidebar or dragging either app divider changes the
+  // terminal area's width, so refit the active tab's panes once layout settles.
+  useEffect(() => {
+    if (activeTab) {
+      const id = requestAnimationFrame(() => refitTree(activeTab.root));
+      return () => cancelAnimationFrame(id);
+    }
+  }, [aiOpen, aiWidth, sidebarWidth, sidebarCollapsed]);
+
   // Stable callbacks passed into PaneRenderer / PaneTerminal. Without these,
   // every App re-render (e.g. the 15s cwd snapshot tick that updates the
   // workspace store) would hand PaneTerminal fresh arrow refs and trip its
@@ -250,9 +276,21 @@ export default function App() {
     },
     [wsId, tabId, tabRoot, resizeSplit]
   );
+
+  // Refit the active tab's panes after an app-divider drag commits its width.
+  const refitActive = useCallback(() => {
+    if (tabRoot) requestAnimationFrame(() => refitTree(tabRoot));
+  }, [tabRoot]);
   return (
     <div className="app">
       <WorkspaceSidebar onOpenPalette={() => setPaletteOpen(true)} />
+      {!sidebarCollapsed && (
+        <AppDivider
+          side="left"
+          onDrag={(dx) => setSidebarWidth(sidebarWidth + dx)}
+          onDragEnd={refitActive}
+        />
+      )}
       <div className="main">
         {!ready ? (
           <div className="empty">Starting…</div>
@@ -290,6 +328,14 @@ export default function App() {
           <div className="empty">No workspace.</div>
         )}
       </div>
+      {aiOpen && (
+        <AppDivider
+          side="right"
+          onDrag={(dx) => setAiWidth(aiWidth - dx)}
+          onDragEnd={refitActive}
+        />
+      )}
+      {aiOpen && <AiSidebar />}
       {paletteOpen && (
         <WorkspacePalette onClose={() => setPaletteOpen(false)} />
       )}

@@ -15,6 +15,7 @@ import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
+import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -48,6 +49,12 @@ import {
   firstToken,
   type InputLineState,
 } from "./input-line";
+import {
+  makeSentinel,
+  parseResult,
+  sentinelCommand,
+  scrubCommandEcho,
+} from "./agent-run";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 
@@ -704,7 +711,106 @@ function searchDecorations() {
   };
 }
 
-/** Find the next occurrence of `query` in a tab's terminal. */
+/**
+ * Serialize a tab's terminal buffer to clean plain text for the AI sidebar.
+ * Returns "" when the session doesn't exist. Escapes/control chars are stripped
+ * and the result is capped to the most recent `maxChars` (tail-biased, since
+ * the newest output is the most relevant context).
+ */
+export function getSessionText(tabId: string, maxChars = 12000): string {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return "";
+  try {
+    return cleanTerminalText(s.serialize.serialize(), maxChars);
+  } catch {
+    return "";
+  }
+}
+
+/** Result of an agent-run command: captured output plus the shell exit code. */
+export interface RunCommandResult {
+  output: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+/**
+ * Run a shell command in a pane on the AI agent's behalf and capture its
+ * output. This is the P3 execution primitive: the command is injected straight
+ * into the pty (same path as `maybeInjectResume`, so it doesn't re-enter the
+ * input-line reducer), bracketed by a unique sentinel that also carries `$?`.
+ * We tap `pty.onData` until the sentinel appears (or the timeout elapses),
+ * then strip escapes, drop the echoed command + sentinel lines, and return the
+ * middle. Best-effort by design — output may include prompt noise, which is
+ * acceptable as an LLM tool result. The pure parsing lives in `agent-run.ts`.
+ *
+ * Safety is enforced by the caller (the sidebar shows an approval gate before
+ * this is ever invoked); this function does not decide whether to run.
+ */
+export function runCommandInPane(
+  tabId: string,
+  command: string,
+  timeoutMs = 30000
+): Promise<RunCommandResult> {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed || s.exited) {
+    return Promise.resolve({ output: "", exitCode: null, timedOut: false });
+  }
+  const sentinel = makeSentinel();
+  const decoder = new TextDecoder();
+
+  return new Promise<RunCommandResult>((resolve) => {
+    let raw = "";
+    let settled = false;
+    let timer: number | undefined;
+
+    const finish = (result: RunCommandResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      try {
+        sub.dispose();
+      } catch {
+        /* already disposed */
+      }
+      resolve(result);
+    };
+
+    const sub = s.pty.onData((data: Uint8Array) => {
+      raw += decoder.decode(data, { stream: true });
+      const parsed = parseResult(stripAnsi(raw), sentinel, command);
+      if (parsed.done) {
+        finish({
+          output: parsed.output,
+          exitCode: parsed.exitCode,
+          timedOut: false,
+        });
+      }
+    });
+
+    timer = window.setTimeout(() => {
+      const parsed = parseResult(stripAnsi(raw), sentinel, command);
+      finish({
+        output: parsed.done
+          ? parsed.output
+          : scrubCommandEcho(stripAnsi(raw), command),
+        exitCode: parsed.exitCode,
+        timedOut: !parsed.done,
+      });
+    }, timeoutMs);
+
+    // Inject: run the command, then print the sentinel with its exit status.
+    // Written directly to the pty so feedInput doesn't capture it as a user
+    // "launch token".
+    try {
+      s.pty.write(`${command}\n${sentinelCommand(sentinel.marker)}\r`);
+    } catch {
+      finish({ output: "", exitCode: null, timedOut: false });
+    }
+  });
+}
+
+
 export function searchNext(tabId: string, query: string): boolean {
   const s = sessions.get(tabId);
   if (!s || s.disposed) return false;
@@ -726,8 +832,7 @@ export function searchPrevious(tabId: string, query: string): boolean {
   }
 }
 
-/** Clear any active search highlight and refocus the terminal. */
-export function clearSearch(tabId: string) {
+/** Clear any active search highlight and refocus the terminal. */export function clearSearch(tabId: string) {
   const s = sessions.get(tabId);
   if (!s || s.disposed) return;
   try {
