@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { useAiStore } from "../stores/ai-store";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -39,6 +40,7 @@ export function WorkspaceSidebar({
   const closeWorkspacesAfter = useWorkspaceStore(
     (s) => s.closeWorkspacesAfter
   );
+  const toggleAi = useAiStore((s) => s.toggleOpen);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -230,6 +232,13 @@ export function WorkspaceSidebar({
           ))}
         </div>
         <button
+          className="icon-btn rail-ai"
+          title="Toggle AI sidebar (⌘I)"
+          onClick={() => toggleAi()}
+        >
+          ✦
+        </button>
+        <button
           className="icon-btn rail-settings"
           title="Appearance settings"
           onClick={() => setShowSettings(true)}
@@ -273,6 +282,13 @@ export function WorkspaceSidebar({
             onClick={() => addWorkspace()}
           >
             +
+          </button>
+          <button
+            className="icon-btn"
+            title="Toggle AI sidebar (⌘I)"
+            onClick={() => toggleAi()}
+          >
+            ✦
           </button>
           <button
             className="icon-btn"

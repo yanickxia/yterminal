@@ -813,6 +813,94 @@ fn read_text_file(path: String) -> Result<FileContents, String> {
     })
 }
 
+// ============================================================================
+// AI sidebar — chat completion proxy
+// ============================================================================
+// The WebView can't call third-party LLM endpoints directly (CORS + we don't
+// want the API key exposed to arbitrary page script). This command is the one
+// egress point: the frontend hands us an already-assembled OpenAI-compatible
+// request (base url + key + model + messages) and we relay it with reqwest.
+// Non-streaming for now (P1) — the whole assistant turn comes back in one shot;
+// a streaming variant can be added later without changing this contract.
+
+/// One chat message in the OpenAI `/chat/completions` shape.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AiMessage {
+    role: String,
+    content: String,
+}
+
+/// A chat request from the frontend. `base_url` is the API root
+/// (e.g. `https://api.openai.com/v1`); we append `/chat/completions`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiChatRequest {
+    base_url: String,
+    api_key: String,
+    model: String,
+    messages: Vec<AiMessage>,
+}
+
+/// Relay a chat completion to an OpenAI-compatible endpoint and return the
+/// assistant's reply text. Errors are stringified for the frontend to surface.
+#[tauri::command]
+async fn ai_chat(req: AiChatRequest) -> Result<String, String> {
+    let base = req.base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("AI base URL is empty — configure a provider first".into());
+    }
+    if req.api_key.trim().is_empty() {
+        return Err("AI API key is empty — configure a provider first".into());
+    }
+    let url = format!("{base}/chat/completions");
+
+    let body = serde_json::json!({
+        "model": req.model,
+        "messages": req.messages,
+        "stream": false,
+    });
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(req.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request to {url} failed: {e}"))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response body: {e}"))?;
+
+    if !status.is_success() {
+        // Surface the provider's error payload verbatim (truncated) — it usually
+        // explains bad key / unknown model / rate limit far better than a code.
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!("provider returned {status}: {snippet}"));
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse response json: {e}"))?;
+    let content = parsed
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| {
+            let snippet: String = text.chars().take(500).collect();
+            format!("no assistant content in response: {snippet}")
+        })?;
+
+    Ok(content.to_string())
+}
+
 fn main() {
     logger::info(
         "main",
@@ -837,6 +925,7 @@ fn main() {
             process_env,
             path_is_file,
             read_text_file,
+            ai_chat,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

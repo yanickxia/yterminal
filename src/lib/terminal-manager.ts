@@ -15,6 +15,7 @@ import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
+import { cleanTerminalText } from "./terminal-text";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -704,6 +705,22 @@ function searchDecorations() {
   };
 }
 
+/**
+ * Serialize a tab's terminal buffer to clean plain text for the AI sidebar.
+ * Returns "" when the session doesn't exist. Escapes/control chars are stripped
+ * and the result is capped to the most recent `maxChars` (tail-biased, since
+ * the newest output is the most relevant context).
+ */
+export function getSessionText(tabId: string, maxChars = 12000): string {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return "";
+  try {
+    return cleanTerminalText(s.serialize.serialize(), maxChars);
+  } catch {
+    return "";
+  }
+}
+
 /** Find the next occurrence of `query` in a tab's terminal. */
 export function searchNext(tabId: string, query: string): boolean {
   const s = sessions.get(tabId);
@@ -726,8 +743,7 @@ export function searchPrevious(tabId: string, query: string): boolean {
   }
 }
 
-/** Clear any active search highlight and refocus the terminal. */
-export function clearSearch(tabId: string) {
+/** Clear any active search highlight and refocus the terminal. */export function clearSearch(tabId: string) {
   const s = sessions.get(tabId);
   if (!s || s.disposed) return;
   try {
