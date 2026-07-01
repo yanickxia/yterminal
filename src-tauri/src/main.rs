@@ -13,6 +13,7 @@ mod pty;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use tauri::ipc::Channel;
 use tauri::Manager;
 
 #[tauri::command]
@@ -901,6 +902,288 @@ async fn ai_chat(req: AiChatRequest) -> Result<String, String> {
     Ok(content.to_string())
 }
 
+// ----------------------------------------------------------------------------
+// Streaming variant (P2). Same request shape as `ai_chat` plus a `stream_id`
+// the frontend uses to cancel, and a Tauri `Channel` we push deltas down. We
+// send `stream: true` and parse the OpenAI SSE framing (`data: {json}\n\n`,
+// terminated by `data: [DONE]`), emitting each content delta as it arrives.
+// The whole assistant turn is assembled on the frontend from the deltas.
+
+/// One event pushed to the frontend over the streaming channel. Tagged so the
+/// TS side can switch on `event`.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
+enum AiStreamEvent {
+    /// An incremental slice of assistant text.
+    Delta { text: String },
+    /// The stream finished normally.
+    Done,
+    /// The stream ended with an error (message is user-facing).
+    Error { message: String },
+}
+
+/// Cancellation registry: a `stream_id` maps to a flag the running stream polls
+/// between chunks. `ai_chat_cancel` flips it; the stream then stops and emits
+/// `Done`. Kept minimal (a boolean per active stream) — streams are short-lived.
+static AI_CANCELS: OnceLock<Mutex<HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>> =
+    OnceLock::new();
+
+fn ai_cancels() -> &'static Mutex<HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>> {
+    AI_CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiStreamRequest {
+    base_url: String,
+    api_key: String,
+    model: String,
+    messages: Vec<AiMessage>,
+    /// Opaque id the frontend picks; used to cancel this specific stream.
+    stream_id: String,
+}
+
+/// Extract the text delta from one parsed SSE chunk
+/// (`choices[0].delta.content`), or None if this chunk carries no text.
+fn delta_text(chunk: &serde_json::Value) -> Option<String> {
+    chunk
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("delta"))
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Stream a chat completion, pushing `AiStreamEvent`s down `on_event`. Returns
+/// Ok(()) once the stream ends (normally, cancelled, or errored — the error is
+/// delivered as an `Error` event, not as an `Err`, so the channel always sees a
+/// terminal event).
+#[tauri::command]
+async fn ai_chat_stream(
+    req: AiStreamRequest,
+    on_event: Channel<AiStreamEvent>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let base = req.base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        let _ = on_event.send(AiStreamEvent::Error {
+            message: "AI base URL is empty — configure a provider first".into(),
+        });
+        return Ok(());
+    }
+    if req.api_key.trim().is_empty() {
+        let _ = on_event.send(AiStreamEvent::Error {
+            message: "AI API key is empty — configure a provider first".into(),
+        });
+        return Ok(());
+    }
+    let url = format!("{base}/chat/completions");
+    let body = serde_json::json!({
+        "model": req.model,
+        "messages": req.messages,
+        "stream": true,
+    });
+
+    // Register a cancel flag for this stream id.
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ai_cancels()
+        .lock()
+        .unwrap()
+        .insert(req.stream_id.clone(), cancel.clone());
+    // Always deregister on exit, however we leave this function.
+    let _guard = CancelGuard {
+        id: req.stream_id.clone(),
+    };
+
+    let client = match reqwest::Client::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = on_event.send(AiStreamEvent::Error {
+                message: format!("build http client: {e}"),
+            });
+            return Ok(());
+        }
+    };
+
+    let resp = match client
+        .post(&url)
+        .bearer_auth(req.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = on_event.send(AiStreamEvent::Error {
+                message: format!("request to {url} failed: {e}"),
+            });
+            return Ok(());
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(500).collect();
+        let _ = on_event.send(AiStreamEvent::Error {
+            message: format!("provider returned {status}: {snippet}"),
+        });
+        return Ok(());
+    }
+
+    // SSE chunks can split mid-line across network reads, so accumulate raw
+    // bytes in a buffer and only parse complete `\n`-terminated lines.
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = on_event.send(AiStreamEvent::Error {
+                    message: format!("stream read error: {e}"),
+                });
+                return Ok(());
+            }
+        };
+        buf.push_str(&String::from_utf8_lossy(&bytes));
+        // Process every complete line currently in the buffer.
+        while let Some(nl) = buf.find('\n') {
+            let line = buf[..nl].trim().to_string();
+            buf.drain(..=nl);
+            let Some(payload) = line.strip_prefix("data:") else {
+                continue; // comments / blank lines / event: fields
+            };
+            let payload = payload.trim();
+            if payload == "[DONE]" {
+                let _ = on_event.send(AiStreamEvent::Done);
+                return Ok(());
+            }
+            if payload.is_empty() {
+                continue;
+            }
+            if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(text) = delta_text(&chunk) {
+                    if !text.is_empty() {
+                        let _ = on_event.send(AiStreamEvent::Delta { text });
+                    }
+                }
+            }
+        }
+    }
+
+    // Stream ended without an explicit [DONE] (cancelled or the provider just
+    // closed the socket). Either way, tell the frontend we're finished.
+    let _ = on_event.send(AiStreamEvent::Done);
+    Ok(())
+}
+
+/// RAII cleanup so a cancel flag never leaks if the stream returns early.
+struct CancelGuard {
+    id: String,
+}
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        ai_cancels().lock().unwrap().remove(&self.id);
+    }
+}
+
+/// Flip the cancel flag for an in-flight stream. No-op if the id is unknown
+/// (already finished) — the frontend can fire this optimistically.
+#[tauri::command]
+fn ai_chat_cancel(stream_id: String) {
+    if let Some(flag) = ai_cancels().lock().unwrap().get(&stream_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Tool-calling variant (P3). The agent loop lives on the frontend (it owns the
+// terminal and the approval UI); this command is a single non-streaming round
+// trip that forwards an OpenAI `tools` array and returns the assistant message
+// *raw* (content + any tool_calls) so the frontend can decide what to run.
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiToolsRequest {
+    base_url: String,
+    api_key: String,
+    model: String,
+    /// Full message history, already including any prior tool results. Passed
+    /// through as-is (may contain `tool_calls` / `tool` role entries), so we
+    /// take it as opaque JSON rather than the strict `AiMessage` shape.
+    messages: serde_json::Value,
+    /// OpenAI-format tool schema array.
+    tools: serde_json::Value,
+}
+
+/// One round trip with tools. Returns the assistant message object
+/// (`choices[0].message`) verbatim as JSON so the frontend can read `content`
+/// and/or `tool_calls`.
+#[tauri::command]
+async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String> {
+    let base = req.base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("AI base URL is empty — configure a provider first".into());
+    }
+    if req.api_key.trim().is_empty() {
+        return Err("AI API key is empty — configure a provider first".into());
+    }
+    let url = format!("{base}/chat/completions");
+
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "messages": req.messages,
+        "stream": false,
+    });
+    // Only attach tools when non-empty — some providers reject an empty array.
+    if req.tools.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+        body["tools"] = req.tools;
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(req.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request to {url} failed: {e}"))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response body: {e}"))?;
+
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        return Err(format!("provider returned {status}: {snippet}"));
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse response json: {e}"))?;
+    let message = parsed
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .cloned()
+        .ok_or_else(|| {
+            let snippet: String = text.chars().take(500).collect();
+            format!("no assistant message in response: {snippet}")
+        })?;
+
+    Ok(message)
+}
+
 fn main() {
     logger::info(
         "main",
@@ -926,6 +1209,9 @@ fn main() {
             path_is_file,
             read_text_file,
             ai_chat,
+            ai_chat_stream,
+            ai_chat_cancel,
+            ai_chat_tools,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

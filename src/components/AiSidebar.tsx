@@ -2,6 +2,9 @@
 // from ai-store, sends messages, and can attach the active terminal's serialized
 // output as context. Markdown replies are rendered via the shared file-render
 // helper (sanitized), matching the built-in file viewer.
+//
+// Two modes: chat (streaming Q&A, with a Stop control) and agent (the model may
+// run shell commands in the active pane, each gated by an approval prompt).
 
 import { useEffect, useRef, useState } from "react";
 import { useAiStore } from "../stores/ai-store";
@@ -24,7 +27,12 @@ export function AiSidebar() {
   const sending = useAiStore((s) => s.sending);
   const send = useAiStore((s) => s.send);
   const clear = useAiStore((s) => s.clear);
+  const stop = useAiStore((s) => s.stop);
   const setOpen = useAiStore((s) => s.setOpen);
+  const agentMode = useAiStore((s) => s.agentMode);
+  const setAgentMode = useAiStore((s) => s.setAgentMode);
+  const pendingApproval = useAiStore((s) => s.pendingApproval);
+  const resolveApproval = useAiStore((s) => s.resolveApproval);
   const providerCount = useSettingsStore((s) => s.aiProviders.length);
 
   const [input, setInput] = useState("");
@@ -35,17 +43,15 @@ export function AiSidebar() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns]);
+  }, [turns, pendingApproval]);
 
   function submit() {
     const text = input.trim();
     if (!text || sending) return;
+    const paneId = activePaneId();
     let context: string | undefined;
-    if (attach) {
-      const paneId = activePaneId();
-      if (paneId) context = getSessionText(paneId);
-    }
-    void send(text, context);
+    if (attach && paneId) context = getSessionText(paneId);
+    void send(text, context, paneId ?? undefined);
     setInput("");
   }
 
@@ -54,6 +60,18 @@ export function AiSidebar() {
       <div className="ai-sidebar-head">
         <span className="ai-sidebar-title">AI</span>
         <div className="ai-sidebar-head-actions">
+          <label
+            className="checkbox-label ai-agent-toggle"
+            title="Agent mode: let the AI run terminal commands (with approval)"
+          >
+            <input
+              type="checkbox"
+              checked={agentMode}
+              onChange={(e) => setAgentMode(e.target.checked)}
+              disabled={sending}
+            />
+            Agent
+          </label>
           <button
             className="link-btn"
             onClick={clear}
@@ -81,34 +99,77 @@ export function AiSidebar() {
       <div className="ai-sidebar-transcript" ref={scrollRef}>
         {turns.length === 0 ? (
           <div className="ai-sidebar-empty">
-            Ask about your terminal output, errors, or commands.
+            {agentMode
+              ? "Ask the agent to do something in your terminal."
+              : "Ask about your terminal output, errors, or commands."}
           </div>
         ) : (
-          turns.map((t) => (
-            <div
-              key={t.id}
-              className={
-                "ai-msg ai-msg-" +
-                t.role +
-                (t.error ? " ai-msg-error" : "")
-              }
-            >
-              {t.role === "assistant" ? (
-                t.pending ? (
-                  <span className="ai-msg-pending">…</span>
+          turns.map((t) =>
+            t.role === "tool" ? (
+              <div key={t.id} className="ai-msg ai-msg-tool">
+                <div className="ai-tool-cmd">
+                  <span className="ai-tool-prompt">$</span>
+                  <code>{t.command}</code>
+                  {typeof t.exitCode === "number" && (
+                    <span
+                      className={
+                        "ai-tool-exit" +
+                        (t.exitCode === 0 ? "" : " ai-tool-exit-bad")
+                      }
+                    >
+                      exit {t.exitCode}
+                    </span>
+                  )}
+                </div>
+                <pre className="ai-tool-output">{t.content}</pre>
+              </div>
+            ) : (
+              <div
+                key={t.id}
+                className={
+                  "ai-msg ai-msg-" + t.role + (t.error ? " ai-msg-error" : "")
+                }
+              >
+                {t.role === "assistant" ? (
+                  t.pending && !t.content ? (
+                    <span className="ai-msg-pending">…</span>
+                  ) : (
+                    <div
+                      className="ai-msg-md"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdown(t.content),
+                      }}
+                    />
+                  )
                 ) : (
-                  <div
-                    className="ai-msg-md"
-                    dangerouslySetInnerHTML={{
-                      __html: renderMarkdown(t.content),
-                    }}
-                  />
-                )
-              ) : (
-                <div className="ai-msg-text">{t.content}</div>
-              )}
+                  <div className="ai-msg-text">{t.content}</div>
+                )}
+              </div>
+            )
+          )
+        )}
+
+        {pendingApproval && (
+          <div className="ai-approval">
+            <div className="ai-approval-label">
+              Run this command in the terminal?
             </div>
-          ))
+            <pre className="ai-approval-cmd">{pendingApproval.command}</pre>
+            <div className="ai-approval-actions">
+              <button
+                className="ai-send-btn"
+                onClick={() => resolveApproval(true)}
+              >
+                Approve
+              </button>
+              <button
+                className="link-btn"
+                onClick={() => resolveApproval(false)}
+              >
+                Deny
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -124,7 +185,11 @@ export function AiSidebar() {
         <textarea
           className="ai-input-box"
           value={input}
-          placeholder="Ask the AI…  (Enter to send, Shift+Enter for newline)"
+          placeholder={
+            agentMode
+              ? "Tell the agent what to do…  (Enter to send)"
+              : "Ask the AI…  (Enter to send, Shift+Enter for newline)"
+          }
           rows={3}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -134,13 +199,19 @@ export function AiSidebar() {
             }
           }}
         />
-        <button
-          className="ai-send-btn"
-          onClick={submit}
-          disabled={sending || !input.trim()}
-        >
-          {sending ? "Sending…" : "Send"}
-        </button>
+        {sending && !agentMode ? (
+          <button className="ai-send-btn ai-stop-btn" onClick={stop}>
+            Stop
+          </button>
+        ) : (
+          <button
+            className="ai-send-btn"
+            onClick={submit}
+            disabled={sending || !input.trim()}
+          >
+            {sending ? "Working…" : "Send"}
+          </button>
+        )}
       </div>
     </div>
   );
