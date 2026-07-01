@@ -21,13 +21,27 @@ export function makeSentinel(
 }
 
 /**
- * The shell snippet injected after the user command: print a newline, then the
- * sentinel with the command's exit status. Kept as one line so it's a single
- * prompt submission. The caller appends this (with a separating newline) to the
- * command itself.
+ * The shell snippet injected after the user command: print the sentinel with
+ * the command's exit status, then immediately erase the sentinel's own lines
+ * from the visible terminal so the user never sees the bookkeeping "print".
+ *
+ * The `printf` emits `\n<marker>:<code>\n` (which our `pty.onData` tap captures
+ * before the erase lands, so completion detection still works), then an ANSI
+ * cursor-up + clear-to-end-of-screen (`\033[3A\r\033[0J`). Counting from the
+ * fresh line the shell leaves the cursor on after submitting this line, the
+ * three rows above are: the echoed sentinel command, the blank line printf
+ * emitted, and the `<marker>:<code>` line — clearing them (and everything below)
+ * removes the whole sentinel apparatus, leaving only the real command output
+ * and the next prompt. The user's own command + its output sit above row 3 and
+ * are untouched. (`printf` interprets the octal `\033` escape in bash/zsh/sh.)
+ *
+ * Kept as one line so it's a single prompt submission. The caller appends this
+ * (with a separating newline) to the command itself. The leading space keeps it
+ * out of shell history for users with `HISTCONTROL=ignorespace` / zsh
+ * `HIST_IGNORE_SPACE`.
  */
 export function sentinelCommand(marker: string): string {
-  return ` printf '\\n${marker}:%s\\n' "$?"`;
+  return ` printf '\\n${marker}:%s\\n\\033[3A\\r\\033[0J' "$?"`;
 }
 
 export interface ParsedResult {
@@ -56,8 +70,26 @@ export function parseResult(
   return {
     done: true,
     exitCode: Number.isNaN(code) ? null : code,
-    output: scrubCommandEcho(head, command),
+    output: scrubCommandEcho(dropSentinelEcho(head, sentinel.marker), command),
   };
+}
+
+/**
+ * Remove any line that carries the sentinel marker token. The shell echoes the
+ * injected `printf ...<marker>...` line before running it, so that echo lands in
+ * the captured output ahead of the real `<marker>:<code>` line. It contains the
+ * marker verbatim (as `<marker>:%s`, which never matches the numeric regex), so
+ * dropping marker-bearing lines strips the sentinel command echo without
+ * touching genuine output.
+ */
+export function dropSentinelEcho(text: string, marker: string): string {
+  if (!marker) return text;
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .filter((line) => !line.includes(marker))
+    .join("\n");
 }
 
 /**

@@ -50,11 +50,17 @@ interface AiState {
   open: boolean;
   /** when true, `send` runs the terminal-driving agent loop */
   agentMode: boolean;
+  /**
+   * When true (agent mode only), approved commands run without the per-command
+   * approval prompt. Persisted so the choice survives a reload.
+   */
+  autoApprove: boolean;
   /** set while a command is awaiting approval (agent mode); else null */
   pendingApproval: PendingApproval | null;
   toggleOpen: () => void;
   setOpen: (open: boolean) => void;
   setAgentMode: (on: boolean) => void;
+  setAutoApprove: (on: boolean) => void;
   clear: () => void;
   /** cancel the in-flight streaming reply (chat mode) */
   stop: () => void;
@@ -74,6 +80,27 @@ function newId(): string {
     return crypto.randomUUID();
   } catch {
     return `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
+// The auto-approve toggle is the one bit of AI-sidebar state worth persisting:
+// it's a deliberate "I trust the agent in this project" choice, so it should
+// survive reloads. (The transcript itself stays session-scoped.)
+const AUTO_APPROVE_KEY = "yterminal.ai.autoApprove";
+
+function loadAutoApprove(): boolean {
+  try {
+    return localStorage.getItem(AUTO_APPROVE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveAutoApprove(on: boolean): void {
+  try {
+    localStorage.setItem(AUTO_APPROVE_KEY, on ? "1" : "0");
+  } catch {
+    /* storage unavailable */
   }
 }
 
@@ -131,10 +158,15 @@ export const useAiStore = create<AiState>((set, get) => ({
   sending: false,
   open: false,
   agentMode: false,
+  autoApprove: loadAutoApprove(),
   pendingApproval: null,
   toggleOpen: () => set((s) => ({ open: !s.open })),
   setOpen: (open) => set({ open }),
   setAgentMode: (on) => set({ agentMode: on }),
+  setAutoApprove: (on) => {
+    saveAutoApprove(on);
+    set({ autoApprove: on });
+  },
   clear: () => set({ turns: [] }),
 
   stop: () => {
@@ -361,8 +393,9 @@ async function runAgentLoop(
           continue;
         }
 
-        // Gate on user approval.
-        const approved = await requestApproval(command);
+        // Gate on user approval — unless auto-approve is on, in which case the
+        // command runs directly (the user opted into unattended execution).
+        const approved = get().autoApprove ? true : await requestApproval(command);
         if (!approved) {
           const denyTurn: ChatTurn = {
             id: newId(),

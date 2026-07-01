@@ -4,6 +4,7 @@ import {
   sentinelCommand,
   parseResult,
   scrubCommandEcho,
+  dropSentinelEcho,
 } from "./agent-run";
 
 describe("makeSentinel", () => {
@@ -27,13 +28,21 @@ describe("makeSentinel", () => {
 
 describe("sentinelCommand", () => {
   it("emits a printf carrying the marker and $?", () => {
-    // literal backslash-n in the printf format, leading space, marker + $?
-    expect(sentinelCommand("M")).toBe(` printf '\\nM:%s\\n' "$?"`);
+    // literal backslash-n in the printf format, leading space, marker + $?,
+    // then an ANSI cursor-up + clear that erases the sentinel's own lines.
+    expect(sentinelCommand("M")).toBe(
+      ` printf '\\nM:%s\\n\\033[3A\\r\\033[0J' "$?"`
+    );
   });
 
   it("references the exit status", () => {
     expect(sentinelCommand("M")).toContain(`"$?"`);
     expect(sentinelCommand("M")).toContain("M:%s");
+  });
+
+  it("includes the self-erase escape sequence", () => {
+    // cursor up 3, carriage return, clear to end of screen
+    expect(sentinelCommand("M")).toContain("\\033[3A\\r\\033[0J");
   });
 });
 
@@ -61,6 +70,19 @@ describe("parseResult", () => {
     const r = parseResult(cleaned, s, "false");
     expect(r.done).toBe(true);
     expect(r.exitCode).toBe(1);
+  });
+
+  it("strips the echoed sentinel command line from the output", () => {
+    const s = makeSentinel(() => "x");
+    // The shell echoes the sentinel printf (carrying the marker) before the
+    // real marker line; it must not leak into the captured output.
+    const cleaned =
+      "ls\nfile-a\n printf '\\n__YT_DONE_x__:%s\\n' \"$?\"\n__YT_DONE_x__:0\n";
+    const r = parseResult(cleaned, s, "ls");
+    expect(r.done).toBe(true);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toBe("file-a");
+    expect(r.output).not.toContain("__YT_DONE_x__");
   });
 
   it("yields null exit code on an unparseable number", () => {
@@ -92,5 +114,28 @@ describe("scrubCommandEcho", () => {
     // command echo would appear later than row 3, so nothing is dropped
     const text = "a\nb\nc\nls\nd";
     expect(scrubCommandEcho(text, "ls")).toBe("a\nb\nc\nls\nd");
+  });
+});
+
+describe("dropSentinelEcho", () => {
+  it("drops any line carrying the marker token", () => {
+    const text = "out-a\n printf '\\n__M__:%s\\n' \"$?\"\nout-b";
+    expect(dropSentinelEcho(text, "__M__")).toBe("out-a\nout-b");
+  });
+
+  it("drops the resolved marker line too", () => {
+    expect(dropSentinelEcho("out\n__M__:0", "__M__")).toBe("out");
+  });
+
+  it("normalizes CRLF before filtering", () => {
+    expect(dropSentinelEcho("out\r\n__M__:0\r\n", "__M__")).toBe("out\n");
+  });
+
+  it("leaves text untouched when the marker is empty", () => {
+    expect(dropSentinelEcho("out\nmore", "")).toBe("out\nmore");
+  });
+
+  it("leaves text untouched when the marker is absent", () => {
+    expect(dropSentinelEcho("out\nmore", "__M__")).toBe("out\nmore");
   });
 });

@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAiStore } from "../stores/ai-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { useLayoutStore } from "../stores/layout-store";
 import { getSessionText } from "../lib/terminal-manager";
 import { renderMarkdown } from "../lib/file-render";
 
@@ -31,9 +32,12 @@ export function AiSidebar() {
   const setOpen = useAiStore((s) => s.setOpen);
   const agentMode = useAiStore((s) => s.agentMode);
   const setAgentMode = useAiStore((s) => s.setAgentMode);
+  const autoApprove = useAiStore((s) => s.autoApprove);
+  const setAutoApprove = useAiStore((s) => s.setAutoApprove);
   const pendingApproval = useAiStore((s) => s.pendingApproval);
   const resolveApproval = useAiStore((s) => s.resolveApproval);
   const providerCount = useSettingsStore((s) => s.aiProviders.length);
+  const aiWidth = useLayoutStore((s) => s.aiWidth);
 
   const [input, setInput] = useState("");
   const [attach, setAttach] = useState(true);
@@ -56,7 +60,10 @@ export function AiSidebar() {
   }
 
   return (
-    <div className="ai-sidebar">
+    <div
+      className="ai-sidebar"
+      style={{ width: aiWidth, minWidth: aiWidth }}
+    >
       <div className="ai-sidebar-head">
         <span className="ai-sidebar-title">AI</span>
         <div className="ai-sidebar-head-actions">
@@ -72,6 +79,20 @@ export function AiSidebar() {
             />
             Agent
           </label>
+          {agentMode && (
+            <label
+              className="checkbox-label ai-agent-toggle"
+              title="Auto mode: run agent commands immediately, without asking for approval"
+            >
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                onChange={(e) => setAutoApprove(e.target.checked)}
+                disabled={sending}
+              />
+              Auto
+            </label>
+          )}
           <button
             className="link-btn"
             onClick={clear}

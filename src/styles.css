@@ -336,6 +336,37 @@ body {
   position: relative;
 }
 
+/* ---------- app-level draggable dividers ---------- */
+/* Slim vertical handles between the top-level flex columns (workspace sidebar
+   ↔ main, main ↔ AI sidebar). A wide transparent hit area with a thin visible
+   line; highlights on hover so it's discoverable. */
+.app-divider {
+  flex: 0 0 auto;
+  width: 6px;
+  margin: 0 -3px; /* overlap neighbors so the terminal keeps its full width */
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+}
+
+.app-divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.app-divider:hover::after,
+.app-divider:active::after {
+  background: var(--accent);
+}
+
 /* ---------- split panes ---------- */
 .split {
   position: absolute;
