@@ -1500,14 +1500,66 @@ body {
 .ai-provider-card {
   border: 1px solid var(--bg-light);
   border-radius: 8px;
-  padding: 10px;
+  padding: 12px;
   background: var(--bg-dark);
+}
+
+/* highlight the active provider so it's obvious which one requests use */
+.ai-provider-card.active {
+  border-color: var(--accent, #6ab0f3);
+  box-shadow: 0 0 0 1px var(--accent, #6ab0f3) inset;
 }
 
 .ai-provider-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+/* the "Active" radio hugs the left; kind selector grows; remove pins right */
+.ai-provider-active {
+  flex: 0 0 auto;
+}
+
+.ai-provider-kind {
+  flex: 1 1 auto;
+  display: flex;
+}
+
+.ai-provider-kind .select {
+  width: 100%;
+}
+
+.ai-provider-head .link-btn {
+  flex: 0 0 auto;
+}
+
+/* stacked label + input rows inside a card */
+.ai-provider-field {
+  margin-top: 8px;
+}
+
+.ai-field-label {
+  display: block;
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 3px;
+}
+
+.ai-field-endpoint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.ai-field-endpoint code {
+  word-break: break-all;
+}
+
+/* the two "add provider" buttons sit side by side */
+.ai-provider-add {
+  display: flex;
+  gap: 8px;
 }
 

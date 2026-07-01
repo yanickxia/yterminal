@@ -49,21 +49,50 @@ export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
 export const DEFAULT_COPY_ON_SELECT = false;
 
 /**
- * A configured AI provider for the sidebar. `baseUrl` is an OpenAI-compatible
- * API root (e.g. "https://api.openai.com/v1"); the Rust `ai_chat` command
- * appends "/chat/completions". `apiKey` lives in localStorage only — it is
- * deliberately NOT mirrored to the syncable ~/.config JSON so it can't leak via
- * git/Dropbox.
+ * Wire protocol a provider speaks.
+ *   openai    — OpenAI-compatible `/chat/completions` (Bearer auth). Also fits
+ *               Azure OpenAI, Together, Groq, OpenRouter, local llama.cpp, etc.
+ *   anthropic — Anthropic Messages API `/v1/messages` (x-api-key +
+ *               anthropic-version headers, distinct request/response shape).
+ * The Rust backend adapts both to the same frontend contract.
+ */
+export type AiProviderKind = "openai" | "anthropic";
+
+/** Per-kind defaults used when creating a provider or switching its type. */
+export const PROVIDER_PRESETS: Record<
+  AiProviderKind,
+  { name: string; baseUrl: string; model: string }
+> = {
+  openai: {
+    name: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+  },
+  anthropic: {
+    name: "Anthropic",
+    baseUrl: "https://api.anthropic.com",
+    model: "claude-3-5-sonnet-latest",
+  },
+};
+
+/**
+ * A configured AI provider for the sidebar. `baseUrl` is the API root; for an
+ * OpenAI-compatible provider the backend appends "/chat/completions", for an
+ * Anthropic provider it appends "/v1/messages". `apiKey` lives in localStorage
+ * only — it is deliberately NOT mirrored to the syncable ~/.config JSON so it
+ * can't leak via git/Dropbox.
  */
 export interface AiProvider {
   id: string;
+  /** wire protocol; defaults to "openai" for pre-existing configs */
+  kind: AiProviderKind;
   /** display label, e.g. "OpenAI" */
   name: string;
-  /** API root, e.g. "https://api.openai.com/v1" */
+  /** API root, e.g. "https://api.openai.com/v1" or "https://api.anthropic.com" */
   baseUrl: string;
-  /** model id, e.g. "gpt-4o-mini" */
+  /** model id, e.g. "gpt-4o-mini" or "claude-3-5-sonnet-latest" */
   model: string;
-  /** bearer token; localStorage-only, never written to the JSON config */
+  /** bearer token / x-api-key; localStorage-only, never written to JSON config */
   apiKey: string;
 }
 
@@ -112,8 +141,8 @@ interface SettingsState {
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
   setDebugVerbose: (on: boolean) => void;
-  /** append a blank provider row and make it active; returns its id */
-  addAiProvider: () => string;
+  /** append a provider row (of the given kind) and make it active; returns its id */
+  addAiProvider: (kind?: AiProviderKind) => string;
   /** merge partial fields into an existing provider by id */
   updateAiProvider: (id: string, patch: Partial<Omit<AiProvider, "id">>) => void;
   /** remove a provider; if it was active, active falls back to the first left */
@@ -168,16 +197,18 @@ export const useSettingsStore = create<SettingsState>()(
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
-      addAiProvider: () => {
+      addAiProvider: (kind = "openai") => {
         const id = newProviderId();
+        const preset = PROVIDER_PRESETS[kind];
         set((s) => ({
           aiProviders: [
             ...s.aiProviders,
             {
               id,
-              name: "New provider",
-              baseUrl: "https://api.openai.com/v1",
-              model: "gpt-4o-mini",
+              kind,
+              name: preset.name,
+              baseUrl: preset.baseUrl,
+              model: preset.model,
               apiKey: "",
             },
           ],
@@ -203,7 +234,20 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 4 }
+    { name: "yterminal-settings", version: 5,
+      // v4→v5: providers gained a `kind` field. Backfill "openai" so existing
+      // configs keep working (they were all OpenAI-compatible before).
+      migrate: (persisted, version) => {
+        const s = persisted as Partial<SettingsState> | undefined;
+        if (s && version < 5 && Array.isArray(s.aiProviders)) {
+          s.aiProviders = s.aiProviders.map((p) => ({
+            ...p,
+            kind: p.kind ?? ("openai" as AiProviderKind),
+          }));
+        }
+        return s as SettingsState;
+      },
+    }
   )
 );
 
