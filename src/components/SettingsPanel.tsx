@@ -57,6 +57,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.requireModifierForLinks
   );
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
+  const autoTabTitle = useSettingsStore((s) => s.autoTabTitle);
   const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
   const alertVolume = useSettingsStore((s) => s.alertVolume);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -71,6 +72,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.setRequireModifierForLinks
   );
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
+  const setAutoTabTitle = useSettingsStore((s) => s.setAutoTabTitle);
   const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
   const setAlertVolume = useSettingsStore((s) => s.setAlertVolume);
 
@@ -135,6 +137,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     defaultCwdFixed,
     requireModifierForLinks,
     copyOnSelect,
+    autoTabTitle,
   ]);
 
   // close on Escape
@@ -432,6 +435,24 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   When on, selecting terminal text copies it to the clipboard
                   automatically. {isMac ? "Cmd" : "Ctrl+Shift"}+C and right-click
                   Copy work regardless.
+                </p>
+              </div>
+
+              {/* auto tab title from shell/agent OSC title */}
+              <div className="field">
+                <label className="field-label">Tab title</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={autoTabTitle}
+                    onChange={(e) => setAutoTabTitle(e.target.checked)}
+                  />
+                  Follow the terminal title
+                </label>
+                <p className="field-hint">
+                  When on, a tab you haven't renamed shows the title the shell
+                  or agent reports — so Claude Code's current step appears on
+                  the tab. Renaming a tab pins its name and opts it out.
                 </p>
               </div>
 

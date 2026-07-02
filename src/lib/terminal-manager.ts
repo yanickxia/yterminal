@@ -18,6 +18,7 @@ import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
+import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
@@ -221,6 +222,29 @@ function locatePane(paneId: string) {
     }
   }
   return null;
+}
+
+/**
+ * Push a shell/agent-reported title onto the pane's tab as its auto name.
+ * Only the tab's *active* pane may drive the title — a background split in the
+ * same tab shouldn't fight it — and the store drops the write when the user
+ * pinned a customName or the name is unchanged. Gated by the `autoTabTitle`
+ * setting.
+ */
+function applyPaneTitle(paneId: string, rawTitle: string) {
+  if (!useSettingsStore.getState().autoTabTitle) return;
+  const located = locatePane(paneId);
+  if (!located) return;
+  const { store, workspaceId, tabId } = located;
+  const tab = store.workspaces
+    .find((w) => w.id === workspaceId)
+    ?.tabs.find((t) => t.id === tabId);
+  // File-viewer tabs have no shell; a multi-pane tab follows only its active
+  // pane so two panes don't ping-pong the name.
+  if (!tab || tab.file || tab.activePaneId !== paneId) return;
+  const name = sanitizeTabTitle(rawTitle);
+  if (!name) return;
+  store.setTabAutoName(workspaceId, tabId, name);
 }
 
 /**
@@ -555,6 +579,24 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (alertSoundEnabled) {
       playAlertSound({ volume: alertVolume });
     }
+  });
+
+  // Auto tab title: shells and coding agents set the terminal title (OSC 0/2)
+  // to their current activity — a cwd, a running command, or (Claude Code /
+  // Codex) the step they're on. xterm parses that into onTitleChange; we sink
+  // it into the tab's auto name so an un-renamed tab tracks what's happening
+  // inside it. Throttled so a TUI redrawing its title on every keystroke can't
+  // thrash the store. `customName`/setting checks live in applyPaneTitle.
+  let lastTitle = "";
+  let titleTimer: ReturnType<typeof setTimeout> | undefined;
+  term.onTitleChange((title) => {
+    if (title === lastTitle) return;
+    lastTitle = title;
+    if (titleTimer) return;
+    titleTimer = setTimeout(() => {
+      titleTimer = undefined;
+      applyPaneTitle(tabId, lastTitle);
+    }, 150);
   });
 
   // wire data both directions.
