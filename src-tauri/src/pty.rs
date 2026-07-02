@@ -142,6 +142,12 @@ pub async fn pty_spawn(
     for (k, v) in env.iter() {
         cmd.env(OsString::from(k), OsString::from(v));
     }
+    // AppImage's runtime sets ARGV0 to the .AppImage filename. zsh re-injects
+    // ARGV0 as argv[0] of every command it spawns, so a rustup proxy shim
+    // (~/.cargo/bin/cargo -> rustup) sees the AppImage name instead of "cargo"
+    // and dies with `unknown proxy name`. Strip it from the shell's env so
+    // child processes get a clean argv[0]. Harmless outside AppImage (unset).
+    cmd.env_remove("ARGV0");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         logger::error("pty", &format!("pty_spawn: spawn_command failed: {e}"));
         e.to_string()
