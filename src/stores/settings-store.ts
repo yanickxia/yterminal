@@ -49,6 +49,15 @@ export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
 export const DEFAULT_COPY_ON_SELECT = false;
 
 /**
+ * Let a shell/agent's terminal title (OSC 0/2) drive the tab's display name.
+ * Coding agents like Claude Code emit their current activity as the window
+ * title on every step; surfacing it means an un-renamed tab tracks what the
+ * agent is doing. A tab the user renamed by hand keeps its customName — this
+ * only fills in the auto name. Default on.
+ */
+export const DEFAULT_AUTO_TAB_TITLE = true;
+
+/**
  * Play a short chime when a pane rings the terminal bell (BEL) while it isn't
  * the focused pane — the signal a coding agent emits when it pauses for input
  * or errors out. Pairs with the on-screen attention bar. Default on.
@@ -133,6 +142,8 @@ interface SettingsState {
   requireModifierForLinks: boolean;
   /** copy the selection to the clipboard automatically when it changes */
   copyOnSelect: boolean;
+  /** let the shell/agent terminal title drive an un-renamed tab's name */
+  autoTabTitle: boolean;
   /** play a chime when an unfocused pane rings the bell (agent needs attention) */
   alertSoundEnabled: boolean;
   /** attention chime loudness, linear 0..1 */
@@ -154,6 +165,7 @@ interface SettingsState {
   setDefaultCwdFixed: (path: string) => void;
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
+  setAutoTabTitle: (on: boolean) => void;
   setAlertSoundEnabled: (on: boolean) => void;
   setAlertVolume: (v: number) => void;
   setDebugVerbose: (on: boolean) => void;
@@ -179,6 +191,7 @@ export const useSettingsStore = create<SettingsState>()(
       defaultCwdFixed: "",
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       copyOnSelect: DEFAULT_COPY_ON_SELECT,
+      autoTabTitle: DEFAULT_AUTO_TAB_TITLE,
       alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
       alertVolume: DEFAULT_ALERT_VOLUME,
       debugVerbose: true,
@@ -214,6 +227,7 @@ export const useSettingsStore = create<SettingsState>()(
       setRequireModifierForLinks: (on) =>
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
+      setAutoTabTitle: (on) => set({ autoTabTitle: on }),
       setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
       setAlertVolume: (v) =>
         set({ alertVolume: Math.max(0, Math.min(1, v)) }),

@@ -26,6 +26,7 @@ import {
   DEFAULT_CWD_MODE,
   DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
   DEFAULT_COPY_ON_SELECT,
+  DEFAULT_AUTO_TAB_TITLE,
   type DefaultCwdMode,
 } from "../stores/settings-store";
 
@@ -59,6 +60,8 @@ export interface YterminalConfig {
     requireModifierForLinks: boolean;
     /** auto-copy the terminal selection to the clipboard when it changes */
     copyOnSelect: boolean;
+    /** let the shell/agent terminal title drive an un-renamed tab's name */
+    autoTabTitle: boolean;
   };
 }
 
@@ -84,6 +87,7 @@ export function configFromStore(): YterminalConfig {
       },
       requireModifierForLinks: s.requireModifierForLinks,
       copyOnSelect: s.copyOnSelect,
+      autoTabTitle: s.autoTabTitle,
     },
   };
 }
@@ -176,6 +180,7 @@ export function parseConfig(text: string): YterminalConfig | null {
         DEFAULT_REQUIRE_MODIFIER_FOR_LINKS
       ),
       copyOnSelect: validBool(tm.copyOnSelect, DEFAULT_COPY_ON_SELECT),
+      autoTabTitle: validBool(tm.autoTabTitle, DEFAULT_AUTO_TAB_TITLE),
     },
   };
 }
@@ -205,6 +210,8 @@ export function applyConfigToStore(cfg: YterminalConfig) {
     s.setRequireModifierForLinks(requireModifierForLinks);
   const { copyOnSelect } = cfg.terminal;
   if (copyOnSelect !== s.copyOnSelect) s.setCopyOnSelect(copyOnSelect);
+  const { autoTabTitle } = cfg.terminal;
+  if (autoTabTitle !== s.autoTabTitle) s.setAutoTabTitle(autoTabTitle);
 }
 
 /** Absolute path of the config file (for display in the UI). */
