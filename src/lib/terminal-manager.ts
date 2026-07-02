@@ -35,6 +35,8 @@ import {
 import { useSettingsStore } from "../stores/settings-store";
 import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { markAttention } from "../stores/attention-store";
+import { playAlertSound } from "./alert-sound";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
 import type { AgentKind, PaneAgent } from "./types";
@@ -210,6 +212,22 @@ function locatePane(paneId: string) {
     }
   }
   return null;
+}
+
+/**
+ * Whether the given pane is the one the user is currently looking at: it must
+ * be the active pane of the active tab in the active workspace, AND the app
+ * window itself must have focus. A bell here needs no attention flag — the user
+ * is already watching. Anything else (a background tab/workspace, or a
+ * backgrounded window) does warrant a nudge.
+ */
+function isPaneFocused(paneId: string): boolean {
+  if (typeof document !== "undefined" && !document.hasFocus()) return false;
+  const store = useWorkspaceStore.getState();
+  const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+  if (!ws || !ws.activeTabId) return false;
+  const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+  return tab?.activePaneId === paneId;
 }
 
 function closePaneForExitedSession(paneId: string) {
@@ -513,6 +531,21 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
     }
     return true;
+  });
+
+  // Attention bell: CLIs (and coding agents like Claude Code / OpenCode) ring
+  // the terminal bell (BEL, \x07) when they pause for user input or hit an
+  // error that needs a human. If that happens in a pane the user isn't looking
+  // at, flag the pane so the status bar under the tabs surfaces it, and play a
+  // chime (gated by the user setting + throttled). A bell in the *focused*
+  // pane is ignored — the user is already there.
+  term.onBell(() => {
+    if (isPaneFocused(tabId)) return;
+    markAttention(tabId);
+    const { alertSoundEnabled, alertVolume } = useSettingsStore.getState();
+    if (alertSoundEnabled) {
+      playAlertSound({ volume: alertVolume });
+    }
   });
 
   // wire data both directions.

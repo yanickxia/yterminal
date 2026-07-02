@@ -25,6 +25,7 @@ export async function aiChat(
 ): Promise<string> {
   return invoke<string>("ai_chat", {
     req: {
+      kind: provider.kind,
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
       model: provider.model,
@@ -69,6 +70,7 @@ export function aiChatStream(
   // provider errors into an `error` event) is surfaced as an error event too.
   invoke("ai_chat_stream", {
     req: {
+      kind: provider.kind,
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
       model: provider.model,
@@ -133,6 +135,7 @@ export async function aiChatTools(
 ): Promise<AiAssistantMessage> {
   return invoke<AiAssistantMessage>("ai_chat_tools", {
     req: {
+      kind: provider.kind,
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKey,
       model: provider.model,

@@ -10,12 +10,15 @@ import {
   MAX_SCROLLBACK_LINES,
   DEFAULT_SCROLLBACK_LINES,
   SCROLLBACK_UNLIMITED,
+  PROVIDER_PRESETS,
   type DefaultCwdMode,
+  type AiProviderKind,
 } from "../stores/settings-store";
 import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 import { detectIsMac } from "../lib/link-modifier";
+import { playAlertSound } from "../lib/alert-sound";
 import { useUpdaterStore } from "../stores/updater-store";
 import {
   exportLogs,
@@ -54,6 +57,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.requireModifierForLinks
   );
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
+  const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
+  const alertVolume = useSettingsStore((s) => s.alertVolume);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
@@ -66,6 +71,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.setRequireModifierForLinks
   );
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
+  const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
+  const setAlertVolume = useSettingsStore((s) => s.setAlertVolume);
 
   const [tab, setTab] = useState<TabId>("appearance");
   const isMac = detectIsMac();
@@ -427,6 +434,56 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   Copy work regardless.
                 </p>
               </div>
+
+              {/* attention alert sound */}
+              <div className="field">
+                <label className="field-label">Attention alert</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={alertSoundEnabled}
+                    onChange={(e) => setAlertSoundEnabled(e.target.checked)}
+                  />
+                  Play a sound when a background pane needs attention
+                </label>
+                {alertSoundEnabled && (
+                  <div className="alert-volume-row">
+                    <span className="alert-volume-label">Volume</span>
+                    <input
+                      type="range"
+                      className="alert-volume-slider"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(alertVolume * 100)}
+                      onChange={(e) => {
+                        const v = Number(e.target.value) / 100;
+                        setAlertVolume(v);
+                        // audition at the new level as the user drags
+                        playAlertSound({ force: true, volume: v });
+                      }}
+                    />
+                    <span className="alert-volume-value">
+                      {Math.round(alertVolume * 100)}%
+                    </span>
+                  </div>
+                )}
+                <p className="field-hint">
+                  A coding agent (Claude Code, OpenCode, …) rings the terminal
+                  bell when it pauses for input or errors out. When on, an
+                  unfocused pane doing so plays a chime; the status bar under the
+                  tabs always shows which tab is waiting.{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() =>
+                      playAlertSound({ force: true, volume: alertVolume })
+                    }
+                  >
+                    Preview sound
+                  </button>
+                </p>
+              </div>
             </>
           )}
 
@@ -459,87 +516,162 @@ function AiTab() {
   const removeProvider = useSettingsStore((s) => s.removeAiProvider);
   const setActive = useSettingsStore((s) => s.setActiveAiProvider);
 
+  // Switching a card's protocol: if its base URL / model were left at the old
+  // kind's preset (i.e. the user never customized them), swap them to the new
+  // kind's preset so the row is immediately usable. Otherwise leave the user's
+  // values untouched — only the protocol flips.
+  function changeKind(
+    p: { id: string; kind: AiProviderKind; baseUrl: string; model: string },
+    next: AiProviderKind
+  ) {
+    if (next === p.kind) return;
+    const from = PROVIDER_PRESETS[p.kind];
+    const to = PROVIDER_PRESETS[next];
+    const patch: Partial<{
+      kind: AiProviderKind;
+      baseUrl: string;
+      model: string;
+    }> = { kind: next };
+    if (!p.baseUrl.trim() || p.baseUrl.trim() === from.baseUrl)
+      patch.baseUrl = to.baseUrl;
+    if (!p.model.trim() || p.model.trim() === from.model) patch.model = to.model;
+    updateProvider(p.id, patch);
+  }
+
   return (
     <>
       <div className="field">
         <label className="field-label">AI providers</label>
         <p className="field-hint">
-          Configure one or more OpenAI-compatible endpoints for the AI sidebar.
-          The base URL is the API root (e.g. https://api.openai.com/v1); the app
-          appends /chat/completions. API keys are stored locally and are never
-          written to the syncable JSON config.
+          Configure one or more model endpoints for the AI sidebar. Pick a
+          protocol per provider — <b>OpenAI-compatible</b> (OpenAI, Azure,
+          Groq, OpenRouter, local llama.cpp…) or <b>Anthropic</b> (the Claude
+          Messages API). API keys are stored locally and are never written to
+          the syncable JSON config.
         </p>
       </div>
 
       {providers.length === 0 && (
         <div className="field">
-          <p className="field-hint">No providers yet.</p>
+          <p className="field-hint">No providers yet. Add one below.</p>
         </div>
       )}
 
-      {providers.map((p) => (
-        <div key={p.id} className="field ai-provider-card">
-          <div className="ai-provider-head">
-            <label className="checkbox-label">
-              <input
-                type="radio"
-                name="ai-active-provider"
-                checked={activeId === p.id}
-                onChange={() => setActive(p.id)}
-              />
-              Active
-            </label>
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => removeProvider(p.id)}
-              title="Remove this provider"
-            >
-              remove
-            </button>
-          </div>
-          <input
-            type="text"
-            className="select"
-            placeholder="Name (e.g. OpenAI)"
-            value={p.name}
-            onChange={(e) => updateProvider(p.id, { name: e.target.value })}
-            spellCheck={false}
-          />
-          <input
-            type="text"
-            className="select"
-            style={{ marginTop: 6 }}
-            placeholder="Base URL (https://api.openai.com/v1)"
-            value={p.baseUrl}
-            onChange={(e) => updateProvider(p.id, { baseUrl: e.target.value })}
-            spellCheck={false}
-          />
-          <input
-            type="text"
-            className="select"
-            style={{ marginTop: 6 }}
-            placeholder="Model (gpt-4o-mini)"
-            value={p.model}
-            onChange={(e) => updateProvider(p.id, { model: e.target.value })}
-            spellCheck={false}
-          />
-          <input
-            type="password"
-            className="select"
-            style={{ marginTop: 6 }}
-            placeholder="API key"
-            value={p.apiKey}
-            onChange={(e) => updateProvider(p.id, { apiKey: e.target.value })}
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </div>
-      ))}
+      {providers.map((p) => {
+        const isAnthropic = p.kind === "anthropic";
+        const endpoint =
+          (p.baseUrl.trim().replace(/\/+$/, "") || "…") +
+          (isAnthropic ? "/v1/messages" : "/chat/completions");
+        return (
+          <div
+            key={p.id}
+            className={
+              "field ai-provider-card" +
+              (activeId === p.id ? " active" : "")
+            }
+          >
+            <div className="ai-provider-head">
+              <label className="checkbox-label ai-provider-active">
+                <input
+                  type="radio"
+                  name="ai-active-provider"
+                  checked={activeId === p.id}
+                  onChange={() => setActive(p.id)}
+                />
+                Active
+              </label>
+              <div className="ai-provider-kind">
+                <select
+                  className="select"
+                  value={p.kind}
+                  onChange={(e) =>
+                    changeKind(p, e.target.value as AiProviderKind)
+                  }
+                  title="API protocol this provider speaks"
+                >
+                  <option value="openai">OpenAI-compatible</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => removeProvider(p.id)}
+                title="Remove this provider"
+              >
+                remove
+              </button>
+            </div>
 
-      <div className="field">
-        <button type="button" onClick={() => addProvider()}>
-          Add provider
+            <div className="ai-provider-field">
+              <label className="ai-field-label">Name</label>
+              <input
+                type="text"
+                className="select"
+                placeholder={isAnthropic ? "Anthropic" : "OpenAI"}
+                value={p.name}
+                onChange={(e) => updateProvider(p.id, { name: e.target.value })}
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="ai-provider-field">
+              <label className="ai-field-label">Base URL</label>
+              <input
+                type="text"
+                className="select"
+                placeholder={PROVIDER_PRESETS[p.kind].baseUrl}
+                value={p.baseUrl}
+                onChange={(e) =>
+                  updateProvider(p.id, { baseUrl: e.target.value })
+                }
+                spellCheck={false}
+              />
+              <p className="ai-field-endpoint">
+                Requests go to <code>{endpoint}</code>
+              </p>
+            </div>
+
+            <div className="ai-provider-field">
+              <label className="ai-field-label">Model</label>
+              <input
+                type="text"
+                className="select"
+                placeholder={PROVIDER_PRESETS[p.kind].model}
+                value={p.model}
+                onChange={(e) =>
+                  updateProvider(p.id, { model: e.target.value })
+                }
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="ai-provider-field">
+              <label className="ai-field-label">
+                API key {isAnthropic ? "(x-api-key)" : "(Bearer)"}
+              </label>
+              <input
+                type="password"
+                className="select"
+                placeholder={isAnthropic ? "sk-ant-…" : "sk-…"}
+                value={p.apiKey}
+                onChange={(e) =>
+                  updateProvider(p.id, { apiKey: e.target.value })
+                }
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="field ai-provider-add">
+        <button type="button" onClick={() => addProvider("openai")}>
+          + OpenAI-compatible
+        </button>
+        <button type="button" onClick={() => addProvider("anthropic")}>
+          + Anthropic
         </button>
       </div>
     </>

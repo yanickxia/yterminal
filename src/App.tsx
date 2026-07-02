@@ -4,6 +4,7 @@ import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store
 import { useSettingsStore } from "./stores/settings-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
+import { AttentionBar } from "./components/AttentionBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
@@ -22,6 +23,7 @@ import { AppDivider } from "./components/AppDivider";
 import { useViewerStore } from "./stores/viewer-store";
 import { useAiStore } from "./stores/ai-store";
 import { useLayoutStore } from "./stores/layout-store";
+import { clearAttention } from "./stores/attention-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 
 export default function App() {
@@ -236,6 +238,12 @@ export default function App() {
     }
   }, [activeTab?.root]);
 
+  // Whenever the active tab changes (switch via click / Cmd+K / new tab), its
+  // focused pane is now on screen, so acknowledge any pending attention on it.
+  useEffect(() => {
+    if (activeTab?.activePaneId) clearAttention(activeTab.activePaneId);
+  }, [activeTab?.id, activeTab?.activePaneId]);
+
   // opening/closing the AI sidebar or dragging either app divider changes the
   // terminal area's width, so refit the active tab's panes once layout settles.
   useEffect(() => {
@@ -255,6 +263,8 @@ export default function App() {
   const onFocusPane = useCallback(
     (paneId: string) => {
       if (!wsId || !tabId) return;
+      // focusing a pane acknowledges any pending attention flag on it
+      clearAttention(paneId);
       setActivePane(wsId, tabId, paneId);
     },
     [wsId, tabId, setActivePane]
@@ -297,6 +307,7 @@ export default function App() {
         ) : ws ? (
           <>
             <TabBar workspace={ws} />
+            <AttentionBar />
             <div className="terminal-area">
               {activeTab ? (
                 activeTab.file ? (
