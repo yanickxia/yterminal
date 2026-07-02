@@ -1516,49 +1516,146 @@ async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String>
     Ok(message)
 }
 
-/// Point GTK at the user's input method so CJK/complex-script input works in
-/// the AppImage.
+/// Point GTK at a working input method so CJK/complex-script input works in the
+/// AppImage.
 ///
-/// A webkit2gtk AppImage runs without the desktop's `GTK_IM_MODULE` exported,
-/// so the GTK layer never connects to fcitx/ibus and the candidate window
-/// never appears — the "can't type Chinese in the AppImage" bug. We set the IM
-/// module env vars BEFORE GTK initializes (before `tauri::Builder`), detecting
-/// the running IME. We only act when `GTK_IM_MODULE` is unset, so a user who
-/// already configured one (or a pure-ASCII user) is never overridden.
+/// The failure we hit: linuxdeploy-plugin-gtk bundles its OWN `immodules.cache`
+/// and pins `GTK_IM_MODULE_FILE` to it. That bundled cache lists only the
+/// generic modules shipped with GTK — NOT the third-party `im-fcitx5.so` /
+/// `im-ibus.so`. So `GTK_IM_MODULE=fcitx` (inherited from the desktop) resolves
+/// to nothing loadable and GTK silently falls back to no-IME — "can't type
+/// Chinese in the AppImage", even though the env var looks correct.
+///
+/// strace proved the fix: the value of `GTK_IM_MODULE` doesn't matter, the
+/// *cache* does. When `GTK_IM_MODULE_FILE` points at the HOST cache (which lists
+/// `im-fcitx5.so`), GTK loads fcitx and input works. So we don't rewrite the
+/// module name — we repoint `GTK_IM_MODULE_FILE` + `GTK_PATH` at the host's GTK
+/// module tree, and leave `GTK_IM_MODULE` as the detected native name. Run
+/// before `tauri::Builder` so it lands before GTK reads these at init.
+///
+/// We only act when an IME is detected AND a host cache that actually lists that
+/// IME's module is found, so a pure-ASCII setup (or a normal .deb/.rpm install
+/// whose cache is already correct) is never disturbed.
 #[cfg(target_os = "linux")]
 fn ensure_ime_env() {
-    if std::env::var_os("GTK_IM_MODULE").is_some() {
+    let Some(detected) = detect_ime() else {
+        return; // no IME in play — leave a pure-ASCII setup untouched
+    };
+
+    // If the active cache already lists the native module, nothing to fix
+    // (normal desktop / .deb / .rpm run).
+    let active_ok = std::env::var_os("GTK_IM_MODULE_FILE")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|c| cache_lists_module(&c, detected))
+        .unwrap_or(false);
+    if active_ok {
+        // Still make sure GTK_IM_MODULE itself is set (AppImage may drop it).
+        if std::env::var_os("GTK_IM_MODULE").is_none() {
+            std::env::set_var("GTK_IM_MODULE", detected);
+        }
         return;
     }
 
-    // Prefer an explicit `@im=` hint from XMODIFIERS; else sniff the process
-    // list for a running IME daemon.
-    let name = std::env::var("XMODIFIERS")
-        .ok()
-        .and_then(|x| {
-            let x = x.to_ascii_lowercase();
-            if x.contains("@im=fcitx") {
-                Some("fcitx")
-            } else if x.contains("@im=ibus") {
-                Some("ibus")
-            } else {
-                None
-            }
-        })
-        .or_else(detect_running_ime);
-
-    let Some(name) = name else {
-        return; // no IME detected — leave defaults untouched
+    // Bundled/broken cache: find a host cache that lists the native module.
+    let Some((cache_path, gtk_path)) = find_host_im_cache(detected) else {
+        return; // no usable host cache — don't make things worse
     };
 
-    logger::info("main", &format!("setting GTK_IM_MODULE={name} for IME input"));
-    // SAFETY: single-threaded, called at the very start of main() before any
-    // GTK/thread spawns read these.
-    std::env::set_var("GTK_IM_MODULE", name);
-    std::env::set_var("QT_IM_MODULE", name);
+    logger::info(
+        "main",
+        &format!(
+            "repointing GTK_IM_MODULE_FILE at host cache for {detected}: {}",
+            cache_path.display()
+        ),
+    );
+    // SAFETY: single-threaded, called at the very start of main() before GTK
+    // or any thread reads these.
+    std::env::set_var("GTK_IM_MODULE", detected);
+    std::env::set_var("QT_IM_MODULE", detected);
+    std::env::set_var("GTK_IM_MODULE_FILE", &cache_path);
+    // Prepend the host module tree so the .so referenced by the cache resolves.
+    let gtk_path_value = match std::env::var_os("GTK_PATH") {
+        Some(existing) if !existing.is_empty() => {
+            format!("{}:{}", gtk_path.display(), existing.to_string_lossy())
+        }
+        _ => gtk_path.display().to_string(),
+    };
+    std::env::set_var("GTK_PATH", gtk_path_value);
     if std::env::var_os("XMODIFIERS").is_none() {
-        std::env::set_var("XMODIFIERS", format!("@im={name}"));
+        std::env::set_var("XMODIFIERS", format!("@im={detected}"));
     }
+}
+
+/// Whether an `immodules.cache` text lists a loadable module for `ime`
+/// (`fcitx` / `ibus`). Pure — unit-tested without touching the filesystem.
+#[cfg(target_os = "linux")]
+fn cache_lists_module(cache_text: &str, ime: &str) -> bool {
+    match ime {
+        "fcitx" => cache_text.contains("im-fcitx"),
+        "ibus" => cache_text.contains("im-ibus"),
+        _ => false,
+    }
+}
+
+/// Given a host immodules.cache path like
+/// `/usr/lib/<triple>/gtk-3.0/3.0.0/immodules.cache`, return the GTK module root
+/// (`/usr/lib/<triple>/gtk-3.0`) that `GTK_PATH` should point at. Pure.
+#[cfg(target_os = "linux")]
+fn gtk_path_for_cache(cache_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    // .../gtk-3.0/3.0.0/immodules.cache → ancestor named "gtk-3.0"
+    let mut p = cache_path;
+    while let Some(parent) = p.parent() {
+        if parent.file_name().and_then(|n| n.to_str()) == Some("gtk-3.0") {
+            return Some(parent.to_path_buf());
+        }
+        p = parent;
+    }
+    None
+}
+
+/// Probe the standard host locations for an `immodules.cache` that actually
+/// lists `ime`'s module. Returns (cache_path, gtk_module_root) on the first hit.
+#[cfg(target_os = "linux")]
+fn find_host_im_cache(ime: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    const CANDIDATES: &[&str] = &[
+        "/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+        "/usr/lib64/gtk-3.0/3.0.0/immodules.cache",
+        "/usr/lib/gtk-3.0/3.0.0/immodules.cache",
+        "/usr/lib/aarch64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+    ];
+    for cand in CANDIDATES {
+        let path = std::path::Path::new(cand);
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if cache_lists_module(&text, ime) {
+            if let Some(gtk_path) = gtk_path_for_cache(path) {
+                return Some((path.to_path_buf(), gtk_path));
+            }
+        }
+    }
+    None
+}
+
+/// Detect the IME the user runs: an inherited `GTK_IM_MODULE` wins, else an
+/// `@im=` hint from `XMODIFIERS`, else a scan of the process list.
+#[cfg(target_os = "linux")]
+fn detect_ime() -> Option<&'static str> {
+    let from = |s: &str| {
+        let s = s.to_ascii_lowercase();
+        if s.contains("fcitx") {
+            Some("fcitx")
+        } else if s.contains("ibus") {
+            Some("ibus")
+        } else {
+            None
+        }
+    };
+    std::env::var("GTK_IM_MODULE")
+        .ok()
+        .and_then(|v| from(&v))
+        .or_else(|| std::env::var("XMODIFIERS").ok().and_then(|v| from(&v)))
+        .or_else(detect_running_ime)
 }
 
 /// Detect a running input-method daemon by process name. Returns the GTK module
@@ -1588,6 +1685,73 @@ fn detect_running_ime() -> Option<&'static str> {
         Some("ibus")
     } else {
         None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod ime_tests {
+    use super::{cache_lists_module, gtk_path_for_cache};
+    use std::path::Path;
+
+    // A bundled linuxdeploy-plugin-gtk cache: generic modules only, no fcitx.
+    const BUNDLED_CACHE: &str = r#"
+"im-xim.so"
+"xim" "X Input Method" "gtk30" "/usr/share/locale" "ko:ja:th:zh"
+"im-wayland.so"
+"wayland" "Wayland" "gtk30" "" ""
+"#;
+
+    // A host cache that does include fcitx5.
+    const HOST_CACHE: &str = r#"
+"/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules/im-fcitx5.so"
+"fcitx" "Fcitx5" "fcitx5" "/usr/locale" "ja:ko:zh:*"
+"im-xim.so"
+"xim" "X Input Method" "gtk30" "" "ko:ja:th:zh"
+"#;
+
+    #[test]
+    fn bundled_cache_does_not_list_fcitx() {
+        // The AppImage bug: the bundled cache can't load fcitx → must repoint.
+        assert!(!cache_lists_module(BUNDLED_CACHE, "fcitx"));
+    }
+
+    #[test]
+    fn host_cache_lists_fcitx() {
+        assert!(cache_lists_module(HOST_CACHE, "fcitx"));
+    }
+
+    #[test]
+    fn ibus_absent_from_bundled_cache() {
+        assert!(!cache_lists_module(BUNDLED_CACHE, "ibus"));
+    }
+
+    #[test]
+    fn ibus_detected_in_cache() {
+        let c = "\"/usr/lib/x/gtk-3.0/3.0.0/immodules/im-ibus.so\"\n\"ibus\" \"IBus\"\n";
+        assert!(cache_lists_module(c, "ibus"));
+        assert!(!cache_lists_module(c, "fcitx"));
+    }
+
+    #[test]
+    fn unknown_ime_never_matches() {
+        assert!(!cache_lists_module(HOST_CACHE, "xim"));
+        assert!(!cache_lists_module(HOST_CACHE, "anthy"));
+    }
+
+    #[test]
+    fn gtk_path_is_the_gtk_3_0_root() {
+        let cache = Path::new(
+            "/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+        );
+        assert_eq!(
+            gtk_path_for_cache(cache),
+            Some(Path::new("/usr/lib/x86_64-linux-gnu/gtk-3.0").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn gtk_path_none_when_no_gtk_3_0_ancestor() {
+        assert_eq!(gtk_path_for_cache(Path::new("/tmp/immodules.cache")), None);
     }
 }
 
