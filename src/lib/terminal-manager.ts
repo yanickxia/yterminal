@@ -18,6 +18,7 @@ import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
+import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -141,6 +142,14 @@ interface Session {
   pendingResume?: string;
   /** Whether the queued resume command has already been injected. */
   resumeInjected: boolean;
+  /**
+   * Cleanup for the orphan-composition guard, attached on first `open()`. On
+   * Linux (webkit2gtk) IMEs commit CJK via an orphan `compositionend` with no
+   * matching `compositionstart`, which xterm re-sends as the whole textarea
+   * buffer — the "你好 → 你好你你好好…" duplication. See
+   * terminal-composition-guard.ts.
+   */
+  compositionGuardCleanup?: () => void;
 }
 
 interface XtermCoreInternals {
@@ -655,6 +664,17 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   if (!s.opened) {
     s.term.open(s.el);
     s.opened = true;
+    // Attach the orphan-composition guard now that the textarea exists. `s.el`
+    // is an ancestor of xterm's textarea, so capture-phase listeners here run
+    // before xterm's own. Delivered CJK is written straight to the pty (it
+    // never matches an agent launch token, so bypassing feedInput is safe).
+    s.compositionGuardCleanup = attachOrphanCompositionEndGuard(s.el, (data) => {
+      try {
+        s.pty.write(data);
+      } catch {
+        /* pty gone */
+      }
+    });
   }
   resumeXtermRenderer(s);
   // defer fit until layout settles
@@ -720,6 +740,7 @@ export function disposeSession(tabId: string) {
   logger.info("term", `dispose pane=${tabId} pid=${s.pty.pid ?? "?"}`);
   s.disposed = true;
   sessions.delete(tabId);
+  s.compositionGuardCleanup?.();
   try {
     s.pty.kill();
   } catch {

@@ -1516,11 +1516,88 @@ async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String>
     Ok(message)
 }
 
+/// Point GTK at the user's input method so CJK/complex-script input works in
+/// the AppImage.
+///
+/// A webkit2gtk AppImage runs without the desktop's `GTK_IM_MODULE` exported,
+/// so the GTK layer never connects to fcitx/ibus and the candidate window
+/// never appears — the "can't type Chinese in the AppImage" bug. We set the IM
+/// module env vars BEFORE GTK initializes (before `tauri::Builder`), detecting
+/// the running IME. We only act when `GTK_IM_MODULE` is unset, so a user who
+/// already configured one (or a pure-ASCII user) is never overridden.
+#[cfg(target_os = "linux")]
+fn ensure_ime_env() {
+    if std::env::var_os("GTK_IM_MODULE").is_some() {
+        return;
+    }
+
+    // Prefer an explicit `@im=` hint from XMODIFIERS; else sniff the process
+    // list for a running IME daemon.
+    let name = std::env::var("XMODIFIERS")
+        .ok()
+        .and_then(|x| {
+            let x = x.to_ascii_lowercase();
+            if x.contains("@im=fcitx") {
+                Some("fcitx")
+            } else if x.contains("@im=ibus") {
+                Some("ibus")
+            } else {
+                None
+            }
+        })
+        .or_else(detect_running_ime);
+
+    let Some(name) = name else {
+        return; // no IME detected — leave defaults untouched
+    };
+
+    logger::info("main", &format!("setting GTK_IM_MODULE={name} for IME input"));
+    // SAFETY: single-threaded, called at the very start of main() before any
+    // GTK/thread spawns read these.
+    std::env::set_var("GTK_IM_MODULE", name);
+    std::env::set_var("QT_IM_MODULE", name);
+    if std::env::var_os("XMODIFIERS").is_none() {
+        std::env::set_var("XMODIFIERS", format!("@im={name}"));
+    }
+}
+
+/// Detect a running input-method daemon by process name. Returns the GTK module
+/// name (`fcitx` / `ibus`) or None. Scans `ps` output rather than relying on
+/// `pgrep` pattern flags, which vary across distros.
+#[cfg(target_os = "linux")]
+fn detect_running_ime() -> Option<&'static str> {
+    let listing = std::process::Command::new("ps")
+        .arg("-eo")
+        .arg("comm")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&listing.stdout);
+    let mut has_fcitx = false;
+    let mut has_ibus = false;
+    for line in text.lines() {
+        let name = line.trim();
+        if name == "fcitx5" || name == "fcitx" {
+            has_fcitx = true;
+        } else if name == "ibus-daemon" {
+            has_ibus = true;
+        }
+    }
+    if has_fcitx {
+        Some("fcitx")
+    } else if has_ibus {
+        Some("ibus")
+    } else {
+        None
+    }
+}
+
 fn main() {
     logger::info(
         "main",
         &format!("yterminal {} starting", env!("CARGO_PKG_VERSION")),
     );
+    #[cfg(target_os = "linux")]
+    ensure_ime_env();
     tauri::Builder::default()
         .manage(pty::PtyState::default())
         .plugin(tauri_plugin_os::init())

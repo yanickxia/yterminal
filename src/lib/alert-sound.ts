@@ -54,11 +54,24 @@ export function playAlertSound(
 
   const ac = audioContext();
   if (!ac) return;
-  // Autoplay policy can leave the context suspended until a user gesture; a
-  // bell arriving after the user has interacted with the page resumes fine.
-  if (ac.state === "suspended") void ac.resume().catch(() => {});
 
   lastPlayed = now;
+  // Autoplay policy can leave the context suspended until a user gesture. On
+  // webkit2gtk `resume()` is async and the oscillators must be scheduled AFTER
+  // it resolves, otherwise they're dropped and nothing is heard (Linux "no
+  // preview sound"). When already running, schedule synchronously.
+  if (ac.state === "suspended") {
+    void ac
+      .resume()
+      .then(() => scheduleChime(ac, vol))
+      .catch(() => {});
+  } else {
+    scheduleChime(ac, vol);
+  }
+}
+
+/** Build and schedule the two-blip chime on an already-running context. */
+function scheduleChime(ac: AudioContext, vol: number): void {
   try {
     const t0 = ac.currentTime;
     const gain = ac.createGain();
