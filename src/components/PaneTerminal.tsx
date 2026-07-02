@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PaneLeaf } from "../lib/types";
 import {
   attachSession,
@@ -6,7 +6,11 @@ import {
   fitSession,
   onSessionExit,
   offSessionExit,
+  copySelection,
+  pasteInto,
+  hasSelection,
 } from "../lib/terminal-manager";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 
 /**
  * One leaf == one live terminal. Mounts the cached xterm DOM node for this
@@ -42,6 +46,8 @@ export function PaneTerminal({
   // we read the latest cwd when the effect actually fires.
   const cwdRef = useRef(pane.cwd);
   cwdRef.current = pane.cwd;
+
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -79,8 +85,36 @@ export function PaneTerminal({
     <div
       className={"pane-leaf" + (active ? " active" : "")}
       onMouseDown={onFocus}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
     >
       <div className="pane-host" ref={containerRef} />
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={
+            [
+              {
+                label: "Copy",
+                disabled: !hasSelection(pane.id),
+                onClick: () => {
+                  void copySelection(pane.id);
+                },
+              },
+              {
+                label: "Paste",
+                onClick: () => {
+                  void pasteInto(pane.id);
+                },
+              },
+            ] satisfies MenuItem[]
+          }
+        />
+      )}
     </div>
   );
 }

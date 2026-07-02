@@ -23,6 +23,8 @@ cargo check            # type-check Rust without building the GUI
 cargo build            # debug build
 ```
 
+**`tauri:dev` builds into a separate `src-tauri/target-dev`** (via `CARGO_TARGET_DIR` in the npm script), NOT the default `src-tauri/target`. This is deliberate: `tauri dev` passes a `TAURI_CONFIG` env var to cargo, and `tauri-build`'s build script declares `rerun-if-env-changed=TAURI_CONFIG`. Any command run WITHOUT that env (a bare `cargo check`/`cargo build`, or rust-analyzer in your editor) has a different build-script fingerprint, so sharing one target dir makes the two thrash — every `tauri dev` restart rebuilds the `yterminal` crate. Isolating the dev target dir lets both keep warm caches independently. Consequence: the first `tauri:dev` after this split does one full compile into `target-dev`; `cargo check`/`build` and rust-analyzer keep using `target`.
+
 CI (`.github/workflows/ci.yml`) only runs `tsc --noEmit` and `npm run build` on push/PR — full multi-platform bundles are built only on `v*` tag pushes via `release.yml`.
 
 ### Releasing
@@ -80,6 +82,8 @@ If you need to change PTY behavior, edit `src-tauri/src/pty.rs` and `src/lib/pty
 
 Scrollback flow: `App.tsx` calls `preloadScrollbacks()` once at startup to bulk-fetch from SQLite into an in-memory map; `loadScrollback(paneId)` is then synchronous (the React lifecycle that consumes it isn't async-friendly). A 15s autosave tick writes via `scrollback_save`. Startup GC: `scrollback_prune(liveIds)` drops snapshots for panes no longer in the workspace store.
 
+Close flush: `terminal-manager.ts` intercepts the window's `onCloseRequested`, `preventDefault`s it, flushes cwd/agent snapshots, then calls `appWindow.destroy()` to actually close. `destroy()` is an IPC command that requires **`core:window:allow-destroy` in `capabilities/default.json`** — Tauri's window default permission set does NOT grant it. Without that permission the close is vetoed but the destroy is denied, so the window can never be closed. Keep the permission when touching the close path.
+
 Appearance flow: `loadConfigFromDisk()` runs at startup and on `window` `focus` event — so editing the JSON file by hand (or syncing it via git/Dropbox) updates the running app live. Settings panel writes back via `write_config`.
 
 ### Theming
@@ -94,6 +98,15 @@ Appearance flow: `loadConfigFromDisk()` runs at startup and on `window` `focus` 
 - `src/lib/opener.ts` — thin wrapper over `@tauri-apps/plugin-opener` (`openUrl` for web links, `openPath` for OS-opening local files), mirroring the `src/lib/pty.ts` shape so the IPC surface is centralized and mockable in vitest.
 
 The Tauri capability `opener:allow-open-url` in `src-tauri/capabilities/default.json` is scoped to `http://*` and `https://*`. **Keep this lock-down when adding new schemes** — widening the scope (to `file://`, `mailto:`, etc.) is a security decision, not a cleanup task. `opener:allow-open-path` is also granted so recognized non-text files (images, binaries) can be handed to the OS default app.
+
+### Clipboard
+
+xterm.js v5 does NOT integrate the clipboard on its own — it draws the selection highlight but selected text never reaches the OS clipboard unless the app explicitly wires it. On macOS the WKWebView maps the selection onto Cmd+C as a fallback; **webkit2gtk (Linux) does not**, so without this wiring Linux has no copy path at all (the original bug). Concerns split the usual pure / IO / UI way:
+
+- **IO (Rust plugin)** — `tauri-plugin-clipboard-manager` (registered in `main.rs`, capability `clipboard-manager:allow-read-text`/`allow-write-text`, deliberately the minimal text-only grant, not `:default`). We use the native plugin rather than `navigator.clipboard`, which is unreliable in webkit2gtk's non-secure context. Wrapped by `src/lib/clipboard.ts` (`clipboardWrite`/`clipboardRead`), mirroring `opener.ts`.
+- **Shortcut match (pure)** — `src/lib/clipboard-shortcut.ts` `matchClipboardShortcut(e, isMac)` → `"copy" | "paste" | null`. macOS binds Cmd+C/V; elsewhere Ctrl+**Shift**+C/V. **Bare Ctrl+C/V never matches** (SIGINT / literal input must reach the shell) — this is the invariant, unit-tested in `clipboard-shortcut.test.ts`.
+- **Wiring (manager)** — `terminal-manager.ts` exports `copySelection`/`pasteInto`/`hasSelection`. `attachCustomKeyEventHandler` dispatches the shortcut before its Enter handling; paste goes through `term.paste()` (honors bracketed-paste), not a raw `pty.write`. An `onSelectionChange` handler implements opt-in copy-on-select, reading `useSettingsStore.getState().copyOnSelect` live so the toggle takes effect without recreating terminals.
+- **UI** — `PaneTerminal.tsx` adds an `onContextMenu` that opens the shared `ContextMenu` with Copy (disabled when `!hasSelection`) / Paste. App.tsx's global `contextmenu` `preventDefault` only blocks the OS-native menu; React's `onContextMenu` still fires. `copyOnSelect` (default false) lives in `settings-store` (additive, schema stays `version: 4`) + the syncable JSON config (`config.ts`), toggled in Settings → Terminal.
 
 ### File links + built-in viewer
 
