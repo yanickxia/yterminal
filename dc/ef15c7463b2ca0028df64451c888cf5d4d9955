@@ -1,0 +1,21 @@
+src-tauri/src/main.rs
+  s_ef7bcc5e68426a::t_8a05ca7b01ef2a 1519-1520,1522-1538,1541-1555,1559-1561,1564-1583,1585,1589-1660,1691-1757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "dcef15c7463b2ca0028df64451c888cf5d4d9955",
+  "prompts": {},
+  "sessions": {
+    "s_ef7bcc5e68426a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebf6811f-3176-46fd-817e-391718a5bd14",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
