@@ -34,12 +34,23 @@ function audioContext(): AudioContext | null {
 /**
  * Play the attention chime, honoring the throttle. Best-effort: any failure
  * (no WebAudio, suspended context that won't resume) is swallowed — a missing
- * sound must never break terminal flow. `force` bypasses the throttle for an
- * explicit user test (Settings "preview" button).
+ * sound must never break terminal flow.
+ *
+ * @param opts.force  bypass the throttle for an explicit user test (Settings
+ *                     "preview" button).
+ * @param opts.volume linear 0..1 gain multiplier; the chime's soft peak (0.18)
+ *                     is scaled by this. Values outside [0,1] are clamped;
+ *                     0 (or absent-with-0) simply plays nothing audible.
+ *                     Defaults to 1 (full).
  */
-export function playAlertSound(force = false): void {
+export function playAlertSound(
+  opts: { force?: boolean; volume?: number } = {}
+): void {
+  const { force = false, volume = 1 } = opts;
+  const vol = Math.max(0, Math.min(1, volume));
   const now = Date.now();
   if (!force && now - lastPlayed < THROTTLE_MS) return;
+  if (vol <= 0) return; // muted — don't even spin up the context
 
   const ac = audioContext();
   if (!ac) return;
@@ -51,6 +62,8 @@ export function playAlertSound(force = false): void {
   try {
     const t0 = ac.currentTime;
     const gain = ac.createGain();
+    // master volume scales the whole chime; per-blip envelopes below feed it.
+    gain.gain.value = vol;
     gain.connect(ac.destination);
     // two short blips: 880Hz then 660Hz, each ~120ms with a soft envelope.
     const blips: Array<[number, number]> = [

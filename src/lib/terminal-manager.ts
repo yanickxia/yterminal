@@ -542,8 +542,9 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.onBell(() => {
     if (isPaneFocused(tabId)) return;
     markAttention(tabId);
-    if (useSettingsStore.getState().alertSoundEnabled) {
-      playAlertSound();
+    const { alertSoundEnabled, alertVolume } = useSettingsStore.getState();
+    if (alertSoundEnabled) {
+      playAlertSound({ volume: alertVolume });
     }
   });
 

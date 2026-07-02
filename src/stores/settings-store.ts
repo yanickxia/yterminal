@@ -55,6 +55,9 @@ export const DEFAULT_COPY_ON_SELECT = false;
  */
 export const DEFAULT_ALERT_SOUND_ENABLED = true;
 
+/** Attention chime loudness: linear 0..1 gain multiplier. Default full. */
+export const DEFAULT_ALERT_VOLUME = 1;
+
 /**
  * Wire protocol a provider speaks.
  *   openai    — OpenAI-compatible `/chat/completions` (Bearer auth). Also fits
@@ -132,6 +135,8 @@ interface SettingsState {
   copyOnSelect: boolean;
   /** play a chime when an unfocused pane rings the bell (agent needs attention) */
   alertSoundEnabled: boolean;
+  /** attention chime loudness, linear 0..1 */
+  alertVolume: number;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
   /** configured AI providers for the sidebar (see AiProvider) */
@@ -150,6 +155,7 @@ interface SettingsState {
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
   setAlertSoundEnabled: (on: boolean) => void;
+  setAlertVolume: (v: number) => void;
   setDebugVerbose: (on: boolean) => void;
   /** append a provider row (of the given kind) and make it active; returns its id */
   addAiProvider: (kind?: AiProviderKind) => string;
@@ -174,6 +180,7 @@ export const useSettingsStore = create<SettingsState>()(
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       copyOnSelect: DEFAULT_COPY_ON_SELECT,
       alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
+      alertVolume: DEFAULT_ALERT_VOLUME,
       debugVerbose: true,
       aiProviders: [],
       activeAiProviderId: "",
@@ -208,6 +215,8 @@ export const useSettingsStore = create<SettingsState>()(
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
       setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
+      setAlertVolume: (v) =>
+        set({ alertVolume: Math.max(0, Math.min(1, v)) }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
       addAiProvider: (kind = "openai") => {
         const id = newProviderId();

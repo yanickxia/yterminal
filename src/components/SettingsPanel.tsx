@@ -58,6 +58,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
   const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
+  const alertVolume = useSettingsStore((s) => s.alertVolume);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
@@ -71,6 +72,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
   const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
+  const setAlertVolume = useSettingsStore((s) => s.setAlertVolume);
 
   const [tab, setTab] = useState<TabId>("appearance");
   const isMac = detectIsMac();
@@ -444,6 +446,28 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   />
                   Play a sound when a background pane needs attention
                 </label>
+                {alertSoundEnabled && (
+                  <div className="alert-volume-row">
+                    <span className="alert-volume-label">Volume</span>
+                    <input
+                      type="range"
+                      className="alert-volume-slider"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(alertVolume * 100)}
+                      onChange={(e) => {
+                        const v = Number(e.target.value) / 100;
+                        setAlertVolume(v);
+                        // audition at the new level as the user drags
+                        playAlertSound({ force: true, volume: v });
+                      }}
+                    />
+                    <span className="alert-volume-value">
+                      {Math.round(alertVolume * 100)}%
+                    </span>
+                  </div>
+                )}
                 <p className="field-hint">
                   A coding agent (Claude Code, OpenCode, …) rings the terminal
                   bell when it pauses for input or errors out. When on, an
@@ -452,7 +476,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   <button
                     type="button"
                     className="link-button"
-                    onClick={() => playAlertSound(true)}
+                    onClick={() =>
+                      playAlertSound({ force: true, volume: alertVolume })
+                    }
                   >
                     Preview sound
                   </button>

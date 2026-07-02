@@ -951,6 +951,30 @@ body {
 .link-button:hover {
   opacity: 0.85;
 }
+/* attention alert volume slider row */
+.alert-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.alert-volume-label {
+  color: var(--fg-dim);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.alert-volume-slider {
+  flex: 1 1 auto;
+  max-width: 220px;
+  accent-color: var(--accent);
+}
+.alert-volume-value {
+  color: var(--fg-dim);
+  font-size: 12px;
+  min-width: 36px;
+  text-align: right;
+  flex: 0 0 auto;
+}
 .config-footer {
   margin-top: 16px;
   padding-top: 12px;
