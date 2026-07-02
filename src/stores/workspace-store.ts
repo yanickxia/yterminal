@@ -102,6 +102,12 @@ interface WorkspaceState {
   openFileTab: (workspaceId: string, file: TabFile) => string;
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
+  /**
+   * Update a tab's *auto* display name (Tab.name) without touching customName.
+   * Fed by the shell/agent title stream (OSC 0/2). A tab the user renamed by
+   * hand has a customName, which always wins, so this is a no-op there.
+   */
+  setTabAutoName: (workspaceId: string, tabId: string, name: string) => void;
   setTabIcon: (workspaceId: string, tabId: string, icon: string) => void;
   setActiveTab: (workspaceId: string, tabId: string) => void;
   reorderTab: (
@@ -369,6 +375,23 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             customName: name,
           })),
         })),
+
+      setTabAutoName: (workspaceId, tabId, name) =>
+        set((s) => {
+          // customName is an explicit user override — it always wins, so an
+          // auto title never clobbers it. Also skip no-op writes so a chatty
+          // agent redrawing the same title doesn't churn the store (and every
+          // subscribed component) on each identical update.
+          const ws = s.workspaces.find((w) => w.id === workspaceId);
+          const tab = ws?.tabs.find((t) => t.id === tabId);
+          if (!tab || tab.customName || tab.name === name) return s;
+          return {
+            workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
+              ...t,
+              name,
+            })),
+          };
+        }),
 
       setTabIcon: (workspaceId, tabId, icon) =>
         set((s) => ({
