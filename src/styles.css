@@ -336,6 +336,77 @@ body {
   position: relative;
 }
 
+/* ---------- attention bar (tabs waiting for operator action) ---------- */
+/* A thin strip below the tab bar; only rendered when at least one tab's pane
+   rang the bell while unfocused. Chips jump to the waiting tab. */
+.attention-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  background: var(--bg-medium);
+  border-top: 1px solid var(--bg-light);
+  border-bottom: 1px solid var(--bg-light);
+  font-size: 12px;
+  overflow-x: auto;
+}
+.attention-bar-label {
+  color: var(--fg-dim);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.attention-bar-chips {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.attention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--bg-light);
+  border-radius: 12px;
+  background: var(--bg-dark);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attention-chip:hover {
+  border-color: var(--accent);
+}
+.attention-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e0af68; /* amber "attention" pip */
+  flex: 0 0 auto;
+  animation: attention-pulse 1.4s ease-in-out infinite;
+}
+@keyframes attention-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.attention-chip-icon {
+  font-size: 12px;
+}
+.attention-chip-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-light);
+  color: var(--fg-dim);
+  text-align: center;
+  font-size: 10px;
+}
+
 /* ---------- app-level draggable dividers ---------- */
 /* Slim vertical handles between the top-level flex columns (workspace sidebar
    ↔ main, main ↔ AI sidebar). A wide transparent hit area with a thin visible
@@ -865,6 +936,20 @@ body {
   margin: 6px 0 0;
   font-size: 11px;
   color: var(--fg-dim);
+}
+/* inline text button used inside a field hint (e.g. "Preview sound") */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-button:hover {
+  opacity: 0.85;
 }
 .config-footer {
   margin-top: 16px;

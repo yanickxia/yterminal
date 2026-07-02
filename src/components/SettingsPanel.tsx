@@ -18,6 +18,7 @@ import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 import { detectIsMac } from "../lib/link-modifier";
+import { playAlertSound } from "../lib/alert-sound";
 import { useUpdaterStore } from "../stores/updater-store";
 import {
   exportLogs,
@@ -56,6 +57,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.requireModifierForLinks
   );
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
+  const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
@@ -68,6 +70,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     (s) => s.setRequireModifierForLinks
   );
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
+  const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
 
   const [tab, setTab] = useState<TabId>("appearance");
   const isMac = detectIsMac();
@@ -427,6 +430,32 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   When on, selecting terminal text copies it to the clipboard
                   automatically. {isMac ? "Cmd" : "Ctrl+Shift"}+C and right-click
                   Copy work regardless.
+                </p>
+              </div>
+
+              {/* attention alert sound */}
+              <div className="field">
+                <label className="field-label">Attention alert</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={alertSoundEnabled}
+                    onChange={(e) => setAlertSoundEnabled(e.target.checked)}
+                  />
+                  Play a sound when a background pane needs attention
+                </label>
+                <p className="field-hint">
+                  A coding agent (Claude Code, OpenCode, …) rings the terminal
+                  bell when it pauses for input or errors out. When on, an
+                  unfocused pane doing so plays a chime; the status bar under the
+                  tabs always shows which tab is waiting.{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => playAlertSound(true)}
+                  >
+                    Preview sound
+                  </button>
                 </p>
               </div>
             </>

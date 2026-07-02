@@ -49,6 +49,13 @@ export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
 export const DEFAULT_COPY_ON_SELECT = false;
 
 /**
+ * Play a short chime when a pane rings the terminal bell (BEL) while it isn't
+ * the focused pane — the signal a coding agent emits when it pauses for input
+ * or errors out. Pairs with the on-screen attention bar. Default on.
+ */
+export const DEFAULT_ALERT_SOUND_ENABLED = true;
+
+/**
  * Wire protocol a provider speaks.
  *   openai    — OpenAI-compatible `/chat/completions` (Bearer auth). Also fits
  *               Azure OpenAI, Together, Groq, OpenRouter, local llama.cpp, etc.
@@ -123,6 +130,8 @@ interface SettingsState {
   requireModifierForLinks: boolean;
   /** copy the selection to the clipboard automatically when it changes */
   copyOnSelect: boolean;
+  /** play a chime when an unfocused pane rings the bell (agent needs attention) */
+  alertSoundEnabled: boolean;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
   /** configured AI providers for the sidebar (see AiProvider) */
@@ -140,6 +149,7 @@ interface SettingsState {
   setDefaultCwdFixed: (path: string) => void;
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
+  setAlertSoundEnabled: (on: boolean) => void;
   setDebugVerbose: (on: boolean) => void;
   /** append a provider row (of the given kind) and make it active; returns its id */
   addAiProvider: (kind?: AiProviderKind) => string;
@@ -163,6 +173,7 @@ export const useSettingsStore = create<SettingsState>()(
       defaultCwdFixed: "",
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       copyOnSelect: DEFAULT_COPY_ON_SELECT,
+      alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
       debugVerbose: true,
       aiProviders: [],
       activeAiProviderId: "",
@@ -196,6 +207,7 @@ export const useSettingsStore = create<SettingsState>()(
       setRequireModifierForLinks: (on) =>
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
+      setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
       addAiProvider: (kind = "openai") => {
         const id = newProviderId();
