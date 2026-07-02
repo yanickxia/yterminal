@@ -53,6 +53,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const requireModifierForLinks = useSettingsStore(
     (s) => s.requireModifierForLinks
   );
+  const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
@@ -64,6 +65,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setRequireModifierForLinks = useSettingsStore(
     (s) => s.setRequireModifierForLinks
   );
+  const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
 
   const [tab, setTab] = useState<TabId>("appearance");
   const isMac = detectIsMac();
@@ -125,6 +127,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     defaultCwdMode,
     defaultCwdFixed,
     requireModifierForLinks,
+    copyOnSelect,
   ]);
 
   // close on Escape
@@ -404,6 +407,24 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   When on, links and file paths in terminal output open only on{" "}
                   {isMac ? "Cmd" : "Ctrl"}+click. When off, a plain
                   click opens them.
+                </p>
+              </div>
+
+              {/* copy-on-select */}
+              <div className="field">
+                <label className="field-label">Copying</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={copyOnSelect}
+                    onChange={(e) => setCopyOnSelect(e.target.checked)}
+                  />
+                  Copy on select
+                </label>
+                <p className="field-hint">
+                  When on, selecting terminal text copies it to the clipboard
+                  automatically. {isMac ? "Cmd" : "Ctrl+Shift"}+C and right-click
+                  Copy work regardless.
                 </p>
               </div>
             </>

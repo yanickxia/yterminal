@@ -25,6 +25,7 @@ import {
   SCROLLBACK_UNLIMITED,
   DEFAULT_CWD_MODE,
   DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
+  DEFAULT_COPY_ON_SELECT,
   type DefaultCwdMode,
 } from "../stores/settings-store";
 
@@ -56,6 +57,8 @@ export interface YterminalConfig {
     };
     /** require Cmd/Ctrl to open links from terminal output (false = plain click) */
     requireModifierForLinks: boolean;
+    /** auto-copy the terminal selection to the clipboard when it changes */
+    copyOnSelect: boolean;
   };
 }
 
@@ -80,6 +83,7 @@ export function configFromStore(): YterminalConfig {
         fixedPath: s.defaultCwdFixed,
       },
       requireModifierForLinks: s.requireModifierForLinks,
+      copyOnSelect: s.copyOnSelect,
     },
   };
 }
@@ -171,6 +175,7 @@ export function parseConfig(text: string): YterminalConfig | null {
         tm.requireModifierForLinks,
         DEFAULT_REQUIRE_MODIFIER_FOR_LINKS
       ),
+      copyOnSelect: validBool(tm.copyOnSelect, DEFAULT_COPY_ON_SELECT),
     },
   };
 }
@@ -198,6 +203,8 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   const { requireModifierForLinks } = cfg.terminal;
   if (requireModifierForLinks !== s.requireModifierForLinks)
     s.setRequireModifierForLinks(requireModifierForLinks);
+  const { copyOnSelect } = cfg.terminal;
+  if (copyOnSelect !== s.copyOnSelect) s.setCopyOnSelect(copyOnSelect);
 }
 
 /** Absolute path of the config file (for display in the UI). */

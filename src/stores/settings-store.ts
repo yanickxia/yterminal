@@ -42,6 +42,13 @@ export const DEFAULT_CWD_MODE: DefaultCwdMode = "inherit";
 export const DEFAULT_REQUIRE_MODIFIER_FOR_LINKS = true;
 
 /**
+ * When true, selecting text in a terminal immediately copies it to the
+ * clipboard (tmux/urxvt-style). Default false — explicit Ctrl+Shift+C /
+ * right-click Copy is the primary path.
+ */
+export const DEFAULT_COPY_ON_SELECT = false;
+
+/**
  * A configured AI provider for the sidebar. `baseUrl` is an OpenAI-compatible
  * API root (e.g. "https://api.openai.com/v1"); the Rust `ai_chat` command
  * appends "/chat/completions". `apiKey` lives in localStorage only — it is
@@ -85,6 +92,8 @@ interface SettingsState {
    * When false, a plain click opens web URLs and file paths.
    */
   requireModifierForLinks: boolean;
+  /** copy the selection to the clipboard automatically when it changes */
+  copyOnSelect: boolean;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
   /** configured AI providers for the sidebar (see AiProvider) */
@@ -101,6 +110,7 @@ interface SettingsState {
   setDefaultCwdMode: (mode: DefaultCwdMode) => void;
   setDefaultCwdFixed: (path: string) => void;
   setRequireModifierForLinks: (on: boolean) => void;
+  setCopyOnSelect: (on: boolean) => void;
   setDebugVerbose: (on: boolean) => void;
   /** append a blank provider row and make it active; returns its id */
   addAiProvider: () => string;
@@ -123,6 +133,7 @@ export const useSettingsStore = create<SettingsState>()(
       defaultCwdMode: DEFAULT_CWD_MODE,
       defaultCwdFixed: "",
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
+      copyOnSelect: DEFAULT_COPY_ON_SELECT,
       debugVerbose: true,
       aiProviders: [],
       activeAiProviderId: "",
@@ -155,6 +166,7 @@ export const useSettingsStore = create<SettingsState>()(
       setDefaultCwdFixed: (path) => set({ defaultCwdFixed: path }),
       setRequireModifierForLinks: (on) =>
         set({ requireModifierForLinks: on }),
+      setCopyOnSelect: (on) => set({ copyOnSelect: on }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
       addAiProvider: () => {
         const id = newProviderId();

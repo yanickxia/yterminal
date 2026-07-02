@@ -13,6 +13,8 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
+import { clipboardWrite, clipboardRead } from "./clipboard";
+import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
@@ -479,12 +481,32 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // sends ESC+CR — the canonical Alt+Enter sequence those apps interpret as
   // "newline within input" rather than submit.
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== "keydown" || e.key !== "Enter") return true;
+    if (e.type !== "keydown") return true;
+    // Clipboard shortcuts (Ctrl+Shift+C/V, or Cmd+C/V on mac). Bare Ctrl+C/V
+    // never matches here, so SIGINT and literal input still reach the shell.
+    const action = matchClipboardShortcut(e, isMac);
+    if (action === "copy") {
+      void copySelection(tabId);
+      return false;
+    }
+    if (action === "paste") {
+      void pasteInto(tabId);
+      return false;
+    }
+    if (e.key !== "Enter") return true;
     if (e.metaKey || e.ctrlKey || e.shiftKey) {
       pty.write("\x1b\r");
       return false; // skip xterm's default \r dispatch
     }
     return true;
+  });
+  // Copy-on-select (opt-in): mirror the selection into the clipboard as soon as
+  // it changes. The setting is read live so toggling it takes effect without
+  // recreating terminals (same stance as requireModifierForLinks).
+  term.onSelectionChange(() => {
+    if (!useSettingsStore.getState().copyOnSelect) return;
+    const sel = term.getSelection();
+    if (sel) void clipboardWrite(sel).catch(() => {});
   });
   term.attachCustomWheelEventHandler(() => {
     if (s) {
@@ -725,6 +747,36 @@ export function getSessionText(tabId: string, maxChars = 12000): string {
   } catch {
     return "";
   }
+}
+
+/** Whether the pane currently has a non-empty text selection. */
+export function hasSelection(tabId: string): boolean {
+  const s = sessions.get(tabId);
+  return !!s && !s.disposed && s.term.hasSelection();
+}
+
+/**
+ * Copy the pane's current selection to the clipboard. Resolves to true when
+ * something was copied, false when there was no selection.
+ */
+export async function copySelection(tabId: string): Promise<boolean> {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return false;
+  const sel = s.term.getSelection();
+  if (!sel) return false;
+  await clipboardWrite(sel);
+  return true;
+}
+
+/**
+ * Paste clipboard text into the pane. Goes through `term.paste`, which honors
+ * the shell's bracketed-paste mode, rather than writing to the pty directly.
+ */
+export async function pasteInto(tabId: string): Promise<void> {
+  const s = sessions.get(tabId);
+  if (!s || s.disposed) return;
+  const text = await clipboardRead();
+  if (text) s.term.paste(text);
 }
 
 /** Result of an agent-run command: captured output plus the shell exit code. */
