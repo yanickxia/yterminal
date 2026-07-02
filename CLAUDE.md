@@ -70,6 +70,8 @@ Blocking syscalls (`reader.read`, `child.wait`, `writer.write_all`) MUST stay of
 
 Do not re-introduce a direct sync call inside any `#[tauri::command] async fn` here.
 
+`pty_spawn` strips `ARGV0` from the child shell's environment (`cmd.env_remove("ARGV0")`). The AppImage runtime sets `ARGV0` to the `.AppImage` filename; zsh re-injects `ARGV0` as `argv[0]` of every command it spawns, so a rustup proxy shim (`~/.cargo/bin/cargo` → `rustup`) sees the AppImage name and dies with `unknown proxy name`. Don't remove this — it's invisible outside AppImage (the var is unset there) but load-bearing inside it.
+
 If you need to change PTY behavior, edit `src-tauri/src/pty.rs` and `src/lib/pty.ts` together. Don't reintroduce the plugin.
 
 ### Persistence — three separate stores
