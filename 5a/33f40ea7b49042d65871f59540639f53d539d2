@@ -1,0 +1,25 @@
+src/lib/paste-suppress.test.ts
+  s_ef7bcc5e68426a::t_4f3a08ee0a9252 1-33
+src/lib/paste-suppress.ts
+  s_ef7bcc5e68426a::t_f3d8afb5c08107 1-20
+src/lib/terminal-manager.ts
+  s_ef7bcc5e68426a::t_ef592dc256021b 22,154-163,531-533,692-706,773
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "5a33f40ea7b49042d65871f59540639f53d539d2",
+  "prompts": {},
+  "sessions": {
+    "s_ef7bcc5e68426a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebf6811f-3176-46fd-817e-391718a5bd14",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
