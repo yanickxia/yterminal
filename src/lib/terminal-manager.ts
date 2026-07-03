@@ -19,6 +19,7 @@ import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
+import { shouldSuppressNativePaste } from "./paste-suppress";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -150,6 +151,16 @@ interface Session {
    * terminal-composition-guard.ts.
    */
   compositionGuardCleanup?: () => void;
+  /**
+   * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
+   * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
+   * `paste` event that xterm handles — pasting twice. We stamp this timestamp
+   * on the shortcut and swallow a native `paste` arriving right after it. See
+   * paste-suppress.ts.
+   */
+  pasteViaShortcutAt?: number;
+  /** Cleanup for the native-paste de-dupe listener. */
+  pasteDedupeCleanup?: () => void;
 }
 
 interface XtermCoreInternals {
@@ -517,6 +528,9 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       return false;
     }
     if (action === "paste") {
+      // Stamp the moment so the native `paste` event webkit2gtk fires for this
+      // same keypress can be recognized as the duplicate and swallowed.
+      if (s) s.pasteViaShortcutAt = Date.now();
       void pasteInto(tabId);
       return false;
     }
@@ -675,6 +689,21 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
         /* pty gone */
       }
     });
+    // De-dupe paste on webkit2gtk: a keyboard paste shortcut runs pasteInto()
+    // AND the browser fires a native `paste` event that xterm handles too. We
+    // swallow that native duplicate (capture phase, before xterm's textarea
+    // handler) only when it lands right after the shortcut fired. Middle-click
+    // and menu pastes carry no shortcut stamp, so they pass through untouched.
+    const onNativePaste = (e: Event) => {
+      if (shouldSuppressNativePaste(s.pasteViaShortcutAt, Date.now())) {
+        s.pasteViaShortcutAt = undefined;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    };
+    s.el.addEventListener("paste", onNativePaste, true);
+    s.pasteDedupeCleanup = () =>
+      s.el.removeEventListener("paste", onNativePaste, true);
   }
   resumeXtermRenderer(s);
   // defer fit until layout settles
@@ -741,6 +770,7 @@ export function disposeSession(tabId: string) {
   s.disposed = true;
   sessions.delete(tabId);
   s.compositionGuardCleanup?.();
+  s.pasteDedupeCleanup?.();
   try {
     s.pty.kill();
   } catch {
