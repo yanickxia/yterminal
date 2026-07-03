@@ -1,12 +1,15 @@
 import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { useAiStore } from "../stores/ai-store";
+import { useGitStore } from "../stores/git-store";
 import { useLayoutStore } from "../stores/layout-store";
+import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
+import { tabsNeedingAttention } from "../lib/attention";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { Workspace } from "../lib/types";
-import { disposeSession } from "../lib/terminal-manager";
+import { disposeSession, scrollSessionToBottom } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 
 /** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
@@ -24,6 +27,7 @@ export function WorkspaceSidebar({
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspaceStore((s) => s.setActiveWorkspace);
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const renameWorkspace = useWorkspaceStore((s) => s.renameWorkspace);
@@ -40,6 +44,7 @@ export function WorkspaceSidebar({
     (s) => s.closeWorkspacesAfter
   );
   const toggleAi = useAiStore((s) => s.toggleOpen);
+  const toggleGit = useGitStore((s) => s.toggleOpen);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -71,6 +76,37 @@ export function WorkspaceSidebar({
   const collapsed = useLayoutStore((s) => s.sidebarCollapsed);
   const setCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
+
+  // Attention roll-up: which tabs rang the bell while unfocused (a coding agent
+  // pausing for input / erroring). Surfaced here in the workspace area — a
+  // per-row badge plus a jump list — rather than as a strip inside the tab
+  // area, so it's visible no matter which workspace is active.
+  const waiting = useAttentionStore((s) => s.waiting);
+  const attentionEntries = tabsNeedingAttention(workspaces, waiting);
+  const attentionByWs = new Map<string, number>();
+  for (const e of attentionEntries) {
+    attentionByWs.set(e.workspaceId, (attentionByWs.get(e.workspaceId) ?? 0) + 1);
+  }
+
+  /**
+   * Navigate to a waiting tab: activate its workspace + tab, acknowledge the
+   * attention on every pane in it, and scroll each pane to the newest output
+   * (the prompt the agent is blocking on) rather than wherever the scrollback
+   * was parked.
+   */
+  function goToAttention(workspaceId: string, tabId: string) {
+    setActive(workspaceId);
+    setActiveTab(workspaceId, tabId);
+    const ws = useWorkspaceStore
+      .getState()
+      .workspaces.find((w) => w.id === workspaceId);
+    const tab = ws?.tabs.find((t) => t.id === tabId);
+    if (tab) {
+      const leaves = collectLeafIds(tab.root);
+      clearAttentionMany(leaves);
+      for (const id of leaves) scrollSessionToBottom(id);
+    }
+  }
 
   function commitRename(id: string) {
     if (draft.trim()) renameWorkspace(id, draft.trim());
@@ -216,9 +252,22 @@ export function WorkspaceSidebar({
               }}
             >
               {railGlyph(w.name, w.icon)}
+              {attentionByWs.has(w.id) && (
+                <span
+                  className="rail-attention-dot"
+                  aria-label="waiting for you"
+                />
+              )}
             </button>
           ))}
         </div>
+        <button
+          className="icon-btn rail-git"
+          title="Toggle git sidebar"
+          onClick={() => toggleGit()}
+        >
+          ⑂
+        </button>
         <button
           className="icon-btn rail-ai"
           title="Toggle AI sidebar (⌘I)"
@@ -276,6 +325,13 @@ export function WorkspaceSidebar({
           </button>
           <button
             className="icon-btn"
+            title="Toggle git sidebar"
+            onClick={() => toggleGit()}
+          >
+            ⑂
+          </button>
+          <button
+            className="icon-btn"
             title="Toggle AI sidebar (⌘I)"
             onClick={() => toggleAi()}
           >
@@ -291,6 +347,34 @@ export function WorkspaceSidebar({
         </div>
       </div>
       <div className="ws-list">
+        {attentionEntries.length > 0 && (
+          <div className="ws-attention" role="status" aria-live="polite">
+            <div className="ws-attention-label">
+              Waiting for you
+              {attentionEntries.length > 1
+                ? ` (${attentionEntries.length})`
+                : ""}
+            </div>
+            {attentionEntries.map((e) => (
+              <button
+                key={e.tabId}
+                type="button"
+                className="ws-attention-chip"
+                title={`${e.workspaceName} › ${e.tabName} needs attention`}
+                onClick={() => goToAttention(e.workspaceId, e.tabId)}
+              >
+                <span className="attention-chip-dot" aria-hidden="true" />
+                {e.tabIcon && (
+                  <span className="attention-chip-icon">{e.tabIcon}</span>
+                )}
+                <span className="attention-chip-name">{e.tabName}</span>
+                {e.count > 1 && (
+                  <span className="attention-chip-count">{e.count}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         {workspaces.map((w) => {
           const isOver = over?.id === w.id && dragId && w.id !== dragId;
           const dragSrc = dragId
@@ -386,6 +470,13 @@ export function WorkspaceSidebar({
                   {w.pinned && <span className="ws-pin" title="Pinned">📌</span>}
                   {w.name}
                 </span>
+                {attentionByWs.has(w.id) && (
+                  <span
+                    className="ws-attention-dot"
+                    title={`${attentionByWs.get(w.id)} tab(s) waiting for you`}
+                    aria-label="waiting for you"
+                  />
+                )}
                 <span className="ws-count">{w.tabs.length}</span>
                 <button
                   className="icon-btn ws-close"

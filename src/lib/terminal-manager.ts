@@ -875,6 +875,28 @@ export function getSessionText(tabId: string, maxChars = 12000): string {
   }
 }
 
+/**
+ * Scroll a pane's terminal to the bottom (newest output). Used when navigating
+ * to a tab that rang the attention bell — the user wants to see the latest
+ * output (the prompt the agent is waiting on), not wherever they'd left the
+ * scrollback parked. Works whether the session is currently on-screen or
+ * detached: if it's live we scroll now; either way we clear the saved scroll
+ * state and pin `savedAtBottom` so the pending re-attach also lands at bottom.
+ */
+export function scrollSessionToBottom(paneId: string): void {
+  const s = sessions.get(paneId);
+  if (!s || s.disposed) return;
+  s.savedScrollTop = undefined;
+  s.savedAtBottom = true;
+  if (s.el.parentElement) {
+    try {
+      s.term.scrollToBottom();
+    } catch {
+      /* buffer not ready */
+    }
+  }
+}
+
 /** Whether the pane currently has a non-empty text selection. */
 export function hasSelection(tabId: string): boolean {
   const s = sessions.get(tabId);

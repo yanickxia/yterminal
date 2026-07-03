@@ -4,7 +4,6 @@ import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store
 import { useSettingsStore } from "./stores/settings-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
-import { AttentionBar } from "./components/AttentionBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
@@ -19,9 +18,11 @@ import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { FileViewer } from "./components/FileViewer";
 import { AiSidebar } from "./components/AiSidebar";
+import { GitSidebar } from "./components/GitSidebar";
 import { AppDivider } from "./components/AppDivider";
 import { useViewerStore } from "./stores/viewer-store";
 import { useAiStore } from "./stores/ai-store";
+import { useGitStore } from "./stores/git-store";
 import { useLayoutStore } from "./stores/layout-store";
 import { clearAttention } from "./stores/attention-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
@@ -47,6 +48,9 @@ export default function App() {
   const aiOpen = useAiStore((s) => s.open);
   const aiWidth = useLayoutStore((s) => s.aiWidth);
   const setAiWidth = useLayoutStore((s) => s.setAiWidth);
+  const gitOpen = useGitStore((s) => s.open);
+  const gitWidth = useLayoutStore((s) => s.gitWidth);
+  const setGitWidth = useLayoutStore((s) => s.setGitWidth);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
@@ -119,12 +123,14 @@ export default function App() {
   }, []);
 
   // re-read the config file whenever the window regains focus, so syncing the
-  // file in (git pull / Dropbox / hand edit) updates the running app live.
+  // file in (git pull / Dropbox / hand edit) updates the running app live. Also
+  // refresh the git sidebar — the working tree may have changed in another app.
   useEffect(() => {
     if (!ready) return;
     async function reload() {
       const changed = await loadConfigFromDisk();
       if (changed) applyAppearance();
+      void useGitStore.getState().refresh();
     }
     window.addEventListener("focus", reload);
     return () => window.removeEventListener("focus", reload);
@@ -244,6 +250,13 @@ export default function App() {
     if (activeTab?.activePaneId) clearAttention(activeTab.activePaneId);
   }, [activeTab?.id, activeTab?.activePaneId]);
 
+  // Recompute git status when the active tab (or its focused pane) changes, and
+  // when the git sidebar is opened — the panel tracks the active tab's cwd. The
+  // store no-ops while the panel is closed, so this is cheap.
+  useEffect(() => {
+    void useGitStore.getState().refresh();
+  }, [activeTab?.id, activeTab?.activePaneId, gitOpen]);
+
   // opening/closing the AI sidebar or dragging either app divider changes the
   // terminal area's width, so refit the active tab's panes once layout settles.
   useEffect(() => {
@@ -251,7 +264,7 @@ export default function App() {
       const id = requestAnimationFrame(() => refitTree(activeTab.root));
       return () => cancelAnimationFrame(id);
     }
-  }, [aiOpen, aiWidth, sidebarWidth, sidebarCollapsed]);
+  }, [aiOpen, aiWidth, sidebarWidth, sidebarCollapsed, gitOpen, gitWidth]);
 
   // Stable callbacks passed into PaneRenderer / PaneTerminal. Without these,
   // every App re-render (e.g. the 15s cwd snapshot tick that updates the
@@ -307,7 +320,6 @@ export default function App() {
         ) : ws ? (
           <>
             <TabBar workspace={ws} />
-            <AttentionBar />
             <div className="terminal-area">
               {activeTab ? (
                 activeTab.file ? (
@@ -339,6 +351,14 @@ export default function App() {
           <div className="empty">No workspace.</div>
         )}
       </div>
+      {gitOpen && (
+        <AppDivider
+          side="right"
+          onDrag={(dx) => setGitWidth(gitWidth - dx)}
+          onDragEnd={refitActive}
+        />
+      )}
+      {gitOpen && <GitSidebar />}
       {aiOpen && (
         <AppDivider
           side="right"

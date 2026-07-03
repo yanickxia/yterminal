@@ -815,6 +815,162 @@ fn read_text_file(path: String) -> Result<FileContents, String> {
 }
 
 // ============================================================================
+// Git sidebar — repo status for the active tab's cwd
+// ============================================================================
+// The git sidebar shows, for whatever directory the focused pane is sitting in,
+// the current branch and the set of changed files (staged + unstaged +
+// untracked) with per-file line deltas — the same "Changes" view an IDE gives
+// you. We shell out to `git` (rather than linking libgit2) to exactly match the
+// user's installed git behaviour, ignore rules, and worktree/submodule quirks,
+// and because it's a cheap read that runs off the sync command pool.
+
+/// One changed file in the working tree. `status` is the two-char porcelain XY
+/// code (e.g. " M", "A ", "??", "R ") so the frontend can label/icon it;
+/// `insertions`/`deletions` are the summed staged+unstaged line deltas (0 when
+/// git can't diff it, e.g. binary or untracked-without-count).
+#[derive(serde::Serialize)]
+struct GitFile {
+    path: String,
+    status: String,
+    insertions: u32,
+    deletions: u32,
+}
+
+/// Result of inspecting a directory. When `is_repo` is false the other fields
+/// are empty and the frontend hides the sidebar content.
+#[derive(serde::Serialize)]
+struct GitStatus {
+    is_repo: bool,
+    branch: String,
+    root: String,
+    files: Vec<GitFile>,
+}
+
+/// Run `git` with args in `cwd`, returning stdout on success. Errors carry the
+/// stderr so failures are diagnosable in the log.
+fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {:?} exit {}: {}",
+            args,
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Parse `git diff --numstat` output into a path -> (insertions, deletions) map.
+/// Binary files show as `-\t-\t<path>`, which we record as (0, 0). Renames show
+/// as `old -> new` (or the NUL-delimited `-z` form); we key on the new path.
+fn parse_numstat(out: &str, into: &mut std::collections::HashMap<String, (u32, u32)>) {
+    for line in out.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let ins = parts.next().unwrap_or("-");
+        let del = parts.next().unwrap_or("-");
+        let path = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
+        // A rename in non-`-z` mode looks like "old => new"; strip to the new
+        // path so it lines up with porcelain's key.
+        let path = path
+            .rsplit(" => ")
+            .next()
+            .unwrap_or(path)
+            .trim_end_matches('}')
+            .to_string();
+        let ins = ins.parse::<u32>().unwrap_or(0);
+        let del = del.parse::<u32>().unwrap_or(0);
+        let e = into.entry(path).or_insert((0, 0));
+        e.0 += ins;
+        e.1 += del;
+    }
+}
+
+/// Inspect `dir` as a git worktree. Never errors on "not a repo" — that's a
+/// normal state reported via `is_repo: false`. Only surfaces an Err when git
+/// itself is unusable, so the frontend can log and fall back to empty.
+#[tauri::command]
+fn git_status(dir: String) -> Result<GitStatus, String> {
+    // `rev-parse --show-toplevel` is the canonical "am I in a repo?" probe: it
+    // prints the worktree root and exits 0 inside a repo, non-zero outside.
+    let root = match run_git(&dir, &["rev-parse", "--show-toplevel"]) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => {
+            return Ok(GitStatus {
+                is_repo: false,
+                branch: String::new(),
+                root: String::new(),
+                files: Vec::new(),
+            })
+        }
+    };
+
+    // Branch name; on a detached HEAD `--abbrev-ref` yields "HEAD", so fall
+    // back to a short commit sha for a friendlier label.
+    let branch = match run_git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Ok(s) => {
+            let b = s.trim().to_string();
+            if b == "HEAD" {
+                run_git(&dir, &["rev-parse", "--short", "HEAD"])
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or(b)
+            } else {
+                b
+            }
+        }
+        Err(_) => String::new(), // unborn branch (no commits yet)
+    };
+
+    // Line deltas: sum unstaged (working vs index) and staged (index vs HEAD).
+    let mut deltas: std::collections::HashMap<String, (u32, u32)> =
+        std::collections::HashMap::new();
+    if let Ok(out) = run_git(&dir, &["diff", "--numstat"]) {
+        parse_numstat(&out, &mut deltas);
+    }
+    if let Ok(out) = run_git(&dir, &["diff", "--numstat", "--cached"]) {
+        parse_numstat(&out, &mut deltas);
+    }
+
+    // Porcelain v1 is the stable, script-friendly listing of every changed path
+    // with its two-char XY status. Format: "XY <path>" (renames use
+    // "XY orig -> new"). We key the new path and attach any line delta.
+    let mut files = Vec::new();
+    if let Ok(out) = run_git(&dir, &["status", "--porcelain"]) {
+        for line in out.lines() {
+            if line.len() < 3 {
+                continue;
+            }
+            let status = line[..2].to_string();
+            let rest = &line[3..];
+            // For renames the porcelain path is "orig -> new"; take the new one.
+            let path = rest.rsplit(" -> ").next().unwrap_or(rest).to_string();
+            let (insertions, deletions) = deltas.get(&path).copied().unwrap_or((0, 0));
+            files.push(GitFile {
+                path,
+                status,
+                insertions,
+                deletions,
+            });
+        }
+    }
+
+    Ok(GitStatus {
+        is_repo: true,
+        branch,
+        root,
+        files,
+    })
+}
+
+// ============================================================================
 // AI sidebar — chat completion proxy
 // ============================================================================
 // The WebView can't call third-party LLM endpoints directly (CORS + we don't
@@ -1749,6 +1905,7 @@ fn main() {
             process_env,
             path_is_file,
             read_text_file,
+            git_status,
             ai_chat,
             ai_chat_stream,
             ai_chat_cancel,
