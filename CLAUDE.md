@@ -25,6 +25,8 @@ cargo build            # debug build
 
 **`tauri:dev` builds into a separate `src-tauri/target-dev`** (via `CARGO_TARGET_DIR` in the npm script), NOT the default `src-tauri/target`. This is deliberate: `tauri dev` passes a `TAURI_CONFIG` env var to cargo, and `tauri-build`'s build script declares `rerun-if-env-changed=TAURI_CONFIG`. Any command run WITHOUT that env (a bare `cargo check`/`cargo build`, or rust-analyzer in your editor) has a different build-script fingerprint, so sharing one target dir makes the two thrash — every `tauri dev` restart rebuilds the `yterminal` crate. Isolating the dev target dir lets both keep warm caches independently. Consequence: the first `tauri:dev` after this split does one full compile into `target-dev`; `cargo check`/`build` and rust-analyzer keep using `target`.
 
+**The `CARGO_TARGET_DIR` value MUST be `target-dev`, NOT `src-tauri/target-dev`.** `tauri dev` runs cargo with its CWD set to `src-tauri/`, and cargo resolves a relative `CARGO_TARGET_DIR` against that CWD — so `target-dev` lands at `src-tauri/target-dev` (correct), while `src-tauri/target-dev` would nest into `src-tauri/src-tauri/target-dev`. That nested path sits INSIDE the directory `tauri dev` watches for changes, so every emitted build artifact retriggers a rebuild → an infinite "Rebuilding application…" loop. (The stray `src-tauri/src-tauri/` dir some sessions saw came from this bug.)
+
 CI (`.github/workflows/ci.yml`) only runs `tsc --noEmit` and `npm run build` on push/PR — full multi-platform bundles are built only on `v*` tag pushes via `release.yml`.
 
 ### Releasing
@@ -159,6 +161,15 @@ Coding agents ring the terminal bell (BEL, `\x07`) when they pause for input or 
 - **Sound** — `lib/alert-sound.ts` synthesizes a two-blip chime via WebAudio (no bundled asset), self-throttled to one play per 1.5s so a chatty TUI redraw doesn't machine-gun the speaker. `playAlertSound({force, volume})` — `force` bypasses the throttle (Settings preview / volume drag), `volume` (0..1, clamped) scales a master gain node. Gated by `settings.alertSoundEnabled` (default on); loudness by `settings.alertVolume` (0..1, default 1) exposed as a range slider that auditions the chime as you drag.
 - **Roll-up + UI** — `lib/attention.ts` (`tabsNeedingAttention`, pure + unit-tested) walks the live workspace tree to map waiting pane ids to the tabs that own them. `components/AttentionBar.tsx` renders one chip per waiting tab beneath `<TabBar>` in `App.tsx`; it returns `null` (zero height) when nothing waits. Clicking a chip activates that workspace/tab and clears its panes' flags.
 - **Acknowledgement** — attention clears when the user looks at the pane: `App.tsx`'s `onFocusPane` clears on pane focus, an effect clears the active pane on any active-tab change (click / Cmd+K / new tab), and the AttentionBar chip clears on click.
+
+### Auto tab title (shell/agent OSC title → tab name)
+
+A tab the user hasn't renamed shows the title the shell or coding agent reports, so an un-renamed tab tracks what's happening inside it (Claude Code / Codex set the OSC title to their current step; plain shells often set it to the cwd or running command). The `Tab.name` field was always documented as "auto-derived from shell title unless `customName` is set" — this is the wire that finally fills it in. Layered like the rest:
+
+- **Signal** — `getOrCreateSession` in `terminal-manager.ts` hooks `term.onTitleChange` (xterm's parse of OSC 0/2). It's throttled (150ms leading-edge coalesce, plus a `lastTitle` dedupe) so a TUI that rewrites its title on every keystroke can't thrash the store.
+- **Sanitize (pure)** — `lib/tab-title.ts` `sanitizeTabTitle(raw)` (unit-tested in `tab-title.test.ts`): strips C0/C1 control chars, collapses whitespace, reduces a bare path title to its last segment (`/Users/me/code/yterminal` → `yterminal`, but multi-word titles like `vim ~/notes.md` are left intact), and caps length at `MAX_TAB_TITLE_LEN` with an ellipsis. Returns `""` for an empty-after-cleaning title, which callers treat as "no usable title".
+- **Apply (manager → store)** — `applyPaneTitle(paneId, raw)` gates on the `autoTabTitle` setting, ignores file-viewer tabs, and only lets a tab's **active** pane drive the name (so two panes in one tab don't ping-pong it). It calls `workspace-store.setTabAutoName(workspaceId, tabId, name)`, which writes `Tab.name` **only** — it never touches `customName`, and it no-ops when a `customName` is set (explicit rename always wins) or the name is unchanged (avoids re-render churn).
+- **Setting** — `autoTabTitle` (default true) in `settings-store` + the syncable JSON config (`config.ts`, under `terminal.autoTabTitle`), toggled in Settings → Terminal ("Tab title → Follow the terminal title"). Renaming a tab (which sets `customName`) opts it out.
 
 ### Updater
 
