@@ -1,6 +1,6 @@
 {
   "name": "yterminal",
-  "version": "0.10.5",
+  "version": "0.11.0",
   "description": "A workspace-first terminal emulator (Tauri 2 + React + xterm.js)",
   "type": "module",
   "scripts": {
