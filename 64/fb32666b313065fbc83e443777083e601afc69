@@ -1,0 +1,21 @@
+package.json
+  s_ef7bcc5e68426a::t_73edf92ed3dd4d 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "64fb32666b313065fbc83e443777083e601afc69",
+  "prompts": {},
+  "sessions": {
+    "s_ef7bcc5e68426a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebf6811f-3176-46fd-817e-391718a5bd14",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
