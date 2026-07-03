@@ -25,6 +25,8 @@ cargo build            # debug build
 
 **`tauri:dev` builds into a separate `src-tauri/target-dev`** (via `CARGO_TARGET_DIR` in the npm script), NOT the default `src-tauri/target`. This is deliberate: `tauri dev` passes a `TAURI_CONFIG` env var to cargo, and `tauri-build`'s build script declares `rerun-if-env-changed=TAURI_CONFIG`. Any command run WITHOUT that env (a bare `cargo check`/`cargo build`, or rust-analyzer in your editor) has a different build-script fingerprint, so sharing one target dir makes the two thrash — every `tauri dev` restart rebuilds the `yterminal` crate. Isolating the dev target dir lets both keep warm caches independently. Consequence: the first `tauri:dev` after this split does one full compile into `target-dev`; `cargo check`/`build` and rust-analyzer keep using `target`.
 
+**The `CARGO_TARGET_DIR` value MUST be `target-dev`, NOT `src-tauri/target-dev`.** `tauri dev` runs cargo with its CWD set to `src-tauri/`, and cargo resolves a relative `CARGO_TARGET_DIR` against that CWD — so `target-dev` lands at `src-tauri/target-dev` (correct), while `src-tauri/target-dev` would nest into `src-tauri/src-tauri/target-dev`. That nested path sits INSIDE the directory `tauri dev` watches for changes, so every emitted build artifact retriggers a rebuild → an infinite "Rebuilding application…" loop. (The stray `src-tauri/src-tauri/` dir some sessions saw came from this bug.)
+
 CI (`.github/workflows/ci.yml`) only runs `tsc --noEmit` and `npm run build` on push/PR — full multi-platform bundles are built only on `v*` tag pushes via `release.yml`.
 
 ### Releasing
