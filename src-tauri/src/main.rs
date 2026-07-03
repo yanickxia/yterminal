@@ -1516,73 +1516,91 @@ async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String>
     Ok(message)
 }
 
-/// Point GTK at a working input method so CJK/complex-script input works in the
-/// AppImage.
+/// Make CJK/complex-script input work in the AppImage by routing GTK through the
+/// bundled `xim` module.
 ///
-/// The failure we hit: linuxdeploy-plugin-gtk bundles its OWN `immodules.cache`
-/// and pins `GTK_IM_MODULE_FILE` to it. That bundled cache lists only the
-/// generic modules shipped with GTK — NOT the third-party `im-fcitx5.so` /
-/// `im-ibus.so`. So `GTK_IM_MODULE=fcitx` (inherited from the desktop) resolves
-/// to nothing loadable and GTK silently falls back to no-IME — "can't type
-/// Chinese in the AppImage", even though the env var looks correct.
+/// The saga: linuxdeploy-plugin-gtk bundles its OWN `immodules.cache` (pinned via
+/// `GTK_IM_MODULE_FILE`) that lists only GTK's generic modules — NOT the
+/// third-party `im-fcitx5.so` / `im-ibus.so`. So an inherited `GTK_IM_MODULE=fcitx`
+/// resolves to nothing loadable and GTK silently uses no IME.
 ///
-/// strace proved the fix: the value of `GTK_IM_MODULE` doesn't matter, the
-/// *cache* does. When `GTK_IM_MODULE_FILE` points at the HOST cache (which lists
-/// `im-fcitx5.so`), GTK loads fcitx and input works. So we don't rewrite the
-/// module name — we repoint `GTK_IM_MODULE_FILE` + `GTK_PATH` at the host's GTK
-/// module tree, and leave `GTK_IM_MODULE` as the detected native name. Run
-/// before `tauri::Builder` so it lands before GTK reads these at init.
+/// The tempting fix — repoint `GTK_IM_MODULE_FILE` at the HOST cache so GTK loads
+/// the host `im-fcitx5.so` — does NOT work in practice: on Ubuntu's `t64` systems
+/// the host module is built against the new GLib (2.80, needs
+/// `g_once_init_leave_pointer`) but the AppImage's `LD_LIBRARY_PATH` forces it onto
+/// an older GLib, so the module fails to load with an undefined-symbol error. Any
+/// host GTK module is an ABI hostage to whatever GLib the AppImage ships.
 ///
-/// We only act when an IME is detected AND a host cache that actually lists that
-/// IME's module is found, so a pure-ASCII setup (or a normal .deb/.rpm install
-/// whose cache is already correct) is never disturbed.
+/// What DOES work (verified end-to-end): the bundled `im-xim.so`. It's the generic
+/// X11 input-method module, depends only on GTK/GDK already inside the AppImage
+/// (no fcitx libs, no new-GLib symbols), and fcitx/ibus both run an XIM server. So
+/// in the AppImage we force `GTK_IM_MODULE=xim` and leave `GTK_IM_MODULE_FILE`
+/// pointing at the bundled cache (which lists xim) — NOT the host one. `XMODIFIERS`
+/// still names the real IME so XIM connects to the right server.
+///
+/// Runs before `tauri::Builder` (before GTK init). Acts only when the active cache
+/// is the bundled/broken kind (lacks the native module but offers xim); a normal
+/// desktop / .deb / .rpm cache that already lists fcitx/ibus is left untouched.
 #[cfg(target_os = "linux")]
 fn ensure_ime_env() {
     let Some(detected) = detect_ime() else {
         return; // no IME in play — leave a pure-ASCII setup untouched
     };
 
-    // If the active cache already lists the native module, nothing to fix
-    // (normal desktop / .deb / .rpm run).
-    let active_ok = std::env::var_os("GTK_IM_MODULE_FILE")
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|c| cache_lists_module(&c, detected))
-        .unwrap_or(false);
-    if active_ok {
-        // Still make sure GTK_IM_MODULE itself is set (AppImage may drop it).
-        if std::env::var_os("GTK_IM_MODULE").is_none() {
-            std::env::set_var("GTK_IM_MODULE", detected);
+    let cache_text = std::env::var_os("GTK_IM_MODULE_FILE")
+        .and_then(|p| std::fs::read_to_string(p).ok());
+
+    match plan_ime_module(detected, cache_text.as_deref()) {
+        ImePlan::LeaveAlone => {
+            // Native cache is fine; just ensure GTK_IM_MODULE is set (an AppImage
+            // may inherit XMODIFIERS but drop GTK_IM_MODULE).
+            if std::env::var_os("GTK_IM_MODULE").is_none() {
+                std::env::set_var("GTK_IM_MODULE", detected);
+                std::env::set_var("QT_IM_MODULE", detected);
+            }
         }
-        return;
+        ImePlan::UseXim => {
+            logger::info(
+                "main",
+                &format!("bundled IM cache lacks {detected}; routing via bundled xim"),
+            );
+            // SAFETY: single-threaded, at the very top of main() before GTK/threads
+            // read these. Keep GTK_IM_MODULE_FILE/GTK_PATH as the bundle set them so
+            // the self-contained im-xim.so is what loads.
+            std::env::set_var("GTK_IM_MODULE", "xim");
+            std::env::set_var("QT_IM_MODULE", detected);
+            if std::env::var_os("XMODIFIERS").is_none() {
+                std::env::set_var("XMODIFIERS", format!("@im={detected}"));
+            }
+        }
     }
+}
 
-    // Bundled/broken cache: find a host cache that lists the native module.
-    let Some((cache_path, gtk_path)) = find_host_im_cache(detected) else {
-        return; // no usable host cache — don't make things worse
-    };
+/// What `ensure_ime_env` should do for the active cache.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+enum ImePlan {
+    /// Cache already loads the native module (or we have no cache / no xim to fall
+    /// back to): don't override the module name.
+    LeaveAlone,
+    /// Bundled cache can't load the native module but offers xim: force xim.
+    UseXim,
+}
 
-    logger::info(
-        "main",
-        &format!(
-            "repointing GTK_IM_MODULE_FILE at host cache for {detected}: {}",
-            cache_path.display()
-        ),
-    );
-    // SAFETY: single-threaded, called at the very start of main() before GTK
-    // or any thread reads these.
-    std::env::set_var("GTK_IM_MODULE", detected);
-    std::env::set_var("QT_IM_MODULE", detected);
-    std::env::set_var("GTK_IM_MODULE_FILE", &cache_path);
-    // Prepend the host module tree so the .so referenced by the cache resolves.
-    let gtk_path_value = match std::env::var_os("GTK_PATH") {
-        Some(existing) if !existing.is_empty() => {
-            format!("{}:{}", gtk_path.display(), existing.to_string_lossy())
-        }
-        _ => gtk_path.display().to_string(),
+/// Decide the plan from the detected IME and the active `immodules.cache` text.
+/// Pure — unit-tested without touching the filesystem or environment.
+#[cfg(target_os = "linux")]
+fn plan_ime_module(detected: &str, cache_text: Option<&str>) -> ImePlan {
+    let Some(cache) = cache_text else {
+        return ImePlan::LeaveAlone; // no cache visible — trust the inherited setup
     };
-    std::env::set_var("GTK_PATH", gtk_path_value);
-    if std::env::var_os("XMODIFIERS").is_none() {
-        std::env::set_var("XMODIFIERS", format!("@im={detected}"));
+    if cache_lists_module(cache, detected) {
+        return ImePlan::LeaveAlone; // native module loadable (desktop / deb / rpm)
+    }
+    if cache.contains("im-xim") {
+        ImePlan::UseXim // bundled/broken cache but xim is available
+    } else {
+        ImePlan::LeaveAlone // nothing better to offer
     }
 }
 
@@ -1595,46 +1613,6 @@ fn cache_lists_module(cache_text: &str, ime: &str) -> bool {
         "ibus" => cache_text.contains("im-ibus"),
         _ => false,
     }
-}
-
-/// Given a host immodules.cache path like
-/// `/usr/lib/<triple>/gtk-3.0/3.0.0/immodules.cache`, return the GTK module root
-/// (`/usr/lib/<triple>/gtk-3.0`) that `GTK_PATH` should point at. Pure.
-#[cfg(target_os = "linux")]
-fn gtk_path_for_cache(cache_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    // .../gtk-3.0/3.0.0/immodules.cache → ancestor named "gtk-3.0"
-    let mut p = cache_path;
-    while let Some(parent) = p.parent() {
-        if parent.file_name().and_then(|n| n.to_str()) == Some("gtk-3.0") {
-            return Some(parent.to_path_buf());
-        }
-        p = parent;
-    }
-    None
-}
-
-/// Probe the standard host locations for an `immodules.cache` that actually
-/// lists `ime`'s module. Returns (cache_path, gtk_module_root) on the first hit.
-#[cfg(target_os = "linux")]
-fn find_host_im_cache(ime: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    const CANDIDATES: &[&str] = &[
-        "/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
-        "/usr/lib64/gtk-3.0/3.0.0/immodules.cache",
-        "/usr/lib/gtk-3.0/3.0.0/immodules.cache",
-        "/usr/lib/aarch64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
-    ];
-    for cand in CANDIDATES {
-        let path = std::path::Path::new(cand);
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        if cache_lists_module(&text, ime) {
-            if let Some(gtk_path) = gtk_path_for_cache(path) {
-                return Some((path.to_path_buf(), gtk_path));
-            }
-        }
-    }
-    None
 }
 
 /// Detect the IME the user runs: an inherited `GTK_IM_MODULE` wins, else an
@@ -1690,8 +1668,7 @@ fn detect_running_ime() -> Option<&'static str> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod ime_tests {
-    use super::{cache_lists_module, gtk_path_for_cache};
-    use std::path::Path;
+    use super::{cache_lists_module, plan_ime_module, ImePlan};
 
     // A bundled linuxdeploy-plugin-gtk cache: generic modules only, no fcitx.
     const BUNDLED_CACHE: &str = r#"
@@ -1710,48 +1687,38 @@ mod ime_tests {
 "#;
 
     #[test]
-    fn bundled_cache_does_not_list_fcitx() {
-        // The AppImage bug: the bundled cache can't load fcitx → must repoint.
-        assert!(!cache_lists_module(BUNDLED_CACHE, "fcitx"));
-    }
-
-    #[test]
-    fn host_cache_lists_fcitx() {
+    fn cache_lists_module_matches_native_so() {
         assert!(cache_lists_module(HOST_CACHE, "fcitx"));
-    }
-
-    #[test]
-    fn ibus_absent_from_bundled_cache() {
+        assert!(!cache_lists_module(BUNDLED_CACHE, "fcitx"));
         assert!(!cache_lists_module(BUNDLED_CACHE, "ibus"));
-    }
-
-    #[test]
-    fn ibus_detected_in_cache() {
-        let c = "\"/usr/lib/x/gtk-3.0/3.0.0/immodules/im-ibus.so\"\n\"ibus\" \"IBus\"\n";
-        assert!(cache_lists_module(c, "ibus"));
-        assert!(!cache_lists_module(c, "fcitx"));
-    }
-
-    #[test]
-    fn unknown_ime_never_matches() {
+        let ibus = "\"/x/immodules/im-ibus.so\"\n\"ibus\" \"IBus\"\n";
+        assert!(cache_lists_module(ibus, "ibus"));
+        assert!(!cache_lists_module(ibus, "fcitx"));
+        // Never treat a non-native protocol name as a loadable native module.
         assert!(!cache_lists_module(HOST_CACHE, "xim"));
-        assert!(!cache_lists_module(HOST_CACHE, "anthy"));
     }
 
     #[test]
-    fn gtk_path_is_the_gtk_3_0_root() {
-        let cache = Path::new(
-            "/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
-        );
-        assert_eq!(
-            gtk_path_for_cache(cache),
-            Some(Path::new("/usr/lib/x86_64-linux-gnu/gtk-3.0").to_path_buf())
-        );
+    fn bundled_cache_routes_fcitx_via_xim() {
+        // The AppImage case: native module absent, but xim is available.
+        assert_eq!(plan_ime_module("fcitx", Some(BUNDLED_CACHE)), ImePlan::UseXim);
+        assert_eq!(plan_ime_module("ibus", Some(BUNDLED_CACHE)), ImePlan::UseXim);
     }
 
     #[test]
-    fn gtk_path_none_when_no_gtk_3_0_ancestor() {
-        assert_eq!(gtk_path_for_cache(Path::new("/tmp/immodules.cache")), None);
+    fn native_cache_is_left_alone() {
+        assert_eq!(plan_ime_module("fcitx", Some(HOST_CACHE)), ImePlan::LeaveAlone);
+    }
+
+    #[test]
+    fn no_cache_is_left_alone() {
+        assert_eq!(plan_ime_module("fcitx", None), ImePlan::LeaveAlone);
+    }
+
+    #[test]
+    fn cache_without_native_or_xim_is_left_alone() {
+        let bare = "\"im-cedilla.so\"\n\"cedilla\" \"Cedilla\" \"gtk30\" \"\" \"\"\n";
+        assert_eq!(plan_ime_module("fcitx", Some(bare)), ImePlan::LeaveAlone);
     }
 }
 
