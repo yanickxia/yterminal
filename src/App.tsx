@@ -35,6 +35,8 @@ export default function App() {
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
+  const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
@@ -192,6 +194,32 @@ export default function App() {
         if (ws) void addTabInheritingCwd(ws.id);
         return;
       }
+      // Cmd/Ctrl+1..9 switch workspace by position; add Shift to switch the
+      // active tab within the current workspace. Uses e.code (Digit1..Digit9)
+      // so it's layout-independent — Cmd+Shift+1 stays "1" rather than "!".
+      const digitMatch = /^Digit([1-9])$/.exec(e.code);
+      if (digitMatch) {
+        const n = Number(digitMatch[1]);
+        if (e.shiftKey) {
+          // Cmd/Ctrl+Shift+N: jump to the Nth tab of the current workspace.
+          if (!ws) return;
+          const target = ws.tabs[n - 1];
+          if (target && target.id !== ws.activeTabId) {
+            e.preventDefault();
+            setActiveTab(ws.id, target.id);
+          } else if (target) {
+            e.preventDefault();
+          }
+        } else {
+          // Cmd/Ctrl+N: jump to the Nth workspace in sidebar order.
+          const target = workspaces[n - 1];
+          if (target) {
+            e.preventDefault();
+            if (target.id !== activeWorkspaceId) setActiveWorkspace(target.id);
+          }
+        }
+        return;
+      }
       if (!ws || !ws.activeTabId) return;
       const curTab = ws.tabs.find((t) => t.id === ws.activeTabId);
       // File-viewer tabs have no shell: split/search don't apply, and close
@@ -244,7 +272,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ws, workspaces, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace]);
+  }, [ws, workspaces, activeWorkspaceId, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace, setActiveWorkspace, setActiveTab]);
 
   // refit terminals whenever the active tab's tree changes
   useEffect(() => {

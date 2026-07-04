@@ -48,6 +48,8 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 
 `workspace-store.ts` is the single source of truth for structure and the only thing persisted to localStorage. `pane-tree.ts` contains **pure** transforms — no IO, no side effects — so the store stays serializable.
 
+**Keyboard navigation** (global handler in `App.tsx`'s keydown effect): Cmd/Ctrl+K palette, Cmd/Ctrl+I AI sidebar, Cmd/Ctrl+N new workspace, Cmd/Ctrl+T new tab, Cmd/Ctrl+D split (Shift = column), Cmd/Ctrl+F search, Cmd/Ctrl+W cascade-close, Cmd/Ctrl+Shift+W close pane. **Cmd/Ctrl+1..9** jumps to the Nth workspace in sidebar order; **Cmd/Ctrl+Shift+1..9** jumps to the Nth tab of the current workspace. The digit handlers key off `e.code` (`Digit1`..`Digit9`) so they're keyboard-layout independent (Shift doesn't turn "1" into "!"); both `workspaces` and `ws.tabs` are already in visual order, so `[n-1]` indexing matches what the user sees, and out-of-range numbers are no-ops.
+
 ### Terminal caching (critical design)
 
 `terminal-manager.ts` keeps xterm.js `Terminal` + PTY instances in an in-memory `Map` keyed by paneId. Switching tabs / panes **re-parents the cached DOM node** rather than destroying and recreating the terminal. This is what makes scrollback and shell state survive tab switches. Consequences when editing this file:
