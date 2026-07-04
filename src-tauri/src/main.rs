@@ -1017,8 +1017,44 @@ fn git_status(dir: String) -> Result<GitStatus, String> {
     })
 }
 
-// ============================================================================
-// AI sidebar — chat completion proxy
+/// Unified diff for a single path in `dir`'s worktree, as a plain string ready
+/// for the sidebar to render. Covers three cases:
+///   * tracked changes (staged and/or unstaged) → `git diff HEAD -- <path>`,
+///     which shows the full delta from the last commit regardless of the index.
+///   * a brand-new untracked file → `HEAD` has nothing to diff against, so fall
+///     back to `git diff --no-index /dev/null <path>`, presenting the whole file
+///     as additions. `--no-index` exits 1 when the files differ (the normal
+///     case here), so we read stdout directly instead of via `run_git` (which
+///     treats a non-zero exit as an error).
+///   * nothing to show → empty string (the frontend renders "No diff").
+/// `path` is repo-relative (as returned by `git_status`); we run git with `-C
+/// dir` so the relative path resolves against the same worktree.
+#[tauri::command]
+fn git_diff(dir: String, path: String) -> Result<String, String> {
+    logger::info("git", &format!("git_diff dir={dir:?} path={path:?}"));
+
+    // Tracked changes vs HEAD (staged + unstaged in one view).
+    let tracked = run_git(&dir, &["diff", "HEAD", "--", &path]).unwrap_or_default();
+    if !tracked.trim().is_empty() {
+        return Ok(tracked);
+    }
+
+    // Untracked / new file: diff against an empty file so the whole content
+    // shows as additions. `--no-index` returns exit 1 on difference, which is
+    // expected — capture stdout without failing on the non-zero status.
+    let out = std::process::Command::new(git_bin())
+        .arg("-C")
+        .arg(&dir)
+        .args(["diff", "--no-index", "--", "/dev/null", &path])
+        .output()
+        .map_err(|e| {
+            let msg = format!("spawn git diff --no-index in {dir:?}: {e}");
+            logger::error("git", &msg);
+            msg
+        })?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 // ============================================================================
 // The WebView can't call third-party LLM endpoints directly (CORS + we don't
 // want the API key exposed to arbitrary page script). This command is the one
@@ -1953,6 +1989,7 @@ fn main() {
             path_is_file,
             read_text_file,
             git_status,
+            git_diff,
             ai_chat,
             ai_chat_stream,
             ai_chat_cancel,

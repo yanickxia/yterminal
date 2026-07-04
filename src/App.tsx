@@ -7,7 +7,7 @@ import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
-import { disposeSession, applyAppearance, initShell, addTabInheritingCwd } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnCommandSettled } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
@@ -135,6 +135,16 @@ export default function App() {
     window.addEventListener("focus", reload);
     return () => window.removeEventListener("focus", reload);
   }, [ready]);
+
+  // Auto-refresh the git sidebar after every command: the shell emits OSC 7 on
+  // each prompt, which terminal-manager debounces into this callback. The store
+  // no-ops while the panel is closed, so this is free when the sidebar is hidden.
+  useEffect(() => {
+    setOnCommandSettled(() => {
+      void useGitStore.getState().refresh();
+    });
+    return () => setOnCommandSettled(null);
+  }, []);
 
   // Subscribe to store; show dialog when an update becomes available.
   useEffect(() => {

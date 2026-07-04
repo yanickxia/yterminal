@@ -83,6 +83,31 @@ function primeHomeDir(): void {
   })();
 }
 
+// Git auto-refresh hook. The git sidebar wants to re-read status whenever a
+// command that might touch the working tree finishes. The cleanest signal we
+// already have is OSC 7 (emitted by the shell's precmd hook on every prompt),
+// which fires exactly once per command. We debounce it so a burst of prompts
+// (e.g. a script printing several) collapses into a single refresh, and we go
+// through a registered callback rather than importing git-store here to keep
+// the dependency direction one-way (git-store already imports this module).
+let onCommandSettledCb: (() => void) | null = null;
+let commandSettledTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Register the callback invoked (debounced) after each shell prompt. */
+export function setOnCommandSettled(cb: (() => void) | null): void {
+  onCommandSettledCb = cb;
+}
+
+/** Fire the settled callback, debounced ~250ms to coalesce prompt bursts. */
+function scheduleCommandSettled(): void {
+  if (!onCommandSettledCb) return;
+  if (commandSettledTimer) clearTimeout(commandSettledTimer);
+  commandSettledTimer = setTimeout(() => {
+    commandSettledTimer = null;
+    onCommandSettledCb?.();
+  }, 250);
+}
+
 interface Session {
   term: Terminal;
   fit: FitAddon;
@@ -535,6 +560,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     } catch {
       /* malformed percent-encoding — leave shellCwd untouched */
     }
+    // OSC 7 fires on every prompt, i.e. right after a command finishes — the
+    // moment the working tree may have changed. Nudge the git sidebar to
+    // re-read (debounced; no-ops when nothing is listening / panel closed).
+    scheduleCommandSettled();
     // The first prompt is the earliest moment the shell is ready to run a
     // command, so this is where we inject a queued agent-resume command.
     if (s) maybeInjectResume(s);

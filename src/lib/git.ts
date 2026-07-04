@@ -41,6 +41,23 @@ export async function gitStatus(dir: string): Promise<GitStatus> {
 }
 
 /**
+ * Unified diff for a single changed file in `dir`'s worktree. `path` is the
+ * repo-relative path from `gitStatus`. Never throws — resolves to an empty
+ * string on error so the sidebar can render "No diff" without try/catch.
+ */
+export async function gitDiff(dir: string, path: string): Promise<string> {
+  try {
+    return await invoke<string>("git_diff", { dir, path });
+  } catch (e) {
+    logger.error(
+      "git",
+      `git_diff invoke failed for dir=${JSON.stringify(dir)} path=${JSON.stringify(path)}: ${String(e)}`,
+    );
+    return "";
+  }
+}
+
+/**
  * Coarse change class for a porcelain XY code, used to pick a label/color.
  * Untracked ("??") is "added"; a delete in either column is "deleted"; a rename
  * is "renamed"; anything else with a set column is "modified".
