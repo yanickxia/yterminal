@@ -8,6 +8,12 @@ import { DEFAULT_THEME_ID, DEFAULT_FONT_ID, DEFAULT_UI_FONT_ID } from "../lib/th
 export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 28;
 
+/** Interface (app-chrome) font size bounds. The default matches the 13px the
+ * app chrome historically hard-coded, so pre-existing users see no change. */
+export const MIN_UI_FONT_SIZE = 10;
+export const MAX_UI_FONT_SIZE = 20;
+export const DEFAULT_UI_FONT_SIZE = 13;
+
 export const MIN_DIVIDER_WIDTH = 0;
 export const MAX_DIVIDER_WIDTH = 10;
 export const DEFAULT_DIVIDER_WIDTH = 1;
@@ -129,6 +135,8 @@ interface SettingsState {
   fontId: string;
   /** interface (app-chrome) font id — see UI_FONTS in themes.ts */
   uiFontId: string;
+  /** interface (app-chrome) font size in px, clamped to [MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE] */
+  uiFontSize: number;
   fontSize: number;
   dividerWidth: number;
   dividerColor: string;
@@ -161,6 +169,8 @@ interface SettingsState {
   setFont: (id: string) => void;
   /** set the interface (app-chrome) font */
   setUiFont: (id: string) => void;
+  /** set the interface (app-chrome) font size in px */
+  setUiFontSize: (px: number) => void;
   setFontSize: (px: number) => void;
   setDividerWidth: (px: number) => void;
   setDividerColor: (color: string) => void;
@@ -188,6 +198,7 @@ export const useSettingsStore = create<SettingsState>()(
       themeId: DEFAULT_THEME_ID,
       fontId: DEFAULT_FONT_ID,
       uiFontId: DEFAULT_UI_FONT_ID,
+      uiFontSize: DEFAULT_UI_FONT_SIZE,
       fontSize: 14,
       dividerWidth: DEFAULT_DIVIDER_WIDTH,
       dividerColor: DEFAULT_DIVIDER_COLOR,
@@ -206,6 +217,13 @@ export const useSettingsStore = create<SettingsState>()(
       setTheme: (id) => set({ themeId: id }),
       setFont: (id) => set({ fontId: id }),
       setUiFont: (id) => set({ uiFontId: id }),
+      setUiFontSize: (px) =>
+        set({
+          uiFontSize: Math.max(
+            MIN_UI_FONT_SIZE,
+            Math.min(MAX_UI_FONT_SIZE, Math.round(px))
+          ),
+        }),
       setFontSize: (px) =>
         set({
           fontSize: Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, px)),
@@ -275,11 +293,13 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 6,
+    { name: "yterminal-settings", version: 7,
       // v4→v5: providers gained a `kind` field. Backfill "openai" so existing
       // configs keep working (they were all OpenAI-compatible before).
       // v5→v6: added a separate interface font (uiFontId). Backfill the "system"
       // preset so pre-existing configs keep the platform default UI font.
+      // v6→v7: added an interface font size (uiFontSize). Backfill the historic
+      // 13px chrome size so pre-existing configs look unchanged.
       migrate: (persisted, version) => {
         const s = persisted as Partial<SettingsState> | undefined;
         if (s && version < 5 && Array.isArray(s.aiProviders)) {
@@ -290,6 +310,9 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (s && version < 6 && !s.uiFontId) {
           s.uiFontId = DEFAULT_UI_FONT_ID;
+        }
+        if (s && version < 7 && typeof s.uiFontSize !== "number") {
+          s.uiFontSize = DEFAULT_UI_FONT_SIZE;
         }
         return s as SettingsState;
       },

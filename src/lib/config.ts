@@ -15,6 +15,9 @@ import {
   useSettingsStore,
   MIN_FONT_SIZE,
   MAX_FONT_SIZE,
+  MIN_UI_FONT_SIZE,
+  MAX_UI_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
   MIN_DIVIDER_WIDTH,
   MAX_DIVIDER_WIDTH,
   DEFAULT_DIVIDER_WIDTH,
@@ -41,6 +44,8 @@ export interface YterminalConfig {
     font: string;
     /** interface (app-chrome) font id, e.g. "system" (see UI_FONTS in themes.ts) */
     uiFont: string;
+    /** interface (app-chrome) font size in px, clamped to [MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE] */
+    uiFontSize: number;
     /** font size in px, clamped to [MIN_FONT_SIZE, MAX_FONT_SIZE] */
     fontSize: number;
     /** pane divider line width in px (0 hides it) */
@@ -78,6 +83,7 @@ export function configFromStore(): YterminalConfig {
       theme: s.themeId,
       font: s.fontId,
       uiFont: s.uiFontId,
+      uiFontSize: s.uiFontSize,
       fontSize: s.fontSize,
       dividerWidth: s.dividerWidth,
       dividerColor: s.dividerColor,
@@ -98,6 +104,15 @@ export function configFromStore(): YterminalConfig {
 function clampFontSize(n: unknown): number {
   const v = typeof n === "number" && Number.isFinite(n) ? n : 14;
   return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(v)));
+}
+
+function clampUiFontSize(n: unknown): number {
+  const v =
+    typeof n === "number" && Number.isFinite(n) ? n : DEFAULT_UI_FONT_SIZE;
+  return Math.max(
+    MIN_UI_FONT_SIZE,
+    Math.min(MAX_UI_FONT_SIZE, Math.round(v))
+  );
 }
 
 function clampDividerWidth(n: unknown): number {
@@ -174,6 +189,7 @@ export function parseConfig(text: string): YterminalConfig | null {
       theme: themeOk ? ap.theme : DEFAULT_THEME_ID,
       font: fontOk ? ap.font : DEFAULT_FONT_ID,
       uiFont: uiFontOk ? ap.uiFont : DEFAULT_UI_FONT_ID,
+      uiFontSize: clampUiFontSize(ap.uiFontSize),
       fontSize: clampFontSize(ap.fontSize),
       dividerWidth: clampDividerWidth(ap.dividerWidth),
       dividerColor: validDividerColor(ap.dividerColor),
@@ -201,6 +217,7 @@ export function applyConfigToStore(cfg: YterminalConfig) {
     theme,
     font,
     uiFont,
+    uiFontSize,
     fontSize,
     dividerWidth,
     dividerColor,
@@ -209,6 +226,7 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   if (theme !== s.themeId) s.setTheme(theme);
   if (font !== s.fontId) s.setFont(font);
   if (uiFont !== s.uiFontId) s.setUiFont(uiFont);
+  if (uiFontSize !== s.uiFontSize) s.setUiFontSize(uiFontSize);
   if (fontSize !== s.fontSize) s.setFontSize(fontSize);
   if (dividerWidth !== s.dividerWidth) s.setDividerWidth(dividerWidth);
   if (dividerColor !== s.dividerColor) s.setDividerColor(dividerColor);

@@ -1349,14 +1349,14 @@ function applyDividerVars() {
   r.setProperty("--divider-color", dividerColor);
 }
 
-/** Push the interface (app-chrome) font stack onto the --ui-font CSS variable. */
+/** Push the interface (app-chrome) font stack + size onto the --ui-font /
+ * --ui-font-size CSS variables. */
 function applyUiFontVar() {
   if (typeof document === "undefined") return;
-  const { uiFontId } = useSettingsStore.getState();
-  document.documentElement.style.setProperty(
-    "--ui-font",
-    getUiFont(uiFontId).stack
-  );
+  const { uiFontId, uiFontSize } = useSettingsStore.getState();
+  const r = document.documentElement.style;
+  r.setProperty("--ui-font", getUiFont(uiFontId).stack);
+  r.setProperty("--ui-font-size", `${uiFontSize}px`);
 }
 
 // Autosave every 15s and flush once more right before the window goes away,

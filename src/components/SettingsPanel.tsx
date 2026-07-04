@@ -4,6 +4,8 @@ import {
   useSettingsStore,
   MIN_FONT_SIZE,
   MAX_FONT_SIZE,
+  MIN_UI_FONT_SIZE,
+  MAX_UI_FONT_SIZE,
   MIN_DIVIDER_WIDTH,
   MAX_DIVIDER_WIDTH,
   MIN_SCROLLBACK_LINES,
@@ -48,6 +50,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const themeId = useSettingsStore((s) => s.themeId);
   const fontId = useSettingsStore((s) => s.fontId);
   const uiFontId = useSettingsStore((s) => s.uiFontId);
+  const uiFontSize = useSettingsStore((s) => s.uiFontSize);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const dividerWidth = useSettingsStore((s) => s.dividerWidth);
   const dividerColor = useSettingsStore((s) => s.dividerColor);
@@ -64,6 +67,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
   const setUiFont = useSettingsStore((s) => s.setUiFont);
+  const setUiFontSize = useSettingsStore((s) => s.setUiFontSize);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
   const setDividerWidth = useSettingsStore((s) => s.setDividerWidth);
   const setDividerColor = useSettingsStore((s) => s.setDividerColor);
@@ -132,6 +136,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     themeId,
     fontId,
     uiFontId,
+    uiFontSize,
     fontSize,
     dividerWidth,
     dividerColor,
@@ -292,6 +297,25 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 <p className="field-hint">
                   Font for the app chrome — sidebar, tabs, and dialogs.
                   Separate from the terminal font above.
+                </p>
+              </div>
+
+              {/* interface (app-chrome) font size */}
+              <div className="field">
+                <label className="field-label">
+                  Interface font size — {uiFontSize}px
+                </label>
+                <input
+                  type="range"
+                  min={MIN_UI_FONT_SIZE}
+                  max={MAX_UI_FONT_SIZE}
+                  value={uiFontSize}
+                  onChange={(e) => setUiFontSize(Number(e.target.value))}
+                  className="range"
+                />
+                <p className="field-hint">
+                  Size of the app chrome text — sidebar, tabs, and dialogs.
+                  Separate from the terminal font size below.
                 </p>
               </div>
 

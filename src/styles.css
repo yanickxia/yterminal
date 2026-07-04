@@ -9,6 +9,8 @@
   --divider-color: #3a3f4b;
   /* interface (app-chrome) font — overridden at runtime by applyUiFontVar() */
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* interface (app-chrome) font size — overridden at runtime by applyUiFontVar() */
+  --ui-font-size: 13px;
 }
 
 * {
@@ -29,7 +31,7 @@ body {
   font-family: var(--ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
   background: var(--bg-dark);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--ui-font-size, 13px);
 }
 
 .app {
