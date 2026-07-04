@@ -4,11 +4,10 @@ import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store
 import { useSettingsStore } from "./stores/settings-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { TabBar } from "./components/TabBar";
-import { AttentionBar } from "./components/AttentionBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
-import { disposeSession, applyAppearance, initShell, addTabInheritingCwd } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnCommandSettled } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
@@ -19,9 +18,11 @@ import { useUpdaterStore } from "./stores/updater-store";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { FileViewer } from "./components/FileViewer";
 import { AiSidebar } from "./components/AiSidebar";
+import { GitSidebar } from "./components/GitSidebar";
 import { AppDivider } from "./components/AppDivider";
 import { useViewerStore } from "./stores/viewer-store";
 import { useAiStore } from "./stores/ai-store";
+import { useGitStore } from "./stores/git-store";
 import { useLayoutStore } from "./stores/layout-store";
 import { clearAttention } from "./stores/attention-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
@@ -34,6 +35,8 @@ export default function App() {
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
+  const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
+  const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const resizeSplit = useWorkspaceStore((s) => s.resizeSplit);
 
@@ -47,6 +50,9 @@ export default function App() {
   const aiOpen = useAiStore((s) => s.open);
   const aiWidth = useLayoutStore((s) => s.aiWidth);
   const setAiWidth = useLayoutStore((s) => s.setAiWidth);
+  const gitOpen = useGitStore((s) => s.open);
+  const gitWidth = useLayoutStore((s) => s.gitWidth);
+  const setGitWidth = useLayoutStore((s) => s.setGitWidth);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
@@ -119,16 +125,28 @@ export default function App() {
   }, []);
 
   // re-read the config file whenever the window regains focus, so syncing the
-  // file in (git pull / Dropbox / hand edit) updates the running app live.
+  // file in (git pull / Dropbox / hand edit) updates the running app live. Also
+  // refresh the git sidebar — the working tree may have changed in another app.
   useEffect(() => {
     if (!ready) return;
     async function reload() {
       const changed = await loadConfigFromDisk();
       if (changed) applyAppearance();
+      void useGitStore.getState().refresh();
     }
     window.addEventListener("focus", reload);
     return () => window.removeEventListener("focus", reload);
   }, [ready]);
+
+  // Auto-refresh the git sidebar after every command: the shell emits OSC 7 on
+  // each prompt, which terminal-manager debounces into this callback. The store
+  // no-ops while the panel is closed, so this is free when the sidebar is hidden.
+  useEffect(() => {
+    setOnCommandSettled(() => {
+      void useGitStore.getState().refresh();
+    });
+    return () => setOnCommandSettled(null);
+  }, []);
 
   // Subscribe to store; show dialog when an update becomes available.
   useEffect(() => {
@@ -174,6 +192,32 @@ export default function App() {
       if (key === "t" && !e.shiftKey) {
         e.preventDefault();
         if (ws) void addTabInheritingCwd(ws.id);
+        return;
+      }
+      // Cmd/Ctrl+1..9 switch workspace by position; add Shift to switch the
+      // active tab within the current workspace. Uses e.code (Digit1..Digit9)
+      // so it's layout-independent — Cmd+Shift+1 stays "1" rather than "!".
+      const digitMatch = /^Digit([1-9])$/.exec(e.code);
+      if (digitMatch) {
+        const n = Number(digitMatch[1]);
+        if (e.shiftKey) {
+          // Cmd/Ctrl+Shift+N: jump to the Nth tab of the current workspace.
+          if (!ws) return;
+          const target = ws.tabs[n - 1];
+          if (target && target.id !== ws.activeTabId) {
+            e.preventDefault();
+            setActiveTab(ws.id, target.id);
+          } else if (target) {
+            e.preventDefault();
+          }
+        } else {
+          // Cmd/Ctrl+N: jump to the Nth workspace in sidebar order.
+          const target = workspaces[n - 1];
+          if (target) {
+            e.preventDefault();
+            if (target.id !== activeWorkspaceId) setActiveWorkspace(target.id);
+          }
+        }
         return;
       }
       if (!ws || !ws.activeTabId) return;
@@ -228,7 +272,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ws, workspaces, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace]);
+  }, [ws, workspaces, activeWorkspaceId, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace, setActiveWorkspace, setActiveTab]);
 
   // refit terminals whenever the active tab's tree changes
   useEffect(() => {
@@ -244,6 +288,13 @@ export default function App() {
     if (activeTab?.activePaneId) clearAttention(activeTab.activePaneId);
   }, [activeTab?.id, activeTab?.activePaneId]);
 
+  // Recompute git status when the active tab (or its focused pane) changes, and
+  // when the git sidebar is opened — the panel tracks the active tab's cwd. The
+  // store no-ops while the panel is closed, so this is cheap.
+  useEffect(() => {
+    void useGitStore.getState().refresh();
+  }, [activeTab?.id, activeTab?.activePaneId, gitOpen]);
+
   // opening/closing the AI sidebar or dragging either app divider changes the
   // terminal area's width, so refit the active tab's panes once layout settles.
   useEffect(() => {
@@ -251,7 +302,7 @@ export default function App() {
       const id = requestAnimationFrame(() => refitTree(activeTab.root));
       return () => cancelAnimationFrame(id);
     }
-  }, [aiOpen, aiWidth, sidebarWidth, sidebarCollapsed]);
+  }, [aiOpen, aiWidth, sidebarWidth, sidebarCollapsed, gitOpen, gitWidth]);
 
   // Stable callbacks passed into PaneRenderer / PaneTerminal. Without these,
   // every App re-render (e.g. the 15s cwd snapshot tick that updates the
@@ -307,7 +358,6 @@ export default function App() {
         ) : ws ? (
           <>
             <TabBar workspace={ws} />
-            <AttentionBar />
             <div className="terminal-area">
               {activeTab ? (
                 activeTab.file ? (
@@ -339,6 +389,14 @@ export default function App() {
           <div className="empty">No workspace.</div>
         )}
       </div>
+      {gitOpen && (
+        <AppDivider
+          side="right"
+          onDrag={(dx) => setGitWidth(gitWidth - dx)}
+          onDragEnd={refitActive}
+        />
+      )}
+      {gitOpen && <GitSidebar />}
       {aiOpen && (
         <AppDivider
           side="right"

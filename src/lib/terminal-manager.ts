@@ -32,6 +32,7 @@ import {
 import {
   getTheme,
   getFont,
+  getUiFont,
   toXtermTheme,
   type ThemePalette,
 } from "./themes";
@@ -80,6 +81,31 @@ function primeHomeDir(): void {
       /* non-Tauri or unavailable — leave undefined */
     }
   })();
+}
+
+// Git auto-refresh hook. The git sidebar wants to re-read status whenever a
+// command that might touch the working tree finishes. The cleanest signal we
+// already have is OSC 7 (emitted by the shell's precmd hook on every prompt),
+// which fires exactly once per command. We debounce it so a burst of prompts
+// (e.g. a script printing several) collapses into a single refresh, and we go
+// through a registered callback rather than importing git-store here to keep
+// the dependency direction one-way (git-store already imports this module).
+let onCommandSettledCb: (() => void) | null = null;
+let commandSettledTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Register the callback invoked (debounced) after each shell prompt. */
+export function setOnCommandSettled(cb: (() => void) | null): void {
+  onCommandSettledCb = cb;
+}
+
+/** Fire the settled callback, debounced ~250ms to coalesce prompt bursts. */
+function scheduleCommandSettled(): void {
+  if (!onCommandSettledCb) return;
+  if (commandSettledTimer) clearTimeout(commandSettledTimer);
+  commandSettledTimer = setTimeout(() => {
+    commandSettledTimer = null;
+    onCommandSettledCb?.();
+  }, 250);
 }
 
 interface Session {
@@ -344,10 +370,11 @@ function applyChromeVars(p: ThemePalette) {
 
 /** Read the current appearance from the settings store. */
 function currentAppearance() {
-  const { themeId, fontId, fontSize } = useSettingsStore.getState();
+  const { themeId, fontId, uiFontId, fontSize } = useSettingsStore.getState();
   return {
     theme: getTheme(themeId),
     font: getFont(fontId),
+    uiFont: getUiFont(uiFontId),
     fontSize,
   };
 }
@@ -399,6 +426,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
   applyDividerVars();
+  applyUiFontVar();
 
   const term = new Terminal({
     fontFamily: font.stack,
@@ -532,6 +560,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     } catch {
       /* malformed percent-encoding — leave shellCwd untouched */
     }
+    // OSC 7 fires on every prompt, i.e. right after a command finishes — the
+    // moment the working tree may have changed. Nudge the git sidebar to
+    // re-read (debounced; no-ops when nothing is listening / panel closed).
+    scheduleCommandSettled();
     // The first prompt is the earliest moment the shell is ready to run a
     // command, so this is where we inject a queued agent-resume command.
     if (s) maybeInjectResume(s);
@@ -872,6 +904,28 @@ export function getSessionText(tabId: string, maxChars = 12000): string {
     return cleanTerminalText(s.serialize.serialize(), maxChars);
   } catch {
     return "";
+  }
+}
+
+/**
+ * Scroll a pane's terminal to the bottom (newest output). Used when navigating
+ * to a tab that rang the attention bell — the user wants to see the latest
+ * output (the prompt the agent is waiting on), not wherever they'd left the
+ * scrollback parked. Works whether the session is currently on-screen or
+ * detached: if it's live we scroll now; either way we clear the saved scroll
+ * state and pin `savedAtBottom` so the pending re-attach also lands at bottom.
+ */
+export function scrollSessionToBottom(paneId: string): void {
+  const s = sessions.get(paneId);
+  if (!s || s.disposed) return;
+  s.savedScrollTop = undefined;
+  s.savedAtBottom = true;
+  if (s.el.parentElement) {
+    try {
+      s.term.scrollToBottom();
+    } catch {
+      /* buffer not ready */
+    }
   }
 }
 
@@ -1267,6 +1321,7 @@ export function applyAppearance() {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
   applyDividerVars();
+  applyUiFontVar();
   const xtermTheme = toXtermTheme(theme.palette);
   const scrollback = resolveScrollback(
     useSettingsStore.getState().scrollbackLines
@@ -1292,6 +1347,16 @@ function applyDividerVars() {
   const r = document.documentElement.style;
   r.setProperty("--divider-width", `${dividerWidth}px`);
   r.setProperty("--divider-color", dividerColor);
+}
+
+/** Push the interface (app-chrome) font stack + size onto the --ui-font /
+ * --ui-font-size CSS variables. */
+function applyUiFontVar() {
+  if (typeof document === "undefined") return;
+  const { uiFontId, uiFontSize } = useSettingsStore.getState();
+  const r = document.documentElement.style;
+  r.setProperty("--ui-font", getUiFont(uiFontId).stack);
+  r.setProperty("--ui-font-size", `${uiFontSize}px`);
 }
 
 // Autosave every 15s and flush once more right before the window goes away,

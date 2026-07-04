@@ -815,7 +815,379 @@ fn read_text_file(path: String) -> Result<FileContents, String> {
 }
 
 // ============================================================================
-// AI sidebar — chat completion proxy
+// Git sidebar — repo status for the active tab's cwd
+// ============================================================================
+// The git sidebar shows, for whatever directory the focused pane is sitting in,
+// the current branch and the set of changed files (staged + unstaged +
+// untracked) with per-file line deltas — the same "Changes" view an IDE gives
+// you. We shell out to `git` (rather than linking libgit2) to exactly match the
+// user's installed git behaviour, ignore rules, and worktree/submodule quirks,
+// and because it's a cheap read that runs off the sync command pool.
+
+/// One changed file in the working tree. `status` is the two-char porcelain XY
+/// code (e.g. " M", "A ", "??", "R ") so the frontend can label/icon it;
+/// `insertions`/`deletions` are the summed staged+unstaged line deltas (0 when
+/// git can't diff it, e.g. binary or untracked-without-count).
+#[derive(serde::Serialize)]
+struct GitFile {
+    path: String,
+    status: String,
+    insertions: u32,
+    deletions: u32,
+}
+
+/// Result of inspecting a directory. When `is_repo` is false the other fields
+/// are empty and the frontend hides the sidebar content. `camelCase` rename so
+/// the field lands as `isRepo` for the TS `GitStatus` interface — without it
+/// serde emits snake_case `is_repo`, the frontend reads `isRepo` as `undefined`,
+/// and the sidebar wrongly shows "Not a git repository".
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatus {
+    is_repo: bool,
+    branch: String,
+    root: String,
+    files: Vec<GitFile>,
+}
+
+/// Resolve the `git` executable to an absolute path.
+///
+/// A macOS app launched from Finder/Dock inherits launchd's minimal `PATH`
+/// (no `/opt/homebrew/bin`, no `/usr/local/bin`), so a bare `git` spawn fails
+/// even though the same command works in a login-shell terminal. Mirror the
+/// absolute-path pattern already used for `/usr/sbin/lsof` in `process_cwd`:
+/// probe the common install locations first, then fall back to bare `git` so
+/// a `PATH`-resolvable git (e.g. on Linux/CI) still works.
+fn git_bin() -> String {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/git", // Apple-silicon Homebrew
+        "/usr/local/bin/git",    // Intel Homebrew / manual installs
+        "/usr/bin/git",          // Xcode CLT / system git
+    ];
+    for c in CANDIDATES {
+        if std::path::Path::new(c).exists() {
+            logger::debug("git", &format!("git_bin resolved to {c}"));
+            return (*c).to_string();
+        }
+    }
+    logger::debug(
+        "git",
+        "git_bin fell back to bare `git` (no candidate path existed)",
+    );
+    "git".to_string()
+}
+
+/// Run `git` with args in `cwd`, returning stdout on success. Errors carry the
+/// stderr so failures are diagnosable in the log.
+fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new(git_bin())
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            let msg = format!("spawn git {args:?} in {cwd:?}: {e}");
+            logger::error("git", &msg);
+            msg
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {:?} exit {}: {}",
+            args,
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Parse `git diff --numstat` output into a path -> (insertions, deletions) map.
+/// Binary files show as `-\t-\t<path>`, which we record as (0, 0). Renames show
+/// as `old -> new` (or the NUL-delimited `-z` form); we key on the new path.
+fn parse_numstat(out: &str, into: &mut std::collections::HashMap<String, (u32, u32)>) {
+    for line in out.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let ins = parts.next().unwrap_or("-");
+        let del = parts.next().unwrap_or("-");
+        let path = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
+        // A rename in non-`-z` mode looks like "old => new"; strip to the new
+        // path so it lines up with porcelain's key.
+        let path = path
+            .rsplit(" => ")
+            .next()
+            .unwrap_or(path)
+            .trim_end_matches('}')
+            .to_string();
+        let ins = ins.parse::<u32>().unwrap_or(0);
+        let del = del.parse::<u32>().unwrap_or(0);
+        let e = into.entry(path).or_insert((0, 0));
+        e.0 += ins;
+        e.1 += del;
+    }
+}
+
+/// Inspect `dir` as a git worktree. Never errors on "not a repo" — that's a
+/// normal state reported via `is_repo: false`. Only surfaces an Err when git
+/// itself is unusable, so the frontend can log and fall back to empty.
+#[tauri::command]
+fn git_status(dir: String) -> Result<GitStatus, String> {
+    logger::info("git", &format!("git_status invoked for dir={dir:?}"));
+    // `rev-parse --show-toplevel` is the canonical "am I in a repo?" probe: it
+    // prints the worktree root and exits 0 inside a repo, non-zero outside.
+    let root = match run_git(&dir, &["rev-parse", "--show-toplevel"]) {
+        Ok(s) => s.trim().to_string(),
+        Err(e) => {
+            logger::warn(
+                "git",
+                &format!("rev-parse --show-toplevel failed for dir={dir:?}: {e} -> is_repo:false"),
+            );
+            return Ok(GitStatus {
+                is_repo: false,
+                branch: String::new(),
+                root: String::new(),
+                files: Vec::new(),
+            });
+        }
+    };
+
+    // Branch name; on a detached HEAD `--abbrev-ref` yields "HEAD", so fall
+    // back to a short commit sha for a friendlier label.
+    let branch = match run_git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Ok(s) => {
+            let b = s.trim().to_string();
+            if b == "HEAD" {
+                run_git(&dir, &["rev-parse", "--short", "HEAD"])
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or(b)
+            } else {
+                b
+            }
+        }
+        Err(_) => String::new(), // unborn branch (no commits yet)
+    };
+
+    // Line deltas: sum unstaged (working vs index) and staged (index vs HEAD).
+    let mut deltas: std::collections::HashMap<String, (u32, u32)> =
+        std::collections::HashMap::new();
+    if let Ok(out) = run_git(&dir, &["diff", "--numstat"]) {
+        parse_numstat(&out, &mut deltas);
+    }
+    if let Ok(out) = run_git(&dir, &["diff", "--numstat", "--cached"]) {
+        parse_numstat(&out, &mut deltas);
+    }
+
+    // Porcelain v1 is the stable, script-friendly listing of every changed path
+    // with its two-char XY status. Format: "XY <path>" (renames use
+    // "XY orig -> new"). We key the new path and attach any line delta.
+    let mut files = Vec::new();
+    if let Ok(out) = run_git(&dir, &["status", "--porcelain"]) {
+        for line in out.lines() {
+            if line.len() < 3 {
+                continue;
+            }
+            let status = line[..2].to_string();
+            let rest = &line[3..];
+            // For renames the porcelain path is "orig -> new"; take the new one.
+            let path = rest.rsplit(" -> ").next().unwrap_or(rest).to_string();
+            let (insertions, deletions) = deltas.get(&path).copied().unwrap_or((0, 0));
+            files.push(GitFile {
+                path,
+                status,
+                insertions,
+                deletions,
+            });
+        }
+    }
+
+    logger::info(
+        "git",
+        &format!(
+            "git_status ok dir={dir:?} root={root:?} branch={branch:?} files={}",
+            files.len()
+        ),
+    );
+    Ok(GitStatus {
+        is_repo: true,
+        branch,
+        root,
+        files,
+    })
+}
+
+/// Unified diff for a single path in `dir`'s worktree, as a plain string ready
+/// for the sidebar to render. Covers three cases:
+///   * tracked changes (staged and/or unstaged) → `git diff HEAD -- <path>`,
+///     which shows the full delta from the last commit regardless of the index.
+///   * a brand-new untracked file → `HEAD` has nothing to diff against, so fall
+///     back to `git diff --no-index /dev/null <path>`, presenting the whole file
+///     as additions. `--no-index` exits 1 when the files differ (the normal
+///     case here), so we read stdout directly instead of via `run_git` (which
+///     treats a non-zero exit as an error).
+///   * nothing to show → empty string (the frontend renders "No diff").
+/// `path` is repo-relative (as returned by `git_status`); we run git with `-C
+/// dir` so the relative path resolves against the same worktree.
+#[tauri::command]
+fn git_diff(dir: String, path: String) -> Result<String, String> {
+    logger::info("git", &format!("git_diff dir={dir:?} path={path:?}"));
+
+    // Tracked changes vs HEAD (staged + unstaged in one view).
+    let tracked = run_git(&dir, &["diff", "HEAD", "--", &path]).unwrap_or_default();
+    if !tracked.trim().is_empty() {
+        return Ok(tracked);
+    }
+
+    // Untracked / new file: diff against an empty file so the whole content
+    // shows as additions. `--no-index` returns exit 1 on difference, which is
+    // expected — capture stdout without failing on the non-zero status.
+    let out = std::process::Command::new(git_bin())
+        .arg("-C")
+        .arg(&dir)
+        .args(["diff", "--no-index", "--", "/dev/null", &path])
+        .output()
+        .map_err(|e| {
+            let msg = format!("spawn git diff --no-index in {dir:?}: {e}");
+            logger::error("git", &msg);
+            msg
+        })?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// ============================================================================
+// "Open with" — launch the repo (or a file) in an external IDE/editor.
+//
+// We keep a small catalog of well-known editors, each with a set of absolute
+// CLI candidate paths (Homebrew arm64 / Intel / a couple of common installs)
+// plus a macOS `.app` bundle name for the `open -a` fallback. `list_editors`
+// returns only the ones actually installed so the UI can show a live menu;
+// `open_in_editor` launches the chosen one against a path.
+// ============================================================================
+
+/// One entry in the editor catalog exposed to the frontend.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditorInfo {
+    id: String,
+    label: String,
+}
+
+/// Static catalog: (id, label, CLI candidate paths, macOS .app bundle name).
+const EDITORS: &[(&str, &str, &[&str], &str)] = &[
+    (
+        "vscode",
+        "VS Code",
+        &[
+            "/opt/homebrew/bin/code",
+            "/usr/local/bin/code",
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+        ],
+        "Visual Studio Code",
+    ),
+    (
+        "cursor",
+        "Cursor",
+        &["/opt/homebrew/bin/cursor", "/usr/local/bin/cursor"],
+        "Cursor",
+    ),
+    (
+        "zed",
+        "Zed",
+        &["/opt/homebrew/bin/zed", "/usr/local/bin/zed"],
+        "Zed",
+    ),
+    (
+        "sublime",
+        "Sublime Text",
+        &["/opt/homebrew/bin/subl", "/usr/local/bin/subl"],
+        "Sublime Text",
+    ),
+    (
+        "idea",
+        "IntelliJ IDEA",
+        &["/opt/homebrew/bin/idea", "/usr/local/bin/idea"],
+        "IntelliJ IDEA",
+    ),
+    (
+        "webstorm",
+        "WebStorm",
+        &["/opt/homebrew/bin/webstorm", "/usr/local/bin/webstorm"],
+        "WebStorm",
+    ),
+];
+
+/// First existing CLI path for an editor entry, if any.
+fn editor_cli(candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| std::path::Path::new(c).exists())
+        .map(|c| (*c).to_string())
+}
+
+/// True if the macOS `.app` bundle for `app_name` exists (user or system).
+fn editor_app_installed(app_name: &str) -> bool {
+    let bundle = format!("{app_name}.app");
+    ["/Applications", "/System/Applications"]
+        .iter()
+        .any(|dir| std::path::Path::new(dir).join(&bundle).exists())
+        || home_dir()
+            .map(|h| h.join("Applications").join(&bundle).exists())
+            .unwrap_or(false)
+}
+
+/// Editors that are actually installed (CLI present or `.app` bundle found).
+#[tauri::command]
+fn list_editors() -> Vec<EditorInfo> {
+    EDITORS
+        .iter()
+        .filter(|(_, _, cli, app)| editor_cli(cli).is_some() || editor_app_installed(app))
+        .map(|(id, label, _, _)| EditorInfo {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+        })
+        .collect()
+}
+
+/// Launch `path` in the given editor. Prefers the editor's CLI (best behavior —
+/// reuses/opens the folder as a project); falls back to macOS `open -a <App>`.
+#[tauri::command]
+fn open_in_editor(editor: String, path: String) -> Result<(), String> {
+    logger::info(
+        "editor",
+        &format!("open_in_editor editor={editor:?} path={path:?}"),
+    );
+    let entry = EDITORS
+        .iter()
+        .find(|(id, ..)| *id == editor)
+        .ok_or_else(|| format!("unknown editor {editor:?}"))?;
+    let (_, _, candidates, app_name) = entry;
+
+    if let Some(cli) = editor_cli(candidates) {
+        return std::process::Command::new(&cli)
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| {
+                let msg = format!("spawn {cli} {path:?}: {e}");
+                logger::error("editor", &msg);
+                msg
+            });
+    }
+
+    // macOS fallback: open the folder/file with the registered application.
+    std::process::Command::new("/usr/bin/open")
+        .args(["-a", app_name])
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| {
+            let msg = format!("open -a {app_name:?} {path:?}: {e}");
+            logger::error("editor", &msg);
+            msg
+        })
+}
+
 // ============================================================================
 // The WebView can't call third-party LLM endpoints directly (CORS + we don't
 // want the API key exposed to arbitrary page script). This command is the one
@@ -1749,6 +2121,10 @@ fn main() {
             process_env,
             path_is_file,
             read_text_file,
+            git_status,
+            git_diff,
+            list_editors,
+            open_in_editor,
             ai_chat,
             ai_chat_stream,
             ai_chat_cancel,
