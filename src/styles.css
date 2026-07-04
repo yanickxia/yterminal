@@ -1726,6 +1726,41 @@ body {
   gap: 10px;
 }
 
+/* "Open with" editor dropdown in the sidebar header. */
+.git-openwith {
+  position: relative;
+  display: inline-flex;
+}
+.git-openwith-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 140px;
+  z-index: 20;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.git-openwith-item {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.git-openwith-item:hover {
+  background: var(--bg-light);
+}
+
 .git-sidebar-empty {
   color: var(--fg-dim);
   font-size: 12px;

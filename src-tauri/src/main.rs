@@ -1056,6 +1056,139 @@ fn git_diff(dir: String, path: String) -> Result<String, String> {
 }
 
 // ============================================================================
+// "Open with" — launch the repo (or a file) in an external IDE/editor.
+//
+// We keep a small catalog of well-known editors, each with a set of absolute
+// CLI candidate paths (Homebrew arm64 / Intel / a couple of common installs)
+// plus a macOS `.app` bundle name for the `open -a` fallback. `list_editors`
+// returns only the ones actually installed so the UI can show a live menu;
+// `open_in_editor` launches the chosen one against a path.
+// ============================================================================
+
+/// One entry in the editor catalog exposed to the frontend.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditorInfo {
+    id: String,
+    label: String,
+}
+
+/// Static catalog: (id, label, CLI candidate paths, macOS .app bundle name).
+const EDITORS: &[(&str, &str, &[&str], &str)] = &[
+    (
+        "vscode",
+        "VS Code",
+        &[
+            "/opt/homebrew/bin/code",
+            "/usr/local/bin/code",
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+        ],
+        "Visual Studio Code",
+    ),
+    (
+        "cursor",
+        "Cursor",
+        &["/opt/homebrew/bin/cursor", "/usr/local/bin/cursor"],
+        "Cursor",
+    ),
+    (
+        "zed",
+        "Zed",
+        &["/opt/homebrew/bin/zed", "/usr/local/bin/zed"],
+        "Zed",
+    ),
+    (
+        "sublime",
+        "Sublime Text",
+        &["/opt/homebrew/bin/subl", "/usr/local/bin/subl"],
+        "Sublime Text",
+    ),
+    (
+        "idea",
+        "IntelliJ IDEA",
+        &["/opt/homebrew/bin/idea", "/usr/local/bin/idea"],
+        "IntelliJ IDEA",
+    ),
+    (
+        "webstorm",
+        "WebStorm",
+        &["/opt/homebrew/bin/webstorm", "/usr/local/bin/webstorm"],
+        "WebStorm",
+    ),
+];
+
+/// First existing CLI path for an editor entry, if any.
+fn editor_cli(candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| std::path::Path::new(c).exists())
+        .map(|c| (*c).to_string())
+}
+
+/// True if the macOS `.app` bundle for `app_name` exists (user or system).
+fn editor_app_installed(app_name: &str) -> bool {
+    let bundle = format!("{app_name}.app");
+    ["/Applications", "/System/Applications"]
+        .iter()
+        .any(|dir| std::path::Path::new(dir).join(&bundle).exists())
+        || home_dir()
+            .map(|h| h.join("Applications").join(&bundle).exists())
+            .unwrap_or(false)
+}
+
+/// Editors that are actually installed (CLI present or `.app` bundle found).
+#[tauri::command]
+fn list_editors() -> Vec<EditorInfo> {
+    EDITORS
+        .iter()
+        .filter(|(_, _, cli, app)| editor_cli(cli).is_some() || editor_app_installed(app))
+        .map(|(id, label, _, _)| EditorInfo {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+        })
+        .collect()
+}
+
+/// Launch `path` in the given editor. Prefers the editor's CLI (best behavior —
+/// reuses/opens the folder as a project); falls back to macOS `open -a <App>`.
+#[tauri::command]
+fn open_in_editor(editor: String, path: String) -> Result<(), String> {
+    logger::info(
+        "editor",
+        &format!("open_in_editor editor={editor:?} path={path:?}"),
+    );
+    let entry = EDITORS
+        .iter()
+        .find(|(id, ..)| *id == editor)
+        .ok_or_else(|| format!("unknown editor {editor:?}"))?;
+    let (_, _, candidates, app_name) = entry;
+
+    if let Some(cli) = editor_cli(candidates) {
+        return std::process::Command::new(&cli)
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| {
+                let msg = format!("spawn {cli} {path:?}: {e}");
+                logger::error("editor", &msg);
+                msg
+            });
+    }
+
+    // macOS fallback: open the folder/file with the registered application.
+    std::process::Command::new("/usr/bin/open")
+        .args(["-a", app_name])
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| {
+            let msg = format!("open -a {app_name:?} {path:?}: {e}");
+            logger::error("editor", &msg);
+            msg
+        })
+}
+
+// ============================================================================
 // The WebView can't call third-party LLM endpoints directly (CORS + we don't
 // want the API key exposed to arbitrary page script). This command is the one
 // egress point: the frontend hands us an already-assembled OpenAI-compatible
@@ -1990,6 +2123,8 @@ fn main() {
             read_text_file,
             git_status,
             git_diff,
+            list_editors,
+            open_in_editor,
             ai_chat,
             ai_chat_stream,
             ai_chat_cancel,

@@ -57,6 +57,37 @@ export async function gitDiff(dir: string, path: string): Promise<string> {
   }
 }
 
+/** An installed external editor, as reported by `list_editors`. */
+export interface EditorInfo {
+  id: string;
+  label: string;
+}
+
+/**
+ * External editors detected on this machine. Never throws — resolves to an
+ * empty list on error so the "Open with" menu can simply render nothing.
+ */
+export async function listEditors(): Promise<EditorInfo[]> {
+  try {
+    return await invoke<EditorInfo[]>("list_editors");
+  } catch (e) {
+    logger.error("git", `list_editors invoke failed: ${String(e)}`);
+    return [];
+  }
+}
+
+/** Launch `path` in the editor identified by `editor` (an EditorInfo id). */
+export async function openInEditor(editor: string, path: string): Promise<void> {
+  try {
+    await invoke("open_in_editor", { editor, path });
+  } catch (e) {
+    logger.error(
+      "git",
+      `open_in_editor invoke failed for editor=${JSON.stringify(editor)} path=${JSON.stringify(path)}: ${String(e)}`,
+    );
+  }
+}
+
 /**
  * Coarse change class for a porcelain XY code, used to pick a label/color.
  * Untracked ("??") is "added"; a delete in either column is "deleted"; a rename

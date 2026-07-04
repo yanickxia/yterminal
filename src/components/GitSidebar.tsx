@@ -8,7 +8,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useGitStore } from "../stores/git-store";
 import { useLayoutStore } from "../stores/layout-store";
-import { changeKind, splitPath, gitDiff, type GitFile } from "../lib/git";
+import {
+  changeKind,
+  splitPath,
+  gitDiff,
+  listEditors,
+  openInEditor,
+  type GitFile,
+  type EditorInfo,
+} from "../lib/git";
 
 /** Short single-letter badge for a file's change kind. */
 function badge(f: GitFile): { char: string; kind: string } {
@@ -119,11 +127,77 @@ function DiffView({ text, loading }: { text: string; loading: boolean }) {
   );
 }
 
+/**
+ * "Open with" dropdown: lists external editors detected on the machine and
+ * launches the given `dir` (the repo root) in the chosen one. Renders nothing
+ * when no editors are installed. The editor list is fetched once on mount and
+ * cached for the component's lifetime.
+ */
+function OpenWithMenu({ dir }: { dir: string }) {
+  const [editors, setEditors] = useState<EditorInfo[]>([]);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void listEditors().then((es) => {
+      if (alive) setEditors(es);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Close the menu on any outside click while it's open.
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  if (editors.length === 0) return null;
+
+  return (
+    <div className="git-openwith" ref={wrapRef}>
+      <button
+        type="button"
+        className="link-btn"
+        onClick={() => setOpen((v) => !v)}
+        title="Open this repository in an external editor"
+      >
+        open with ▾
+      </button>
+      {open && (
+        <div className="git-openwith-menu" role="menu">
+          {editors.map((e) => (
+            <button
+              key={e.id}
+              type="button"
+              className="git-openwith-item"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                void openInEditor(e.id, dir);
+              }}
+            >
+              {e.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GitSidebar() {
   const status = useGitStore((s) => s.status);
   const loading = useGitStore((s) => s.loading);
   const cwd = useGitStore((s) => s.cwd);
-  const refresh = useGitStore((s) => s.refresh);
   const setOpen = useGitStore((s) => s.setOpen);
   const gitWidth = useLayoutStore((s) => s.gitWidth);
 
@@ -172,13 +246,7 @@ export function GitSidebar() {
       <div className="git-sidebar-head">
         <span className="git-sidebar-title">Source Control</span>
         <div className="git-sidebar-head-actions">
-          <button
-            className="link-btn"
-            onClick={() => void refresh()}
-            title="Refresh git status"
-          >
-            refresh
-          </button>
+          {status.isRepo && status.root && <OpenWithMenu dir={status.root} />}
           <button
             className="icon-btn"
             onClick={() => setOpen(false)}
