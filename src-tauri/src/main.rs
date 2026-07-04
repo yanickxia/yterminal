@@ -837,8 +837,12 @@ struct GitFile {
 }
 
 /// Result of inspecting a directory. When `is_repo` is false the other fields
-/// are empty and the frontend hides the sidebar content.
+/// are empty and the frontend hides the sidebar content. `camelCase` rename so
+/// the field lands as `isRepo` for the TS `GitStatus` interface — without it
+/// serde emits snake_case `is_repo`, the frontend reads `isRepo` as `undefined`,
+/// and the sidebar wrongly shows "Not a git repository".
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitStatus {
     is_repo: bool,
     branch: String,
