@@ -846,10 +846,32 @@ struct GitStatus {
     files: Vec<GitFile>,
 }
 
+/// Resolve the `git` executable to an absolute path.
+///
+/// A macOS app launched from Finder/Dock inherits launchd's minimal `PATH`
+/// (no `/opt/homebrew/bin`, no `/usr/local/bin`), so a bare `git` spawn fails
+/// even though the same command works in a login-shell terminal. Mirror the
+/// absolute-path pattern already used for `/usr/sbin/lsof` in `process_cwd`:
+/// probe the common install locations first, then fall back to bare `git` so
+/// a `PATH`-resolvable git (e.g. on Linux/CI) still works.
+fn git_bin() -> String {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/git", // Apple-silicon Homebrew
+        "/usr/local/bin/git",    // Intel Homebrew / manual installs
+        "/usr/bin/git",          // Xcode CLT / system git
+    ];
+    for c in CANDIDATES {
+        if std::path::Path::new(c).exists() {
+            return (*c).to_string();
+        }
+    }
+    "git".to_string()
+}
+
 /// Run `git` with args in `cwd`, returning stdout on success. Errors carry the
 /// stderr so failures are diagnosable in the log.
 fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
+    let out = std::process::Command::new(git_bin())
         .arg("-C")
         .arg(cwd)
         .args(args)
