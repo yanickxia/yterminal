@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { gitStatus, type GitStatus } from "../lib/git";
 import { getSessionCwd } from "../lib/terminal-manager";
 import { useWorkspaceStore } from "./workspace-store";
+import { logger } from "../lib/logger";
 
 const OPEN_KEY = "yterminal.git.open";
 
@@ -82,18 +83,24 @@ export const useGitStore = create<GitState>((set, get) => ({
     const seq = ++refreshSeq;
     const paneId = activePaneId();
     if (!paneId) {
+      logger.debug("git", `refresh #${seq}: no active pane -> EMPTY`);
       if (seq === refreshSeq) set({ status: EMPTY, cwd: null, loading: false });
       return;
     }
     set({ loading: true });
     const cwd = await getSessionCwd(paneId);
     if (seq !== refreshSeq) return; // superseded by a newer refresh
+    logger.debug("git", `refresh #${seq}: pane=${paneId} resolved cwd=${JSON.stringify(cwd)}`);
     if (!cwd) {
       set({ status: EMPTY, cwd: null, loading: false });
       return;
     }
     const status = await gitStatus(cwd);
     if (seq !== refreshSeq) return;
+    logger.debug(
+      "git",
+      `refresh #${seq}: gitStatus(${JSON.stringify(cwd)}) -> isRepo=${status.isRepo} branch=${JSON.stringify(status.branch)} files=${status.files.length}`,
+    );
     set({ status, cwd, loading: false });
   },
 }));

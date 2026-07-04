@@ -862,9 +862,14 @@ fn git_bin() -> String {
     ];
     for c in CANDIDATES {
         if std::path::Path::new(c).exists() {
+            logger::debug("git", &format!("git_bin resolved to {c}"));
             return (*c).to_string();
         }
     }
+    logger::debug(
+        "git",
+        "git_bin fell back to bare `git` (no candidate path existed)",
+    );
     "git".to_string()
 }
 
@@ -876,7 +881,11 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
         .arg(cwd)
         .args(args)
         .output()
-        .map_err(|e| format!("spawn git: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("spawn git {args:?} in {cwd:?}: {e}");
+            logger::error("git", &msg);
+            msg
+        })?;
     if !out.status.success() {
         return Err(format!(
             "git {:?} exit {}: {}",
@@ -921,17 +930,22 @@ fn parse_numstat(out: &str, into: &mut std::collections::HashMap<String, (u32, u
 /// itself is unusable, so the frontend can log and fall back to empty.
 #[tauri::command]
 fn git_status(dir: String) -> Result<GitStatus, String> {
+    logger::info("git", &format!("git_status invoked for dir={dir:?}"));
     // `rev-parse --show-toplevel` is the canonical "am I in a repo?" probe: it
     // prints the worktree root and exits 0 inside a repo, non-zero outside.
     let root = match run_git(&dir, &["rev-parse", "--show-toplevel"]) {
         Ok(s) => s.trim().to_string(),
-        Err(_) => {
+        Err(e) => {
+            logger::warn(
+                "git",
+                &format!("rev-parse --show-toplevel failed for dir={dir:?}: {e} -> is_repo:false"),
+            );
             return Ok(GitStatus {
                 is_repo: false,
                 branch: String::new(),
                 root: String::new(),
                 files: Vec::new(),
-            })
+            });
         }
     };
 
@@ -984,6 +998,13 @@ fn git_status(dir: String) -> Result<GitStatus, String> {
         }
     }
 
+    logger::info(
+        "git",
+        &format!(
+            "git_status ok dir={dir:?} root={root:?} branch={branch:?} files={}",
+            files.len()
+        ),
+    );
     Ok(GitStatus {
         is_repo: true,
         branch,

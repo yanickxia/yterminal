@@ -3,6 +3,7 @@
 // so the IPC surface stays centralized and mockable in vitest.
 
 import { invoke } from "@tauri-apps/api/core";
+import { logger } from "./logger";
 
 /** One changed file in a repo's working tree, as returned by `git_status`. */
 export interface GitFile {
@@ -33,7 +34,8 @@ const EMPTY: GitStatus = { isRepo: false, branch: "", root: "", files: [] };
 export async function gitStatus(dir: string): Promise<GitStatus> {
   try {
     return await invoke<GitStatus>("git_status", { dir });
-  } catch {
+  } catch (e) {
+    logger.error("git", `git_status invoke failed for dir=${JSON.stringify(dir)}: ${String(e)}`);
     return EMPTY;
   }
 }
