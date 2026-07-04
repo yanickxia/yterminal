@@ -94,6 +94,8 @@ Appearance flow: `loadConfigFromDisk()` runs at startup and on `window` `focus` 
 
 `src/lib/themes.ts` owns the palette → xterm theme + CSS-variable mapping. `applyAppearance()` re-themes every cached terminal in place AND updates the CSS vars on the document — both must be kept in sync; do not change one path without the other.
 
+Two independent font settings: the **terminal font** (`fontId`, `FONTS` + detected system monospace fonts, drives `term.options.fontFamily`) and the **interface font** (`uiFontId`, `UI_FONTS` proportional presets, default `"system"`). The interface font drives the `--ui-font` CSS var (set by `applyUiFontVar()` in terminal-manager; `body` reads `font-family: var(--ui-font)`) so the sidebar/tabs/dialogs restyle without touching the terminal. Both are persisted in the JSON config under `appearance.font` / `appearance.uiFont`, validated in `config.ts` (unknown-but-non-empty ids are kept for hand-edits), and the settings-store persist version was bumped to 6 (migration backfills `uiFontId: "system"`).
+
 ### Link handling
 
 `terminal-manager.ts` loads `@xterm/addon-web-links` on every new `Terminal`. The click handler delegates to:

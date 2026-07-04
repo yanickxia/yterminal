@@ -32,6 +32,7 @@ import {
 import {
   getTheme,
   getFont,
+  getUiFont,
   toXtermTheme,
   type ThemePalette,
 } from "./themes";
@@ -344,10 +345,11 @@ function applyChromeVars(p: ThemePalette) {
 
 /** Read the current appearance from the settings store. */
 function currentAppearance() {
-  const { themeId, fontId, fontSize } = useSettingsStore.getState();
+  const { themeId, fontId, uiFontId, fontSize } = useSettingsStore.getState();
   return {
     theme: getTheme(themeId),
     font: getFont(fontId),
+    uiFont: getUiFont(uiFontId),
     fontSize,
   };
 }
@@ -399,6 +401,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
   applyDividerVars();
+  applyUiFontVar();
 
   const term = new Terminal({
     fontFamily: font.stack,
@@ -1289,6 +1292,7 @@ export function applyAppearance() {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
   applyDividerVars();
+  applyUiFontVar();
   const xtermTheme = toXtermTheme(theme.palette);
   const scrollback = resolveScrollback(
     useSettingsStore.getState().scrollbackLines
@@ -1314,6 +1318,16 @@ function applyDividerVars() {
   const r = document.documentElement.style;
   r.setProperty("--divider-width", `${dividerWidth}px`);
   r.setProperty("--divider-color", dividerColor);
+}
+
+/** Push the interface (app-chrome) font stack onto the --ui-font CSS variable. */
+function applyUiFontVar() {
+  if (typeof document === "undefined") return;
+  const { uiFontId } = useSettingsStore.getState();
+  document.documentElement.style.setProperty(
+    "--ui-font",
+    getUiFont(uiFontId).stack
+  );
 }
 
 // Autosave every 15s and flush once more right before the window goes away,

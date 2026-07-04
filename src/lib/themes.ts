@@ -233,3 +233,58 @@ export function getFont(id: string): FontOption {
   return FONTS[0];
 }
 
+// ---- UI (app-chrome) font presets ----
+// The interface font is separate from the terminal font: it drives the sidebar,
+// tab bar, settings, and other chrome text — everything OUTSIDE the terminal
+// cells. These are proportional (sans-serif) families by default, since the
+// chrome is prose-like, whereas the terminal wants a fixed-width font. The
+// "system" preset (default) tracks each OS's native UI font.
+export const UI_FONTS: FontOption[] = [
+  {
+    id: "system",
+    name: "System default",
+    stack: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  {
+    id: "inter",
+    name: "Inter",
+    stack: 'Inter, -apple-system, "Segoe UI", Roboto, sans-serif',
+  },
+  {
+    id: "helvetica",
+    name: "Helvetica / Arial",
+    stack: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
+  {
+    id: "sf-pro",
+    name: "SF Pro",
+    stack: '"SF Pro Text", "SF Pro", -apple-system, sans-serif',
+  },
+  {
+    id: "segoe",
+    name: "Segoe UI",
+    stack: '"Segoe UI", Tahoma, Geneva, sans-serif',
+  },
+  {
+    id: "georgia",
+    name: "Georgia (serif)",
+    stack: 'Georgia, "Times New Roman", serif',
+  },
+];
+
+export const DEFAULT_UI_FONT_ID = "system";
+
+/**
+ * Resolve a UI-font id to its FontOption. Falls back to a sans-serif stack for
+ * a hand-edited/unknown id (mirrors getFont, but with a proportional fallback
+ * since the chrome is not fixed-width), and to the system preset when empty.
+ */
+export function getUiFont(id: string): FontOption {
+  const hit = UI_FONTS.find((f) => f.id === id);
+  if (hit) return hit;
+  if (id && id.trim()) {
+    return { id, name: id, stack: `"${id}", sans-serif` };
+  }
+  return UI_FONTS[0];
+}
+

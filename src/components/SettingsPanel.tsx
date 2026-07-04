@@ -14,7 +14,7 @@ import {
   type DefaultCwdMode,
   type AiProviderKind,
 } from "../stores/settings-store";
-import { THEMES, FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
+import { THEMES, FONTS, UI_FONTS, getAllFonts, registerSystemFonts } from "../lib/themes";
 import { applyAppearance } from "../lib/terminal-manager";
 import { saveConfigToDisk, configFilePath } from "../lib/config";
 import { detectIsMac } from "../lib/link-modifier";
@@ -47,6 +47,7 @@ const TABS: { id: TabId; label: string }[] = [
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const themeId = useSettingsStore((s) => s.themeId);
   const fontId = useSettingsStore((s) => s.fontId);
+  const uiFontId = useSettingsStore((s) => s.uiFontId);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const dividerWidth = useSettingsStore((s) => s.dividerWidth);
   const dividerColor = useSettingsStore((s) => s.dividerColor);
@@ -62,6 +63,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const alertVolume = useSettingsStore((s) => s.alertVolume);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const setFont = useSettingsStore((s) => s.setFont);
+  const setUiFont = useSettingsStore((s) => s.setUiFont);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
   const setDividerWidth = useSettingsStore((s) => s.setDividerWidth);
   const setDividerColor = useSettingsStore((s) => s.setDividerColor);
@@ -129,6 +131,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   }, [
     themeId,
     fontId,
+    uiFontId,
     fontSize,
     dividerWidth,
     dividerColor,
@@ -233,7 +236,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               {/* font family */}
               <div className="field">
                 <label className="field-label" htmlFor="font-select">
-                  Font
+                  Terminal font
                   <button
                     type="button"
                     className="link-btn"
@@ -267,6 +270,29 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                     </optgroup>
                   )}
                 </select>
+              </div>
+
+              {/* interface (app-chrome) font — sidebar, tabs, settings, etc. */}
+              <div className="field">
+                <label className="field-label" htmlFor="ui-font-select">
+                  Interface font
+                </label>
+                <select
+                  id="ui-font-select"
+                  className="select"
+                  value={uiFontId}
+                  onChange={(e) => setUiFont(e.target.value)}
+                >
+                  {UI_FONTS.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="field-hint">
+                  Font for the app chrome — sidebar, tabs, and dialogs.
+                  Separate from the terminal font above.
+                </p>
               </div>
 
               {/* font size */}

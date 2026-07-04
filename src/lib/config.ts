@@ -10,7 +10,7 @@
 // catalogs so a hand-edited file can never put the app into a broken state.
 
 import { invoke } from "@tauri-apps/api/core";
-import { THEMES, getAllFonts, DEFAULT_THEME_ID, DEFAULT_FONT_ID } from "./themes";
+import { THEMES, getAllFonts, UI_FONTS, DEFAULT_THEME_ID, DEFAULT_FONT_ID, DEFAULT_UI_FONT_ID } from "./themes";
 import {
   useSettingsStore,
   MIN_FONT_SIZE,
@@ -39,6 +39,8 @@ export interface YterminalConfig {
     theme: string;
     /** font id, e.g. "jetbrains-mono" (see themes.ts) */
     font: string;
+    /** interface (app-chrome) font id, e.g. "system" (see UI_FONTS in themes.ts) */
+    uiFont: string;
     /** font size in px, clamped to [MIN_FONT_SIZE, MAX_FONT_SIZE] */
     fontSize: number;
     /** pane divider line width in px (0 hides it) */
@@ -75,6 +77,7 @@ export function configFromStore(): YterminalConfig {
     appearance: {
       theme: s.themeId,
       font: s.fontId,
+      uiFont: s.uiFontId,
       fontSize: s.fontSize,
       dividerWidth: s.dividerWidth,
       dividerColor: s.dividerColor,
@@ -159,12 +162,18 @@ export function parseConfig(text: string): YterminalConfig | null {
   const knownFont = getAllFonts().some((f) => f.id === ap.font);
   const fontOk =
     knownFont || (typeof ap.font === "string" && ap.font.trim().length > 0);
+  // UI font: accept a built-in UI preset OR any non-empty string (a hand-edited
+  // family name), otherwise fall back to the system default.
+  const knownUiFont = UI_FONTS.some((f) => f.id === ap.uiFont);
+  const uiFontOk =
+    knownUiFont || (typeof ap.uiFont === "string" && ap.uiFont.trim().length > 0);
 
   return {
     version: typeof raw.version === "number" ? raw.version : CONFIG_VERSION,
     appearance: {
       theme: themeOk ? ap.theme : DEFAULT_THEME_ID,
       font: fontOk ? ap.font : DEFAULT_FONT_ID,
+      uiFont: uiFontOk ? ap.uiFont : DEFAULT_UI_FONT_ID,
       fontSize: clampFontSize(ap.fontSize),
       dividerWidth: clampDividerWidth(ap.dividerWidth),
       dividerColor: validDividerColor(ap.dividerColor),
@@ -191,6 +200,7 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   const {
     theme,
     font,
+    uiFont,
     fontSize,
     dividerWidth,
     dividerColor,
@@ -198,6 +208,7 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   } = cfg.appearance;
   if (theme !== s.themeId) s.setTheme(theme);
   if (font !== s.fontId) s.setFont(font);
+  if (uiFont !== s.uiFontId) s.setUiFont(uiFont);
   if (fontSize !== s.fontSize) s.setFontSize(fontSize);
   if (dividerWidth !== s.dividerWidth) s.setDividerWidth(dividerWidth);
   if (dividerColor !== s.dividerColor) s.setDividerColor(dividerColor);

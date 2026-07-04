@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { DEFAULT_THEME_ID, DEFAULT_FONT_ID } from "../lib/themes";
+import { DEFAULT_THEME_ID, DEFAULT_FONT_ID, DEFAULT_UI_FONT_ID } from "../lib/themes";
 
 export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 28;
@@ -127,6 +127,8 @@ function newProviderId(): string {
 interface SettingsState {
   themeId: string;
   fontId: string;
+  /** interface (app-chrome) font id — see UI_FONTS in themes.ts */
+  uiFontId: string;
   fontSize: number;
   dividerWidth: number;
   dividerColor: string;
@@ -157,6 +159,8 @@ interface SettingsState {
 
   setTheme: (id: string) => void;
   setFont: (id: string) => void;
+  /** set the interface (app-chrome) font */
+  setUiFont: (id: string) => void;
   setFontSize: (px: number) => void;
   setDividerWidth: (px: number) => void;
   setDividerColor: (color: string) => void;
@@ -183,6 +187,7 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       themeId: DEFAULT_THEME_ID,
       fontId: DEFAULT_FONT_ID,
+      uiFontId: DEFAULT_UI_FONT_ID,
       fontSize: 14,
       dividerWidth: DEFAULT_DIVIDER_WIDTH,
       dividerColor: DEFAULT_DIVIDER_COLOR,
@@ -200,6 +205,7 @@ export const useSettingsStore = create<SettingsState>()(
 
       setTheme: (id) => set({ themeId: id }),
       setFont: (id) => set({ fontId: id }),
+      setUiFont: (id) => set({ uiFontId: id }),
       setFontSize: (px) =>
         set({
           fontSize: Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, px)),
@@ -269,9 +275,11 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 5,
+    { name: "yterminal-settings", version: 6,
       // v4→v5: providers gained a `kind` field. Backfill "openai" so existing
       // configs keep working (they were all OpenAI-compatible before).
+      // v5→v6: added a separate interface font (uiFontId). Backfill the "system"
+      // preset so pre-existing configs keep the platform default UI font.
       migrate: (persisted, version) => {
         const s = persisted as Partial<SettingsState> | undefined;
         if (s && version < 5 && Array.isArray(s.aiProviders)) {
@@ -279,6 +287,9 @@ export const useSettingsStore = create<SettingsState>()(
             ...p,
             kind: p.kind ?? ("openai" as AiProviderKind),
           }));
+        }
+        if (s && version < 6 && !s.uiFontId) {
+          s.uiFontId = DEFAULT_UI_FONT_ID;
         }
         return s as SettingsState;
       },
