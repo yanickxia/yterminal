@@ -128,6 +128,74 @@ function DiffView({ text, loading }: { text: string; loading: boolean }) {
 }
 
 /**
+ * Brand icon for an editor id. Returns a compact 16×16 SVG so the "Open with"
+ * menu reads as icon + name. Falls back to a neutral generic glyph for any id
+ * not in the catalog.
+ */
+function EditorIcon({ id }: { id: string }) {
+  const common = {
+    width: 16,
+    height: 16,
+    viewBox: "0 0 24 24",
+    "aria-hidden": true,
+    className: "git-openwith-icon",
+  } as const;
+  switch (id) {
+    case "vscode":
+      return (
+        <svg {...common}>
+          <path
+            fill="#0098FF"
+            d="M17.6 2.3 10.3 9 5.9 5.7 4 6.6l3.4 3.9L4 14.4l1.9.9 4.4-3.3 7.3 6.7L21 17V4.7L17.6 2.3ZM17.7 6.9v8.6l-5.4-4.3 5.4-4.3Z"
+          />
+        </svg>
+      );
+    case "cursor":
+      return (
+        <svg {...common}>
+          <path fill="#9CA3AF" d="M4 3v18l7-6 3 6 3-1.4-2.9-5.8H21L4 3Z" />
+        </svg>
+      );
+    case "zed":
+      return (
+        <svg {...common}>
+          <path
+            fill="#0E7C66"
+            d="M3 3h18v6h-2V5H8.4l10.6 8.6V21H3v-6h2v4h10.6L5 10.4V3Z"
+          />
+        </svg>
+      );
+    case "sublime":
+      return (
+        <svg {...common}>
+          <path fill="#FF9800" d="M20 4 6 8.3v3.4L18 8v3.9L6 15.6V19l14-4.3v-3.4L8 15v-3.9L20 7.4V4Z" />
+        </svg>
+      );
+    case "idea":
+      return (
+        <svg {...common}>
+          <path fill="#FE315D" d="M3 3h18v18H3V3Zm2.5 13.5h6V18h-6v-1.5ZM6 6v9l2.2-.8V7.6l1.6-.4V6H6Zm7 0v2h1.5v6H13v2h5v-2h-1.5V8H18V6h-5Z" />
+        </svg>
+      );
+    case "webstorm":
+      return (
+        <svg {...common}>
+          <path fill="#07C3F2" d="M3 3h18v18H3V3Zm2.5 13.5h6V18h-6v-1.5ZM5.5 7l1.4 5 1.2-3.6L9.3 12l1.4-5H9.2l-.7 3-1-3H6.2l-1 3-.7-3H3.2L5.5 7Z" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...common}>
+          <path
+            fill="currentColor"
+            d="M4 5h16v14H4V5Zm2 2v10h12V7H6Zm2 2h5v2H8V9Zm0 4h8v2H8v-2Z"
+          />
+        </svg>
+      );
+  }
+}
+
+/**
  * "Open with" dropdown: lists external editors detected on the machine and
  * launches the given `dir` (the repo root) in the chosen one. Renders nothing
  * when no editors are installed. The editor list is fetched once on mount and
@@ -185,7 +253,8 @@ function OpenWithMenu({ dir }: { dir: string }) {
                 void openInEditor(e.id, dir);
               }}
             >
-              {e.label}
+              <EditorIcon id={e.id} />
+              <span className="git-openwith-label">{e.label}</span>
             </button>
           ))}
         </div>

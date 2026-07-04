@@ -1747,6 +1747,9 @@ body {
   flex-direction: column;
 }
 .git-openwith-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: none;
   background: transparent;
   color: var(--fg);
@@ -1759,6 +1762,14 @@ body {
 }
 .git-openwith-item:hover {
   background: var(--bg-light);
+}
+.git-openwith-icon {
+  flex: 0 0 auto;
+  display: block;
+}
+.git-openwith-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
 }
 
 .git-sidebar-empty {
