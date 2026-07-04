@@ -1796,33 +1796,51 @@ body {
 
 .git-diff {
   margin: 2px 6px 6px 24px;
-  padding: 6px 8px;
+  padding: 4px 0;
   border-radius: 6px;
   background: var(--bg-dark, rgba(0, 0, 0, 0.2));
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
-  line-height: 1.45;
-  white-space: pre;
+  line-height: 1.5;
   overflow-x: auto;
   max-height: 320px;
   overflow-y: auto;
 }
-.git-diff > div {
-  min-height: 1em;
+/* Each diff line: a fixed line-number gutter + a full-width code column, so the
+   add/del row background spans the whole width like an IDE gutter view. */
+.git-diff-row {
+  display: flex;
+  align-items: flex-start;
+  min-height: 1.5em;
+}
+.git-diff-gutter {
+  flex: 0 0 auto;
+  width: 34px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--fg-dim);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.git-diff-code {
+  flex: 1 1 auto;
+  padding-right: 8px;
+  white-space: pre;
 }
 .git-diff-add {
   color: #9ece6a;
-  background: rgba(158, 206, 106, 0.1);
+  background: rgba(158, 206, 106, 0.12);
 }
 .git-diff-del {
   color: #f7768e;
-  background: rgba(247, 118, 142, 0.1);
+  background: rgba(247, 118, 142, 0.12);
 }
 .git-diff-hunk {
   color: #7aa2f7;
+  background: rgba(122, 162, 247, 0.08);
 }
-.git-diff-meta {
-  color: var(--fg-dim);
+.git-diff-hunk .git-diff-code {
+  color: #7aa2f7;
 }
 .git-diff-ctx {
   color: var(--fg);

@@ -24,36 +24,98 @@ function badge(f: GitFile): { char: string; kind: string } {
   return { char, kind };
 }
 
-/** Classify a unified-diff line for coloring. */
-function diffLineClass(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---")) return "git-diff-meta";
-  if (line.startsWith("@@")) return "git-diff-hunk";
-  if (
+// A single rendered diff row. `oldNo`/`newNo` populate the gutter (null =
+// blank, e.g. an added line has no old-side number). `hunk` rows span the full
+// width with no gutter number; the surrounding file header is dropped entirely.
+type DiffRow = {
+  kind: "add" | "del" | "ctx" | "hunk";
+  oldNo: number | null;
+  newNo: number | null;
+  text: string;
+};
+
+/** Is this a unified-diff file-header line we want to hide (IDE-style)? */
+function isHeaderLine(line: string): boolean {
+  return (
     line.startsWith("diff ") ||
     line.startsWith("index ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ") ||
     line.startsWith("new file") ||
     line.startsWith("deleted file") ||
+    line.startsWith("old mode") ||
+    line.startsWith("new mode") ||
     line.startsWith("rename ") ||
-    line.startsWith("similarity ")
-  )
-    return "git-diff-meta";
-  if (line.startsWith("+")) return "git-diff-add";
-  if (line.startsWith("-")) return "git-diff-del";
-  return "git-diff-ctx";
+    line.startsWith("copy ") ||
+    line.startsWith("similarity ") ||
+    line.startsWith("dissimilarity ") ||
+    line.startsWith("\\ No newline")
+  );
 }
 
-/** Render a unified diff as colorized rows. */
+/**
+ * Parse a unified diff into gutter-numbered rows, dropping the file header and
+ * tracking old/new line numbers off each `@@ -a,b +c,d @@` hunk marker.
+ */
+function parseDiff(text: string): DiffRow[] {
+  const rows: DiffRow[] = [];
+  let oldNo = 0;
+  let newNo = 0;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("@@")) {
+      const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (m) {
+        oldNo = parseInt(m[1], 10);
+        newNo = parseInt(m[2], 10);
+      }
+      rows.push({ kind: "hunk", oldNo: null, newNo: null, text: line });
+      continue;
+    }
+    if (isHeaderLine(line)) continue;
+    if (line.startsWith("+")) {
+      rows.push({ kind: "add", oldNo: null, newNo: newNo++, text: line.slice(1) });
+    } else if (line.startsWith("-")) {
+      rows.push({ kind: "del", oldNo: oldNo++, newNo: null, text: line.slice(1) });
+    } else {
+      // Context line (leading space) or a trailing empty line.
+      const body = line.startsWith(" ") ? line.slice(1) : line;
+      rows.push({ kind: "ctx", oldNo: oldNo++, newNo: newNo++, text: body });
+    }
+  }
+  // Drop lone trailing empty context rows produced by the final newline.
+  while (
+    rows.length &&
+    rows[rows.length - 1].kind === "ctx" &&
+    rows[rows.length - 1].text === ""
+  ) {
+    rows.pop();
+  }
+  return rows;
+}
+
+/** Render a unified diff as IDE-style rows with a line-number gutter. */
 function DiffView({ text, loading }: { text: string; loading: boolean }) {
   if (loading) return <div className="git-diff-empty">Loading diff…</div>;
   if (!text.trim()) return <div className="git-diff-empty">No diff.</div>;
+  const rows = parseDiff(text);
   return (
-    <pre className="git-diff">
-      {text.split("\n").map((line, i) => (
-        <div key={i} className={diffLineClass(line)}>
-          {line || " "}
-        </div>
-      ))}
-    </pre>
+    <div className="git-diff">
+      {rows.map((r, i) =>
+        r.kind === "hunk" ? (
+          <div key={i} className="git-diff-row git-diff-hunk">
+            <span className="git-diff-gutter" aria-hidden="true" />
+            <span className="git-diff-code">{r.text}</span>
+          </div>
+        ) : (
+          <div key={i} className={`git-diff-row git-diff-${r.kind}`}>
+            <span className="git-diff-gutter" aria-hidden="true">
+              {r.newNo ?? r.oldNo ?? ""}
+            </span>
+            <span className="git-diff-code">{r.text || " "}</span>
+          </div>
+        ),
+      )}
+    </div>
   );
 }
 
