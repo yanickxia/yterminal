@@ -234,11 +234,30 @@ function OpenWithMenu({ dir }: { dir: string }) {
     <div className="git-openwith" ref={wrapRef}>
       <button
         type="button"
-        className="link-btn"
+        className={`git-openwith-trigger${open ? " git-openwith-trigger-open" : ""}`}
         onClick={() => setOpen((v) => !v)}
         title="Open this repository in an external editor"
       >
-        open with ▾
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          className="git-openwith-trigger-icon"
+        >
+          <path
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M14 4h5a1 1 0 0 1 1 1v5M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"
+          />
+        </svg>
+        <span>Open with</span>
+        <span className="git-openwith-caret" aria-hidden="true">
+          ▾
+        </span>
       </button>
       {open && (
         <div className="git-openwith-menu" role="menu">
