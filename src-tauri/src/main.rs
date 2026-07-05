@@ -1115,6 +1115,18 @@ const EDITORS: &[(&str, &str, &[&str], &str)] = &[
         &["/opt/homebrew/bin/webstorm", "/usr/local/bin/webstorm"],
         "WebStorm",
     ),
+    (
+        "trae",
+        "Trae",
+        &["/opt/homebrew/bin/trae", "/usr/local/bin/trae"],
+        "Trae",
+    ),
+    (
+        "trae-cn",
+        "Trae CN",
+        &["/opt/homebrew/bin/trae-cn", "/usr/local/bin/trae-cn"],
+        "Trae CN",
+    ),
 ];
 
 /// First existing CLI path for an editor entry, if any.
