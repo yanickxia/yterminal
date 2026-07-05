@@ -17,13 +17,23 @@ export async function paneProcessTree(pid: number): Promise<ProcInfo[]> {
   }
 }
 
-/** Resolve the current on-disk session id for an agent in a given cwd. */
+/**
+ * Resolve the current on-disk session id for an agent in a given cwd. `pid` is
+ * the detected agent process so the backend can pin the exact session file it
+ * has open (multiple agents sharing one cwd each resolve to their own id);
+ * pass 0 when unknown.
+ */
 export async function agentSessionId(
   kind: AgentKind,
-  cwd: string
+  cwd: string,
+  pid: number
 ): Promise<string | null> {
   try {
-    const id = await invoke<string | null>("agent_session_id", { kind, cwd });
+    const id = await invoke<string | null>("agent_session_id", {
+      kind,
+      cwd,
+      pid,
+    });
     return id && id.trim() ? id : null;
   } catch {
     return null;
