@@ -451,12 +451,15 @@ fn process_env(pid: u32) -> Vec<(String, String)> {
 }
 
 /// Resolve the current on-disk session id for `kind` ("claude" | "codex" |
-/// "opencode"), bound to `cwd` where the agent needs it (Claude). Returns the
-/// id string, or `None` if no session store is found.
+/// "opencode"), bound to `cwd` where the agent needs it (Claude). `pid` is the
+/// detected agent process, used to pin the *exact* session file that process
+/// is writing (so multiple agents sharing one cwd each resume their own
+/// session); pass 0 when unknown. Returns the id string, or `None` if no
+/// session store is found.
 #[tauri::command]
-fn agent_session_id(kind: String, cwd: String) -> Option<String> {
+fn agent_session_id(kind: String, cwd: String, pid: u32) -> Option<String> {
     match kind.as_str() {
-        "claude" => claude_session_id(&cwd),
+        "claude" => claude_session_id(&cwd, pid),
         "codex" => codex_session_id(),
         "opencode" => opencode_session_id(&cwd),
         _ => None,
@@ -538,19 +541,111 @@ fn claude_escape_cwd(cwd: &str) -> String {
     out
 }
 
-/// Claude: newest `*.jsonl` in `~/.claude/projects/<escaped-cwd>/`; the session
-/// id is the file stem (a UUID). We trust the stem here — reading the last
-/// JSONL line for the `sessionId` field is a future refinement.
-fn claude_session_id(cwd: &str) -> Option<String> {
+/// Claude stores every session for a given cwd as a separate `<uuid>.jsonl`
+/// under `~/.claude/projects/<escaped-cwd>/`. To resume the *right* one when
+/// several agents share a cwd (or old sessions linger), we pin the file the
+/// detected process actually holds open:
+///
+///   1. If `pid` is live, inspect its open files (Linux `/proc/<pid>/fd`,
+///      macOS `lsof`) and take the `.jsonl` inside this project dir — that's
+///      the session this exact process is writing.
+///   2. Otherwise (pid unknown / no matching fd), fall back to the newest
+///      `.jsonl` by mtime, the historic behavior.
+///
+/// The id is the file stem, but we cross-check it against the `sessionId`
+/// recorded on the file's last JSONL line and prefer that when present — the
+/// stem can drift from the in-file id if Claude ever renames on fork.
+fn claude_session_id(cwd: &str, pid: u32) -> Option<String> {
     let home = home_dir()?;
     let dir = home
         .join(".claude")
         .join("projects")
         .join(claude_escape_cwd(cwd));
-    let newest = newest_file_in(&dir, |n| n.ends_with(".jsonl"))?;
-    newest
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
+
+    let path = claude_session_file_for_pid(&dir, pid)
+        .or_else(|| newest_file_in(&dir, |n| n.ends_with(".jsonl")))?;
+
+    // Prefer the in-file sessionId (authoritative); fall back to the stem.
+    session_id_from_jsonl(&path)
+        .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+}
+
+/// Among the files `pid` has open, return the one that is a `.jsonl` inside
+/// `dir` (Claude's project session store). `None` when pid is 0, the process
+/// is gone, or it holds no matching file.
+fn claude_session_file_for_pid(dir: &std::path::Path, pid: u32) -> Option<std::path::PathBuf> {
+    if pid == 0 {
+        return None;
+    }
+    for open in process_open_files(pid) {
+        if open.starts_with(dir) && open.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            return Some(open);
+        }
+    }
+    None
+}
+
+/// The absolute paths of regular files a process currently has open.
+///
+/// Linux: resolve each symlink under `/proc/<pid>/fd`.
+/// macOS: `lsof -p <pid> -Fn` and take the `n`-prefixed name lines.
+/// Other: empty.
+fn process_open_files(pid: u32) -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut out = Vec::new();
+        let fd_dir = format!("/proc/{pid}/fd");
+        if let Ok(rd) = std::fs::read_dir(&fd_dir) {
+            for entry in rd.flatten() {
+                if let Ok(target) = std::fs::read_link(entry.path()) {
+                    out.push(target);
+                }
+            }
+        }
+        out
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = match std::process::Command::new("/usr/sbin/lsof")
+            .args(["-p", &pid.to_string(), "-Fn"])
+            .output()
+        {
+            Ok(o) if o.status.success() => o.stdout,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| l.strip_prefix('n'))
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        Vec::new()
+    }
+}
+
+/// Read the `sessionId` field off the last non-empty JSONL line of `path`.
+/// Claude records it on every event line, so the tail is authoritative even
+/// if the filename ever diverges. `None` if the file is unreadable or no line
+/// carries a `sessionId`.
+fn session_id_from_jsonl(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(id) = v.get("sessionId").and_then(|s| s.as_str()) {
+                if !id.is_empty() {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Codex: newest `rollout-*.jsonl` under `$CODEX_HOME`/`~/.codex/sessions`; the
@@ -2103,6 +2198,80 @@ mod ime_tests {
     fn cache_without_native_or_xim_is_left_alone() {
         let bare = "\"im-cedilla.so\"\n\"cedilla\" \"Cedilla\" \"gtk30\" \"\" \"\"\n";
         assert_eq!(plan_ime_module("fcitx", Some(bare)), ImePlan::LeaveAlone);
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::{claude_escape_cwd, claude_session_file_for_pid, session_id_from_jsonl};
+    use std::io::Write;
+
+    /// Write `content` to a fresh temp file with the given `.jsonl` stem and
+    /// return its path. Uses a per-call unique dir so tests don't collide.
+    fn write_temp(dir: &std::path::Path, stem: &str, content: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{stem}.jsonl"));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("yt-sess-{tag}-{nanos}"))
+    }
+
+    #[test]
+    fn escape_maps_non_alnum_to_dash() {
+        assert_eq!(claude_escape_cwd("/home/me/app"), "-home-me-app");
+        // A leading dot and a dot-dir both collapse to single dashes.
+        assert_eq!(claude_escape_cwd("/a/.session/x"), "-a--session-x");
+    }
+
+    #[test]
+    fn reads_session_id_off_last_line() {
+        let dir = unique_dir("lastline");
+        let uuid = "7f800878-78b9-420c-bfe0-47f9cbe2ed60";
+        let content = format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{uuid}\"}}\n\
+             {{\"type\":\"assistant\",\"sessionId\":\"{uuid}\"}}\n"
+        );
+        let path = write_temp(&dir, uuid, &content);
+        assert_eq!(session_id_from_jsonl(&path).as_deref(), Some(uuid));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn last_line_id_wins_over_stem_when_they_differ() {
+        // Stem is one uuid, but the file records a different sessionId — the
+        // in-file id is authoritative, so we must return it, not the stem.
+        let dir = unique_dir("mismatch");
+        let stem = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let real = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let path = write_temp(&dir, stem, &format!("{{\"sessionId\":\"{real}\"}}\n"));
+        assert_eq!(session_id_from_jsonl(&path).as_deref(), Some(real));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn session_id_none_when_no_field() {
+        let dir = unique_dir("nofield");
+        let path = write_temp(&dir, "x", "{\"type\":\"meta\"}\n\nnot json\n");
+        assert_eq!(session_id_from_jsonl(&path), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pid_zero_never_matches_a_file() {
+        let dir = unique_dir("pidzero");
+        write_temp(&dir, "abc", "{}\n");
+        // pid 0 is the "unknown" sentinel: no fd inspection, always None so the
+        // caller falls back to newest-mtime.
+        assert_eq!(claude_session_file_for_pid(&dir, 0), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

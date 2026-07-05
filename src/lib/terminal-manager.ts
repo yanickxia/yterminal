@@ -1260,7 +1260,10 @@ export async function snapshotAllAgents() {
         const cwd =
           (await getSessionCwd(paneId)) ?? located.leaf.cwd ?? s.shellCwd;
         if (!cwd) return;
-        const sessionId = await agentSessionId(detected.kind, cwd);
+        // Pass the detected agent pid so the backend pins the exact session
+        // file THIS process holds open — several agents sharing one cwd each
+        // resolve to their own id, instead of all racing to the newest file.
+        const sessionId = await agentSessionId(detected.kind, cwd, detected.pid);
         if (!sessionId) return;
 
         // Prefer the literal token the user typed (so an alias survives).
