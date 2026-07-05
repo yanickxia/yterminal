@@ -183,6 +183,16 @@ function EditorIcon({ id }: { id: string }) {
           <path fill="#07C3F2" d="M3 3h18v18H3V3Zm2.5 13.5h6V18h-6v-1.5ZM5.5 7l1.4 5 1.2-3.6L9.3 12l1.4-5H9.2l-.7 3-1-3H6.2l-1 3-.7-3H3.2L5.5 7Z" />
         </svg>
       );
+    case "trae":
+    case "trae-cn":
+      return (
+        <svg {...common}>
+          <path
+            fill="#EE4D2D"
+            d="M12 2 3 6.5v11L12 22l9-4.5v-11L12 2Zm5 13.9-5 2.5-5-2.5V8.1l5-2.5 5 2.5v7.8ZM9 9.4v5.2l3 1.5 3-1.5V9.4l-3-1.5-3 1.5Z"
+          />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
