@@ -22,6 +22,7 @@ import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
 import { shouldSuppressNativePaste } from "./paste-suppress";
+import { shouldSuppressContextMenu } from "./context-menu-suppress";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -189,6 +190,15 @@ interface Session {
   pasteViaShortcutAt?: number;
   /** Cleanup for the native-paste de-dupe listener. */
   pasteDedupeCleanup?: () => void;
+  /**
+   * When a modified Enter (Ctrl/Cmd/Alt/Shift+Enter) is handled we emit a CSI-u
+   * sequence (see enter-key.ts). On macOS, Ctrl is the "secondary click"
+   * modifier, so that same keydown ALSO makes WKWebView dispatch a
+   * `contextmenu` event — popping the Copy/Paste menu unexpectedly. We stamp
+   * this timestamp and swallow a `contextmenu` arriving right after it. See
+   * context-menu-suppress.ts.
+   */
+  modifiedEnterAt?: number;
 }
 
 interface XtermCoreInternals {
@@ -596,6 +606,11 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     }
     if (e.key !== "Enter") return true;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+      // Stamp the moment so the spurious `contextmenu` macOS WKWebView fires
+      // for this same Ctrl-modified keydown can be recognized and swallowed
+      // (Ctrl is the platform "secondary click" modifier). See
+      // context-menu-suppress.ts / PaneTerminal.tsx.
+      if (s) s.modifiedEnterAt = Date.now();
       pty.write(encodeEnter(e));
       return false; // skip xterm's default \r dispatch
     }
@@ -937,6 +952,20 @@ export function scrollSessionToBottom(paneId: string): void {
 export function hasSelection(tabId: string): boolean {
   const s = sessions.get(tabId);
   return !!s && !s.disposed && s.term.hasSelection();
+}
+
+/**
+ * Whether a `contextmenu` event for this pane should be ignored because it's
+ * the spurious one macOS WKWebView fires alongside a Ctrl-modified Enter (which
+ * we turn into a CSI-u sequence). Consumes the timestamp so a genuine
+ * right-click immediately after is still honored.
+ */
+export function shouldIgnoreContextMenu(tabId: string): boolean {
+  const s = sessions.get(tabId);
+  if (!s) return false;
+  const ignore = shouldSuppressContextMenu(s.modifiedEnterAt, Date.now());
+  if (ignore) s.modifiedEnterAt = undefined;
+  return ignore;
 }
 
 /**

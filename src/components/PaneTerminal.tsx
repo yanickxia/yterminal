@@ -9,6 +9,7 @@ import {
   copySelection,
   pasteInto,
   hasSelection,
+  shouldIgnoreContextMenu,
 } from "../lib/terminal-manager";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
@@ -87,6 +88,10 @@ export function PaneTerminal({
       onMouseDown={onFocus}
       onContextMenu={(e) => {
         e.preventDefault();
+        // Suppress the spurious contextmenu macOS WKWebView fires alongside a
+        // Ctrl-modified Enter (Ctrl is the platform secondary-click modifier);
+        // otherwise Ctrl+Enter would pop this menu on every keypress.
+        if (shouldIgnoreContextMenu(pane.id)) return;
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
