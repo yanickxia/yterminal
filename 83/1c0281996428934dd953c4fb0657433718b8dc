@@ -1,0 +1,23 @@
+src/lib/file-link-classify.test.ts
+  s_c97d0856c2151f::t_77ab388d10ff2d 167-180
+src/lib/file-link-classify.ts
+  s_c97d0856c2151f::t_9d5b6b16cd1182 224-233,255,261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "831c0281996428934dd953c4fb0657433718b8dc",
+  "prompts": {},
+  "sessions": {
+    "s_c97d0856c2151f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d796b41-4d1a-49a5-b6be-696cd9c7fffa",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
