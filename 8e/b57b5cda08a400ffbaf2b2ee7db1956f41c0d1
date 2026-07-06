@@ -1,0 +1,27 @@
+src/components/TabBar.tsx
+  s_c97d0856c2151f::t_b18e84dcd1b756 9,267-270,273-274,280
+src/lib/tab-title.test.ts
+  s_c97d0856c2151f::t_4b7ebc07531eea 2,44-55
+src/lib/tab-title.ts
+  s_c97d0856c2151f::t_32c07f77139bcf 5-16
+src/styles.css
+  s_c97d0856c2151f::t_968d2d9bccccca 323-325,327,330-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "8eb57b5cda08a400ffbaf2b2ee7db1956f41c0d1",
+  "prompts": {},
+  "sessions": {
+    "s_c97d0856c2151f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d796b41-4d1a-49a5-b6be-696cd9c7fffa",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
