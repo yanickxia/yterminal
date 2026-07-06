@@ -1,0 +1,27 @@
+package.json
+  s_c97d0856c2151f::t_2ca87ebba2af18 3
+src-tauri/Cargo.lock
+  s_c97d0856c2151f::t_c16ee7f2428191 6050
+src-tauri/Cargo.toml
+  s_c97d0856c2151f::t_43f831547b3fc1 3
+src-tauri/tauri.conf.json
+  s_c97d0856c2151f::t_13ec68dc23c3a2 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "8afb88557919967d34ae815d73e1135a4e265156",
+  "prompts": {},
+  "sessions": {
+    "s_c97d0856c2151f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d796b41-4d1a-49a5-b6be-696cd9c7fffa",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
