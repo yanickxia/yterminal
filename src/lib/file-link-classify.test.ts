@@ -164,6 +164,20 @@ describe("findPathSpans", () => {
     expect(findPathSpans("visit https://example.com today")).toEqual([]);
     expect(findPathSpans("just some plain words")).toEqual([]);
   });
+  it("trims a trailing CJK full-stop hugging a path in Chinese prose", () => {
+    const line = "Spec 已写入 docs/specs/2026-07-06-tce-file-logging-design.md。";
+    const spans = findPathSpans(line);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].token).toBe("docs/specs/2026-07-06-tce-file-logging-design.md");
+    expect(line.slice(spans[0].start, spans[0].end)).toBe(
+      "docs/specs/2026-07-06-tce-file-logging-design.md"
+    );
+  });
+  it("trims CJK full-width brackets wrapping a path token", () => {
+    const spans = findPathSpans("见 （src/app.ts） 里");
+    expect(spans).toHaveLength(1);
+    expect(spans[0].token).toBe("src/app.ts");
+  });
   it("finds multiple paths on one line", () => {
     const spans = findPathSpans("a.ts and b.md");
     expect(spans.map((s) => s.token)).toEqual(["a.ts", "b.md"]);

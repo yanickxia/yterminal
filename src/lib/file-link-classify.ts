@@ -222,6 +222,16 @@ export interface PathSpan {
 }
 
 /**
+ * Trailing punctuation that commonly hugs a path in prose and must be trimmed:
+ * ASCII sentence punctuation plus the CJK full-width equivalents (。，、；：！？
+ * and full-width brackets/quotes) — Chinese/Japanese prose puts these flush
+ * against a path with no space, so a `\S+` chunk would otherwise swallow them
+ * and the file probe would fail on the stray trailing glyph.
+ */
+const TRAIL_PUNCT = "\"'`)]}>,.;:。，、；：！？）】》」』’”";
+const LEAD_PUNCT = "\"'`([{<（【《「『‘“";
+
+/**
  * Scan a single line of terminal text for path-like tokens, returning their
  * character spans. Pure (no IO): the caller probes existence before turning a
  * span into a real link. Tokens are split on whitespace; surrounding quotes,
@@ -241,21 +251,19 @@ export function findPathSpans(line: string): PathSpan[] {
     // quotes, parens/brackets, and trailing sentence punctuation. Track how
     // much we trimmed from the left so offsets stay accurate.
     let lead = 0;
-    let trail = 0;
     let core = chunk;
-    while (core.length && "\"'`([{<".includes(core[0])) {
+    while (core.length && LEAD_PUNCT.includes(core[0])) {
       core = core.slice(1);
       lead++;
     }
     while (
       core.length &&
-      "\"'`)]}>,.;:".includes(core[core.length - 1])
+      TRAIL_PUNCT.includes(core[core.length - 1])
     ) {
       // keep a `:digits` suffix (line/col) — only strip trailing punctuation
       // that isn't part of a :line:col reference.
       if (core[core.length - 1] === ":" && /:\d/.test(core)) break;
       core = core.slice(0, -1);
-      trail++;
     }
     if (!core) continue;
     if (isWebUrl(core)) continue; // URLs handled by the WebLinks addon
