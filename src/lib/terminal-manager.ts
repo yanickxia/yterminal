@@ -15,6 +15,7 @@ import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
+import { encodeEnter } from "./enter-key";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
@@ -571,9 +572,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
 
   // Multi-line input bridge for TUIs (Claude Code, Ink-based prompts, fish/zsh
-  // continuation, etc.): plain Enter sends CR (submit). Cmd/Ctrl/Shift+Enter
-  // sends ESC+CR — the canonical Alt+Enter sequence those apps interpret as
-  // "newline within input" rather than submit.
+  // continuation, etc.) AND multiplexer key passthrough: plain Enter sends CR
+  // (submit). Any modified Enter (Cmd/Ctrl/Alt/Shift) is emitted as its CSI-u
+  // ("fixterms") sequence carrying the exact modifier bitmask, so tmux and
+  // modern TUIs can tell e.g. Ctrl+Shift+Enter from Shift+Enter and bind them
+  // independently — the old ESC+CR collapse made every combo look like
+  // Alt+Enter, which a multiplexer just rendered as a newline.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
     // Clipboard shortcuts (Ctrl+Shift+C/V, or Cmd+C/V on mac). Bare Ctrl+C/V
@@ -591,8 +595,8 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       return false;
     }
     if (e.key !== "Enter") return true;
-    if (e.metaKey || e.ctrlKey || e.shiftKey) {
-      pty.write("\x1b\r");
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+      pty.write(encodeEnter(e));
       return false; // skip xterm's default \r dispatch
     }
     return true;
