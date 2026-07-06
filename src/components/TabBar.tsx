@@ -6,6 +6,7 @@ import { collectLeafIds } from "../lib/pane-tree";
 import { useViewerStore } from "../stores/viewer-store";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { defaultTabIcon } from "../lib/tab-title";
 
 export function TabBar({ workspace }: { workspace: Workspace }) {
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
@@ -263,16 +264,20 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
                 >
                   {t.icon}
                 </button>
+              ) : t.file ? (
+                <span className="tab-icon tab-icon-type" title="File">
+                  {defaultTabIcon(t)}
+                </span>
               ) : (
                 <button
-                  className="tab-icon tab-icon-add"
-                  title="Right-click to set icon"
+                  className="tab-icon tab-icon-type"
+                  title="Terminal — right-click to set icon"
                   onContextMenu={(e) => {
                     e.preventDefault();
                     toggleIconPicker(t.id, e);
                   }}
                 >
-                  ☺
+                  {defaultTabIcon(t)}
                 </button>
               )}
               <span className="tab-name">{t.name}</span>
