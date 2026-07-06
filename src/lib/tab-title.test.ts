@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeTabTitle, MAX_TAB_TITLE_LEN } from "./tab-title";
+import { sanitizeTabTitle, defaultTabIcon, MAX_TAB_TITLE_LEN } from "./tab-title";
 
 describe("sanitizeTabTitle", () => {
   it("keeps a plain title", () => {
@@ -39,5 +39,17 @@ describe("sanitizeTabTitle", () => {
 
   it("is defensive about non-string input", () => {
     expect(sanitizeTabTitle(undefined as unknown as string)).toBe("");
+  });
+});
+
+describe("defaultTabIcon", () => {
+  it("marks a terminal tab with a prompt glyph", () => {
+    expect(defaultTabIcon({})).toBe(">_");
+  });
+
+  it("marks a file tab with a document glyph", () => {
+    expect(
+      defaultTabIcon({ file: { path: "/a.ts", language: "ts", markdown: false } })
+    ).toBe("📄");
   });
 });

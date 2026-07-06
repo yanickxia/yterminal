@@ -320,14 +320,15 @@ body {
   font-style: italic;
 }
 
-/* the "set icon" placeholder stays subtle until hovered */
-.tab-icon-add {
-  opacity: 0;
+/* default type marker (terminal ">_" / file "📄") stays subtly dimmed; a
+   terminal tab's marker brightens on hover to hint the right-click icon picker */
+.tab-icon-type {
   color: var(--fg-dim);
+  opacity: 0.7;
 }
 
-.tab:hover .tab-icon-add {
-  opacity: 0.6;
+.tab:hover button.tab-icon-type {
+  opacity: 1;
 }
 
 .tab-add {

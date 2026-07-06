@@ -2,6 +2,18 @@
 // they become a tab's auto display name. No React / no store so the terminal
 // manager and its unit test share one implementation.
 
+import type { Tab } from "./types";
+
+/**
+ * Default type marker shown before a tab's name when the user hasn't set a
+ * custom icon: a file tab (read-only viewer) vs. a terminal tab. Purely derived
+ * from the tab's type at render time — never persisted, so a user-set `icon`
+ * always wins over this.
+ */
+export function defaultTabIcon(tab: Pick<Tab, "file">): string {
+  return tab.file ? "📄" : ">_";
+}
+
 /** Longest auto title we keep; longer titles are truncated with an ellipsis. */
 export const MAX_TAB_TITLE_LEN = 40;
 
