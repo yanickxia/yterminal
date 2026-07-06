@@ -1,0 +1,25 @@
+src/lib/enter-key.test.ts
+  s_c97d0856c2151f::t_9b79475e432cf8 1-49
+src/lib/enter-key.ts
+  s_c97d0856c2151f::t_9af6dc32e4cb1b 1-43
+src/lib/terminal-manager.ts
+  s_c97d0856c2151f::t_ca7c6b1ea243ab 18,575-580,598-599
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "9bfd1ddd5a29ba83294435683a6cd013f9e74576",
+  "prompts": {},
+  "sessions": {
+    "s_c97d0856c2151f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d796b41-4d1a-49a5-b6be-696cd9c7fffa",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
