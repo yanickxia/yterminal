@@ -168,6 +168,14 @@ Coding agents ring the bell (BEL, `\x07`) when they pause for input or hit an er
 - **Roll-up + UI** — `lib/attention.ts` (`tabsNeedingAttention`, pure + unit-tested) maps waiting pane ids to owning tabs. Surfaced in the **workspace area** (`WorkspaceSidebar.tsx`): a "Waiting for you" jump list at the top (one chip per waiting tab), and any workspace row owning a waiting tab gets an amber pulsing pip (`.ws-attention-dot`; `.rail-attention-dot` collapsed). (No separate `AttentionBar` strip.)
 - **Acknowledgement** — attention clears when the user looks: `onFocusPane` clears on focus, an effect clears the active pane on any active-tab change, and clicking a chip clears its panes. Clicking a chip also **scrolls each pane in the target tab to bottom** (the prompt the agent blocks on) via `scrollSessionToBottom`, which pins `savedAtBottom` so a detached session lands at bottom on re-attach.
 
+### Workspace agent status bar (per-workspace agent roll-up)
+
+A slim strip under the terminal area summarizing the coding agents running in the **active** workspace (inspired by cmux's per-workspace agent status). Read-only over two live signals the app already maintains — no new backend/polling. Layered:
+
+- **Signals** — reuses `PaneLeaf.agent` (set by `snapshotAllAgents()`, ~15s; presence == an agent runs in that pane) and the attention `waiting` set (bell while unfocused == blocked on the operator, our equivalent of cmux's `needsInput`).
+- **Roll-up (pure)** — `lib/workspace-agents.ts` `workspaceAgentSummary(workspace, waiting)` (unit-tested) walks tabs → `collectLeaves(tab.root)` (added to `pane-tree.ts`) in workspace→tab→left-to-right order, skips file tabs, and emits one `WorkspaceAgentEntry {kind, command, tabId, tabName (customName wins), tabIcon, paneId, state}` per agent pane plus `{total, attention}`. A pane in `waiting` is flagged `"attention"`; otherwise `"running"`.
+- **UI** — `components/WorkspaceStatusBar.tsx` renders under `.terminal-area` in `App.tsx`. Shows an "Agents" count (+ "N waiting" when any need attention) and one chip per agent: a green pip when running, amber pulsing pip + border when waiting. Clicking a chip jumps to that tab/pane, clears the tab's attention, and scrolls the pane to bottom. Renders nothing when the workspace has zero agents (stays out of the way).
+
 ### Auto tab title (shell/agent OSC title → tab name)
 
 A tab the user hasn't renamed shows the title the shell/agent reports. `Tab.name` is auto-derived unless `customName` is set. Layered:
