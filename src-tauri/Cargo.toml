@@ -40,6 +40,14 @@ tokio = { version = "1", features = ["sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # StreamExt for iterating reqwest's byte stream while parsing SSE `data:` lines.
 futures-util = "0.3"
+# verify the minisign signature of a downloaded .deb before installing it as
+# root (the Tauri updater only handles AppImage on Linux, so the deb self-update
+# path is ours). Already a transitive dep via tauri-plugin-updater; pinned here
+# to use it directly. Tauri's `.sig` is a base64-wrapped minisign signature.
+minisign-verify = "0.2"
+# decode the base64-wrapped minisign public key / signature. Already transitive;
+# pinned here for the deb-updater verify path.
+base64 = "0.22"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

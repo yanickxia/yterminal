@@ -30,6 +30,14 @@ const fixtureRelease = {
       name: "yterminal_0.4.0_amd64.AppImage.sig",
       url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.AppImage.sig",
     },
+    {
+      name: "yterminal_0.4.0_amd64.deb",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.deb",
+    },
+    {
+      name: "yterminal_0.4.0_amd64.deb.sig",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.deb.sig",
+    },
   ],
 };
 
@@ -38,6 +46,7 @@ const fakeSigs = {
   "yterminal_universal.app.tar.gz.sig": "DARWIN_SIG",
   "yterminal_0.4.0_x64-setup.exe.sig": "WINDOWS_SIG",
   "yterminal_0.4.0_amd64.AppImage.sig": "LINUX_SIG",
+  "yterminal_0.4.0_amd64.deb.sig": "DEB_SIG",
 };
 
 const fetchSig = async (asset) => fakeSigs[asset.name];
@@ -53,6 +62,23 @@ describe("buildManifest", () => {
     expect(manifest.platforms["darwin-aarch64"].signature).toBe("DARWIN_SIG");
     expect(manifest.platforms["windows-x86_64"].url).toMatch(/x64-setup\.exe$/);
     expect(manifest.platforms["linux-x86_64"].url).toMatch(/\.AppImage$/);
+  });
+
+  it("includes a linux-deb entry with its own signature when the .deb is signed", async () => {
+    const manifest = await buildManifest(fixtureRelease, fetchSig);
+    expect(manifest["linux-deb"].signature).toBe("DEB_SIG");
+    expect(manifest["linux-deb"].url).toMatch(/\.deb$/);
+  });
+
+  it("omits linux-deb when the .deb has no sibling .sig", async () => {
+    const noDebSig = {
+      ...fixtureRelease,
+      assets: fixtureRelease.assets.filter(
+        (a) => a.name !== "yterminal_0.4.0_amd64.deb.sig"
+      ),
+    };
+    const manifest = await buildManifest(noDebSig, fetchSig);
+    expect(manifest["linux-deb"]).toBeUndefined();
   });
 
   it("throws when a platform asset is missing", async () => {

@@ -120,6 +120,28 @@ jobs:
         # manifest impossible to assemble downstream.
         run: npm run tauri:build -- ${{ matrix.args }}
 
+      - name: Sign the .deb for in-app updates (Linux only)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        # tauri build only signs the *updater* artifact formats (AppImage on
+        # Linux), so the .deb has no .sig. Our in-app deb updater downloads the
+        # .deb and installs it as root via pkexec, so it MUST verify a minisign
+        # signature first — we sign the .deb here with the same key, producing
+        # <name>.deb.sig that generate-latest-json.mjs folds into latest.json.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          deb="$(find src-tauri/target -type f -name '*.deb' -print -quit)"
+          if [ -z "$deb" ]; then
+            echo "::error::No .deb found to sign"
+            exit 1
+          fi
+          echo "Signing $deb"
+          npx @tauri-apps/cli signer sign "$deb"
+          test -f "$deb.sig" || { echo "::error::signer produced no $deb.sig"; exit 1; }
+
       - name: Upload bundle artifacts to release
         shell: bash
         env:
@@ -145,6 +167,7 @@ jobs:
             -name "*.AppImage" -o \
             -name "*.AppImage.sig" -o \
             -name "*.deb" -o \
+            -name "*.deb.sig" -o \
             -name "*.rpm" \
             \) -print0)
           echo "Uploaded $count artifacts ($sig_count .sig files)"

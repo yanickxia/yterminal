@@ -1995,6 +1995,196 @@ async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String>
     Ok(message)
 }
 
+// ----------------------------------------------------------------------------
+// deb self-update (Linux only).
+//
+// The Tauri updater only knows how to replace an AppImage on Linux — a .deb
+// install lives at a package-manager path and the updater's downloaded bytes
+// fail its `is_deb()` sniff ("invalid updater binary format"). So for a
+// deb-installed app we run our own path: download the .deb, VERIFY its minisign
+// signature against the same public key baked into tauri.conf.json, then install
+// it with `pkexec dpkg -i` (a polkit GUI auth prompt). Verification is
+// mandatory because we hand the file to root.
+
+/// Base64-wrapped minisign PUBLIC key — identical to `plugins.updater.pubkey`
+/// in tauri.conf.json. Public by nature (it only verifies), so embedding it is
+/// safe; keeping a copy here avoids parsing the bundled config at runtime.
+/// If the signing key is ever rotated, update BOTH places.
+const UPDATER_PUBKEY_B64: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyODMxRDk0NzU0MjRBOTEKUldTUlNrSjFsQjJEOHV4ZVNROHJVL1NTMTFIL0FJVk43YzRzYW1laGxyZlFydnFMc0kvZXF6WEoK";
+
+/// Which install flavor is running, so the frontend picks the right updater path.
+/// `appimage`/`deb`/`rpm` on Linux; `other` = macOS/Windows (Tauri updater
+/// handles those natively) or an unrecognized Linux layout.
+#[tauri::command]
+fn install_kind() -> String {
+    #[cfg(not(target_os = "linux"))]
+    {
+        "other".to_string()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // AppImage runtime sets APPIMAGE to the mounted image path.
+        if std::env::var_os("APPIMAGE").is_some() {
+            return "appimage".to_string();
+        }
+        // Otherwise ask dpkg whether our own binary is owned by a package.
+        if let Ok(exe) = std::env::current_exe() {
+            let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+            if let Ok(out) = std::process::Command::new("dpkg")
+                .arg("-S")
+                .arg(&exe)
+                .output()
+            {
+                if out.status.success() {
+                    return "deb".to_string();
+                }
+            }
+            // rpm-based systems: rpm -qf <exe> exits 0 when owned by a package.
+            if let Ok(out) = std::process::Command::new("rpm")
+                .arg("-qf")
+                .arg(&exe)
+                .output()
+            {
+                if out.status.success() {
+                    return "rpm".to_string();
+                }
+            }
+        }
+        "other".to_string()
+    }
+}
+
+/// Decode a base64 blob (minisign keys/sigs are stored base64-wrapped in the
+/// Tauri manifest). Pure — no IO — so the verify path is unit-testable.
+fn decode_b64(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
+        .map_err(|e| format!("base64 decode: {e}"))
+}
+
+/// Verify `data` against a base64-wrapped Tauri `.sig` using the embedded
+/// public key. Returns Ok(()) only on a valid signature. Pure (no IO).
+fn verify_minisign(data: &[u8], sig_b64: &str) -> Result<(), String> {
+    verify_minisign_with(data, sig_b64, UPDATER_PUBKEY_B64)
+}
+
+/// Same as `verify_minisign` but with an explicit base64 public key, so tests
+/// can exercise the decode/verify/tamper logic with a throwaway keypair (we
+/// don't hold the release private key that matches `UPDATER_PUBKEY_B64`).
+fn verify_minisign_with(data: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<(), String> {
+    let pk_pem = String::from_utf8(decode_b64(pubkey_b64)?)
+        .map_err(|e| format!("pubkey utf8: {e}"))?;
+    let sig_pem = String::from_utf8(decode_b64(sig_b64)?)
+        .map_err(|e| format!("signature utf8: {e}"))?;
+    let pk = minisign_verify::PublicKey::decode(pk_pem.trim())
+        .map_err(|e| format!("decode public key: {e}"))?;
+    let sig = minisign_verify::Signature::decode(sig_pem.trim())
+        .map_err(|e| format!("decode signature: {e}"))?;
+    pk.verify(data, &sig, false)
+        .map_err(|_| "signature verification failed".to_string())
+}
+
+/// Result of a deb self-update attempt. `installed` = pkexec ran dpkg to
+/// completion (the caller then prompts a restart). `downloaded_path` set with
+/// `installed:false` = pkexec was unavailable, so we left the verified .deb on
+/// disk for the user to install by hand.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebUpdateResult {
+    installed: bool,
+    downloaded_path: String,
+}
+
+/// Download the .deb from `url`, verify its `signature` (base64 Tauri `.sig`),
+/// and install it via `pkexec dpkg -i`. Errors out (WITHOUT installing) if the
+/// signature doesn't verify — the file is about to be handed to root.
+#[tauri::command]
+async fn install_deb_update(url: String, signature: String) -> Result<DebUpdateResult, String> {
+    logger::info("updater", &format!("install_deb_update url={url:?}"));
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("download deb: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download deb: HTTP {}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read deb body: {e}"))?;
+
+    // Verify BEFORE touching disk / root.
+    verify_minisign(&bytes, &signature)?;
+    logger::info("updater", "deb signature verified");
+
+    // Write to a predictable temp path.
+    let mut path = std::env::temp_dir();
+    path.push("yterminal-update.deb");
+    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    let path_str = path.to_string_lossy().to_string();
+
+    // pkexec pops a polkit auth dialog and runs dpkg as root. If pkexec is
+    // absent, leave the verified file for a manual `sudo dpkg -i`.
+    let pkexec = which_bin("pkexec");
+    let Some(pkexec) = pkexec else {
+        logger::warn("updater", "pkexec not found; leaving verified deb for manual install");
+        return Ok(DebUpdateResult {
+            installed: false,
+            downloaded_path: path_str,
+        });
+    };
+
+    let status = std::process::Command::new(pkexec)
+        .arg("dpkg")
+        .arg("-i")
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("run pkexec dpkg: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "dpkg install failed (exit {}). The verified package is at {path_str}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    logger::info("updater", "deb installed via pkexec dpkg -i");
+    Ok(DebUpdateResult {
+        installed: true,
+        downloaded_path: path_str,
+    })
+}
+
+/// First matching absolute path for a bare command name (PATH may be minimal
+/// when launched from a desktop/Dock), else None. Linux-only helper.
+#[cfg(target_os = "linux")]
+fn which_bin(name: &str) -> Option<std::path::PathBuf> {
+    for dir in ["/usr/bin", "/bin", "/usr/local/bin"] {
+        let p = std::path::Path::new(dir).join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // fall back to PATH resolution
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let p = std::path::Path::new(dir).join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+#[cfg(not(target_os = "linux"))]
+fn which_bin(_name: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Make CJK/complex-script input work in the AppImage by routing GTK through the
 /// bundled `xim` module.
 ///
@@ -2275,6 +2465,42 @@ mod session_id_tests {
     }
 }
 
+#[cfg(test)]
+mod deb_verify_tests {
+    use super::verify_minisign_with;
+
+    // Throwaway keypair (NOT the release key) generated with
+    // `tauri signer sign`, signing the bytes "hello yterminal deb update\n".
+    // These exercise the base64-unwrap + minisign verify + tamper-reject path.
+    const TEST_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzN0Q4QTkxNTU1MTVERjEKUldUeFhWRlZrWXA5RXpuWjB1SC9ObCtoMDE5L2JBT0QxZDZYalNpczhBRHBjRnRjeXgzNFRsYmwK";
+    const TEST_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUeFhWRlZrWXA5RTFjaWk1WnpCc3ZTMmttVmZBMjRxeFR3alVEM2tiUjJSRTlINHovdllPU0QzWlNEdi94UHpOMkVGT1V5MXNucUZuN2JjbWZMSTNKRW5DMkl6THAvd1E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDAyMjk1CWZpbGU6c2FtcGxlLmRlYgorcjlSSkVpTEg4NlJSemJuZ0ZMY3dWSTRLVC9NaVdYVW96NWNWUmIyQnZ3My9nTWhvZXJmUFgyTzNHZ0xrb2hhaGl3RGZaUWlkZVlGRE9rYjYyeFBCUT09Cg==";
+    const SIGNED_DATA: &[u8] = b"hello yterminal deb update\n";
+
+    #[test]
+    fn accepts_a_valid_signature() {
+        assert!(verify_minisign_with(SIGNED_DATA, TEST_SIG, TEST_PUBKEY).is_ok());
+    }
+
+    #[test]
+    fn rejects_tampered_data() {
+        let mut bad = SIGNED_DATA.to_vec();
+        bad.push(b'X');
+        assert!(verify_minisign_with(&bad, TEST_SIG, TEST_PUBKEY).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_key() {
+        // A syntactically valid but different key (the release pubkey) must not
+        // verify a signature made by the throwaway key.
+        assert!(verify_minisign_with(SIGNED_DATA, TEST_SIG, super::UPDATER_PUBKEY_B64).is_err());
+    }
+
+    #[test]
+    fn errors_on_garbage_base64() {
+        assert!(verify_minisign_with(SIGNED_DATA, "!!!not base64!!!", TEST_PUBKEY).is_err());
+    }
+}
+
 fn main() {
     logger::info(
         "main",
@@ -2310,6 +2536,8 @@ fn main() {
             ai_chat_stream,
             ai_chat_cancel,
             ai_chat_tools,
+            install_kind,
+            install_deb_update,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,

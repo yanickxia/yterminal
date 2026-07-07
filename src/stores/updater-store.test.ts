@@ -7,12 +7,18 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: vi.fn(),
 }));
+vi.mock("../lib/updater-deb", () => ({
+  installKind: vi.fn().mockResolvedValue("other"),
+  installDebUpdate: vi.fn(),
+}));
 
 import { check } from "@tauri-apps/plugin-updater";
+import { installKind, installDebUpdate } from "../lib/updater-deb";
 import { useUpdaterStore, __resetUpdaterForTests } from "./updater-store";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  (installKind as any).mockResolvedValue("other");
   // reset both store state AND the module-scope pendingUpdate handle
   __resetUpdaterForTests();
 });
@@ -65,5 +71,86 @@ describe("updater-store", () => {
     const { relaunch: rel } = await import("@tauri-apps/plugin-process");
     await useUpdaterStore.getState().relaunch();
     expect((rel as any).mock.calls.length).toBe(0);
+  });
+
+  it("resolves installKind on check", async () => {
+    (installKind as any).mockResolvedValue("deb");
+    (check as any).mockResolvedValue(null);
+    await useUpdaterStore.getState().check();
+    expect(useUpdaterStore.getState().installKind).toBe("deb");
+  });
+
+  it("deb startDownload: fetches latest.json, installs, → ready", async () => {
+    (installKind as any).mockResolvedValue("deb");
+    (check as any).mockResolvedValue({
+      version: "0.4.0",
+      body: "notes",
+      date: null,
+      downloadAndInstall: vi.fn(),
+    });
+    await useUpdaterStore.getState().check();
+    expect(useUpdaterStore.getState().installKind).toBe("deb");
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
+      }),
+    }) as any;
+    (installDebUpdate as any).mockResolvedValue({
+      installed: true,
+      downloadedPath: "/tmp/y.deb",
+    });
+
+    await useUpdaterStore.getState().startDownload();
+    expect(installDebUpdate).toHaveBeenCalledWith("https://x/y.deb", "SIG");
+    expect(useUpdaterStore.getState().state).toBe("ready");
+    expect(useUpdaterStore.getState().debManualPath).toBeNull();
+  });
+
+  it("deb startDownload: no pkexec → ready with manual path", async () => {
+    (installKind as any).mockResolvedValue("deb");
+    (check as any).mockResolvedValue({
+      version: "0.4.0",
+      body: "notes",
+      date: null,
+      downloadAndInstall: vi.fn(),
+    });
+    await useUpdaterStore.getState().check();
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
+      }),
+    }) as any;
+    (installDebUpdate as any).mockResolvedValue({
+      installed: false,
+      downloadedPath: "/tmp/y.deb",
+    });
+
+    await useUpdaterStore.getState().startDownload();
+    expect(useUpdaterStore.getState().state).toBe("ready");
+    expect(useUpdaterStore.getState().debManualPath).toBe("/tmp/y.deb");
+  });
+
+  it("deb startDownload: manifest without linux-deb → error", async () => {
+    (installKind as any).mockResolvedValue("deb");
+    (check as any).mockResolvedValue({
+      version: "0.4.0",
+      body: "notes",
+      date: null,
+      downloadAndInstall: vi.fn(),
+    });
+    await useUpdaterStore.getState().check();
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ platforms: {} }),
+    }) as any;
+
+    await useUpdaterStore.getState().startDownload();
+    expect(useUpdaterStore.getState().state).toBe("error");
+    expect(installDebUpdate).not.toHaveBeenCalled();
   });
 });
