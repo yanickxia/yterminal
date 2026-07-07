@@ -18,6 +18,16 @@ export function collectLeafIds(node: PaneTree, out: string[] = []): string[] {
   return out;
 }
 
+/** Collect all leaf nodes in left-to-right order (ids + cwd + agent). */
+export function collectLeaves(node: PaneTree, out: PaneLeaf[] = []): PaneLeaf[] {
+  if (node.type === "leaf") {
+    out.push(node);
+  } else {
+    for (const c of node.children) collectLeaves(c, out);
+  }
+  return out;
+}
+
 /** Find the leaf object by id. */
 export function findLeaf(node: PaneTree, id: string): PaneLeaf | null {
   if (node.type === "leaf") return node.id === id ? node : null;

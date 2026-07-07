@@ -19,6 +19,7 @@ import { UpdateDialog } from "./components/UpdateDialog";
 import { FileViewer } from "./components/FileViewer";
 import { AiSidebar } from "./components/AiSidebar";
 import { GitSidebar } from "./components/GitSidebar";
+import { WorkspaceStatusBar } from "./components/WorkspaceStatusBar";
 import { AppDivider } from "./components/AppDivider";
 import { useViewerStore } from "./stores/viewer-store";
 import { useAiStore } from "./stores/ai-store";
@@ -384,6 +385,7 @@ export default function App() {
                   />
                 )}
             </div>
+            <WorkspaceStatusBar />
           </>
         ) : (
           <div className="empty">No workspace.</div>
