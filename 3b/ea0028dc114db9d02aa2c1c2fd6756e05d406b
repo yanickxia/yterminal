@@ -1,0 +1,37 @@
+.github/workflows/release.yml
+  s_c97d0856c2151f::t_8dbd0507fb44f8 123-144,170
+scripts/generate-latest-json.mjs
+  s_c97d0856c2151f::t_ff98a5238a1027 79-93,116,182-185
+scripts/generate-latest-json.test.mjs
+  s_c97d0856c2151f::t_8d090741455f54 33-40,49,67-83
+src-tauri/Cargo.lock
+  s_c97d0856c2151f::t_a3eb80938fd38c 6052,6055
+src-tauri/Cargo.toml
+  s_c97d0856c2151f::t_87a5d6b2421359 43-50
+src-tauri/src/main.rs
+  s_c97d0856c2151f::t_25ea92455a64ab 1998-2187,2468-2503,2539-2540
+src/components/UpdateDialog.tsx
+  s_c97d0856c2151f::t_4d838de8c73a80 20,72,79-81,88-110
+src/lib/updater-deb.ts
+  s_c97d0856c2151f::t_b33882c3d9882b 1-42
+src/stores/updater-store.ts
+  s_c97d0856c2151f::t_255a497d6bda94 13-22,47-50,72-73,78-81,109-139,198-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "3bea0028dc114db9d02aa2c1c2fd6756e05d406b",
+  "prompts": {},
+  "sessions": {
+    "s_c97d0856c2151f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4d796b41-4d1a-49a5-b6be-696cd9c7fffa",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
