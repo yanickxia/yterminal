@@ -876,6 +876,7 @@ function UpdateTab() {
   const manifest = useUpdaterStore((s) => s.manifest);
   const errorMessage = useUpdaterStore((s) => s.errorMessage);
   const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt);
+  const installKind = useUpdaterStore((s) => s.installKind);
   const recheck = useUpdaterStore((s) => s.check);
 
   const currentVersion = __APP_VERSION__;
@@ -899,6 +900,18 @@ function UpdateTab() {
           </span>
         )}
       </div>
+      {installKind === "deb" && (
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+          Installing an update replaces the .deb via <code>pkexec</code> and asks
+          for your admin password.
+        </div>
+      )}
+      {installKind === "rpm" && (
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+          In-app update isn't available for the .rpm build — use your package
+          manager, or install the latest .rpm from the Releases page.
+        </div>
+      )}
       {state === "error" && errorMessage && (
         <div style={{ marginTop: 8, color: "var(--err, #c66)" }}>
           {errorMessage}

@@ -10,6 +10,16 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import {
+  installKind,
+  installDebUpdate,
+  type InstallKind,
+} from "../lib/updater-deb";
+import { logger } from "../lib/logger";
+
+/** Updater manifest endpoint (mirrors plugins.updater.endpoints in the conf). */
+const LATEST_JSON_URL =
+  "https://github.com/yanickxia/yterminal/releases/latest/download/latest.json";
 
 export type UpdaterState =
   | "idle"
@@ -34,6 +44,10 @@ interface UpdaterStore {
   progress: { downloaded: number; total: number | null } | null;
   errorMessage: string | null;
   lastCheckedAt: number | null;
+  /** install flavor, resolved lazily on first check; null until then. */
+  installKind: InstallKind | null;
+  /** deb path when pkexec was unavailable and the user must install by hand. */
+  debManualPath: string | null;
 
   check: () => Promise<void>;
   startDownload: () => Promise<void>;
@@ -55,10 +69,16 @@ export const useUpdaterStore = create<UpdaterStore>()(
       progress: null,
       errorMessage: null,
       lastCheckedAt: null,
+      installKind: null,
+      debManualPath: null,
 
       check: async () => {
         if (get().state === "checking" || get().state === "downloading") return;
         set({ state: "checking", errorMessage: null });
+        // Resolve the install flavor once (cheap; cached after first success).
+        if (get().installKind === null) {
+          set({ installKind: await installKind() });
+        }
         try {
           const update = await check();
           set({ lastCheckedAt: Date.now() });
@@ -86,7 +106,37 @@ export const useUpdaterStore = create<UpdaterStore>()(
       },
 
       startDownload: async () => {
-        if (get().state !== "available" || !pendingUpdate) return;
+        if (get().state !== "available") return;
+
+        // deb install: the Tauri updater can't replace a .deb, so download +
+        // verify + pkexec install our own signed .deb read from latest.json.
+        if (get().installKind === "deb") {
+          set({ state: "downloading", progress: null, debManualPath: null });
+          try {
+            const res = await fetch(LATEST_JSON_URL);
+            if (!res.ok) throw new Error(`fetch latest.json: HTTP ${res.status}`);
+            const manifest = await res.json();
+            const deb = manifest?.["linux-deb"];
+            if (!deb?.url || !deb?.signature) {
+              throw new Error(
+                "This release has no signed .deb for in-app update. Install the new .deb from the Releases page."
+              );
+            }
+            const result = await installDebUpdate(deb.url, deb.signature);
+            if (result.installed) {
+              set({ state: "ready" });
+            } else {
+              // pkexec unavailable: verified .deb left on disk for manual install.
+              set({ state: "ready", debManualPath: result.downloadedPath });
+            }
+          } catch (e: any) {
+            logger.warn("updater", `deb update failed: ${String(e)}`);
+            set({ state: "error", errorMessage: e?.message ?? String(e) });
+          }
+          return;
+        }
+
+        if (!pendingUpdate) return;
         set({ state: "downloading", progress: { downloaded: 0, total: null } });
         try {
           let downloaded = 0;
@@ -145,5 +195,7 @@ export function __resetUpdaterForTests(): void {
     progress: null,
     errorMessage: null,
     lastCheckedAt: null,
+    installKind: null,
+    debManualPath: null,
   });
 }

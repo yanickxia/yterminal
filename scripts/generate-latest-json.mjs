@@ -76,6 +76,21 @@ export async function buildManifest(release, fetchSig) {
   );
   const linuxSigContent = await fetchSig(linuxSig);
 
+  // The .deb has its own minisign signature (CI signs it explicitly — see
+  // release.yml). We expose it under a NON-standard top-level `linux-deb` key
+  // rather than inside `platforms`: the Tauri updater only understands the
+  // AppImage entry under `platforms["linux-x86_64"]`, and adding an unknown
+  // platform key there could trip its parser. Our own deb-updater path reads
+  // this field directly. Optional: absent on releases built before deb signing.
+  let debEntry = null;
+  const debBundle = release.assets.find((a) => a.name.endsWith(".deb"));
+  const debSig = debBundle
+    ? release.assets.find((a) => a.name === debBundle.name + ".sig")
+    : null;
+  if (debBundle && debSig) {
+    debEntry = { url: debBundle.url, signature: await fetchSig(debSig) };
+  }
+
   const darwinPlatform = {
     signature: darwinSigContent,
     url: darwinBundle.url,
@@ -98,6 +113,7 @@ export async function buildManifest(release, fetchSig) {
         url: linuxBundle.url,
       },
     },
+    ...(debEntry ? { "linux-deb": debEntry } : {}),
   };
 }
 
@@ -162,6 +178,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const platform of Object.values(manifest.platforms)) {
     const filename = platform.url.split("/").pop();
     platform.url = `${stableBaseUrl}/${filename}`;
+  }
+  if (manifest["linux-deb"]) {
+    const filename = manifest["linux-deb"].url.split("/").pop();
+    manifest["linux-deb"].url = `${stableBaseUrl}/${filename}`;
   }
 
   writeFileSync("latest.json", JSON.stringify(manifest, null, 2));

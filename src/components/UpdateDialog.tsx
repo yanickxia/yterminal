@@ -17,6 +17,7 @@ export function UpdateDialog({
   const manifest = useUpdaterStore((s) => s.manifest);
   const progress = useUpdaterStore((s) => s.progress);
   const errorMessage = useUpdaterStore((s) => s.errorMessage);
+  const debManualPath = useUpdaterStore((s) => s.debManualPath);
   const startDownload = useUpdaterStore((s) => s.startDownload);
   const doRelaunch = useUpdaterStore((s) => s.relaunch);
   const recheck = useUpdaterStore((s) => s.check);
@@ -68,25 +69,45 @@ export function UpdateDialog({
             <>
               <p>Downloading…</p>
               <progress
-                value={progress?.downloaded ?? 0}
+                value={progress?.downloaded ?? undefined}
                 max={progress?.total ?? undefined}
                 style={{ width: "100%" }}
               />
               <p style={{ fontSize: 12, opacity: 0.7 }}>
                 {progress?.total
                   ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`
-                  : `${formatBytes(progress?.downloaded ?? 0)}`}
+                  : progress
+                  ? `${formatBytes(progress.downloaded)}`
+                  : "Verifying signature and installing…"}
               </p>
             </>
           )}
 
           {state === "ready" && (
             <>
-              <p>Download complete. Restart yterminal to apply the update.</p>
-              <div className="modal-footer">
-                <button onClick={onClose}>Restart later</button>
-                <button onClick={() => doRelaunch()}>Restart now</button>
-              </div>
+              {debManualPath ? (
+                <>
+                  <p>
+                    Update downloaded and verified. Automatic install needs
+                    <code> pkexec</code>, which isn't available here — install it
+                    manually:
+                  </p>
+                  <pre style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>
+                    sudo dpkg -i {debManualPath}
+                  </pre>
+                  <div className="modal-footer">
+                    <button onClick={onClose}>Close</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>Download complete. Restart yterminal to apply the update.</p>
+                  <div className="modal-footer">
+                    <button onClick={onClose}>Restart later</button>
+                    <button onClick={() => doRelaunch()}>Restart now</button>
+                  </div>
+                </>
+              )}
             </>
           )}
 

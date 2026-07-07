@@ -6049,8 +6049,10 @@ dependencies = [
 name = "yterminal"
 version = "0.13.3"
 dependencies = [
+ "base64 0.22.1",
  "font-kit",
  "futures-util",
+ "minisign-verify",
  "portable-pty",
  "reqwest 0.12.28",
  "rusqlite",
