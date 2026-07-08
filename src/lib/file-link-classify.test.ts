@@ -8,6 +8,7 @@ import {
   resolvePath,
   looksLikePath,
   findPathSpans,
+  pathSpanAtColumn,
 } from "./file-link-classify";
 
 describe("basename", () => {
@@ -181,5 +182,30 @@ describe("findPathSpans", () => {
   it("finds multiple paths on one line", () => {
     const spans = findPathSpans("a.ts and b.md");
     expect(spans.map((s) => s.token)).toEqual(["a.ts", "b.md"]);
+  });
+});
+
+describe("pathSpanAtColumn", () => {
+  const line = "open src/app.ts now";
+  it("returns the span when the column is inside a path token", () => {
+    // "src/app.ts" spans columns 5..15 (end-exclusive).
+    expect(pathSpanAtColumn(line, 5)?.token).toBe("src/app.ts");
+    expect(pathSpanAtColumn(line, 10)?.token).toBe("src/app.ts");
+    expect(pathSpanAtColumn(line, 14)?.token).toBe("src/app.ts");
+  });
+  it("returns null when the column is outside any path token", () => {
+    expect(pathSpanAtColumn(line, 0)).toBeNull(); // over "open"
+    expect(pathSpanAtColumn(line, 4)).toBeNull(); // the space before the path
+    expect(pathSpanAtColumn(line, 15)).toBeNull(); // end is exclusive
+    expect(pathSpanAtColumn(line, 17)).toBeNull(); // over "now"
+  });
+  it("picks the right span when several paths share a line", () => {
+    const l = "a.ts and b.md";
+    expect(pathSpanAtColumn(l, 0)?.token).toBe("a.ts");
+    expect(pathSpanAtColumn(l, 9)?.token).toBe("b.md");
+    expect(pathSpanAtColumn(l, 5)).toBeNull(); // over "and"
+  });
+  it("returns null for a line with no path tokens", () => {
+    expect(pathSpanAtColumn("just some plain words", 3)).toBeNull();
   });
 });

@@ -273,3 +273,18 @@ export function findPathSpans(line: string): PathSpan[] {
   }
   return spans;
 }
+
+/**
+ * Find the path span (if any) covering a 0-based character column in a line.
+ * Used by the mouse-mode click bridge: when a TUI/tmux has terminal mouse
+ * reporting enabled, xterm forwards clicks straight to the PTY and never fires
+ * its LinkProvider `activate`, so we do our own hit-test at the clicked cell.
+ * `col` is inclusive of `start`, exclusive of `end` (same as PathSpan). Returns
+ * the matching span, or null when the column isn't over a path token.
+ */
+export function pathSpanAtColumn(line: string, col: number): PathSpan | null {
+  for (const span of findPathSpans(line)) {
+    if (col >= span.start && col < span.end) return span;
+  }
+  return null;
+}
