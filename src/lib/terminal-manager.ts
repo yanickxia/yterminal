@@ -17,7 +17,7 @@ import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { encodeEnter } from "./enter-key";
 import { handleClickedToken } from "./file-link";
-import { findPathSpans } from "./file-link-classify";
+import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
@@ -191,6 +191,8 @@ interface Session {
   pasteViaShortcutAt?: number;
   /** Cleanup for the native-paste de-dupe listener. */
   pasteDedupeCleanup?: () => void;
+  /** Cleanup for the tmux/TUI mouse-mode file-link click bridge listener. */
+  linkClickBridgeCleanup?: () => void;
   /**
    * When a modified Enter (Ctrl/Cmd/Alt/Shift+Enter) is handled we emit a CSI-u
    * sequence (see enter-key.ts). On macOS, Ctrl is the "secondary click"
@@ -213,6 +215,32 @@ interface XtermCoreInternals {
     _isPaused?: boolean;
     _needsFullRefresh?: boolean;
     _pausedResizeTask?: { flush?: () => void };
+  };
+  // The element xterm attaches its own mouse listeners to (rows layer). Used by
+  // the tmux/TUI mouse-mode click bridge to map a screen click to a buffer cell.
+  screenElement?: HTMLElement;
+  // True while a TUI/tmux has enabled terminal mouse reporting; in that mode
+  // xterm forwards clicks to the PTY and never fires the LinkProvider.
+  coreMouseService?: { areMouseEventsActive?: boolean };
+  // Maps a MouseEvent to 1-based [col, row] terminal coordinates within `el`.
+  _mouseService?: {
+    getCoords?: (
+      event: MouseEvent,
+      element: HTMLElement,
+      cols: number,
+      rows: number
+    ) => [number, number] | undefined;
+  };
+  _bufferService?: {
+    cols: number;
+    rows: number;
+    buffer: {
+      ydisp: number;
+      lines: { length: number };
+      getLine: (
+        i: number
+      ) => { translateToString: (trim?: boolean) => string } | undefined;
+    };
   };
 }
 
@@ -804,6 +832,57 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     s.el.addEventListener("paste", onNativePaste, true);
     s.pasteDedupeCleanup = () =>
       s.el.removeEventListener("paste", onNativePaste, true);
+
+    // tmux / TUI mouse-mode file-link click bridge. When a program (tmux with
+    // `mouse on`, or a full-screen TUI) turns on terminal mouse reporting,
+    // xterm forwards clicks straight to the PTY and calls preventDefault —
+    // so its LinkProvider `activate` never fires and Cmd/Ctrl+click on a file
+    // path does nothing. We install a capture-phase mousedown that runs BEFORE
+    // xterm's own listener: only in mouse-reporting mode, only with the link
+    // modifier held, and only when the click lands on a path token, we hit-test
+    // the clicked cell ourselves, open the file, and swallow the event so it
+    // doesn't reach tmux. Everything else (plain clicks, non-path cells, mouse
+    // mode off) passes through untouched — the normal LinkProvider still works.
+    const onCaptureMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left click only
+      const core = xtermCore(s);
+      if (!core?.coreMouseService?.areMouseEventsActive) return; // mouse mode off → LinkProvider handles it
+      if (
+        !shouldOpenLink(
+          e,
+          isMac,
+          useSettingsStore.getState().requireModifierForLinks
+        )
+      )
+        return; // modifier gate not satisfied → let tmux have the click
+      const bufSvc = core._bufferService;
+      const screen = core.screenElement;
+      const coords = core._mouseService?.getCoords?.(
+        e,
+        screen ?? s.el,
+        bufSvc?.cols ?? s.term.cols,
+        bufSvc?.rows ?? s.term.rows
+      );
+      if (!coords || !bufSvc) return;
+      // getCoords returns 1-based [col, row] within the viewport; map to the
+      // absolute buffer line via ydisp and to a 0-based column.
+      const col = coords[0] - 1;
+      const bufferRow = coords[1] - 1 + bufSvc.buffer.ydisp;
+      const line = bufSvc.buffer.getLine(bufferRow);
+      if (!line) return;
+      const span = pathSpanAtColumn(line.translateToString(true), col);
+      if (!span) return; // not over a path → leave the click for tmux
+      // We own this click: stop xterm from forwarding it to the PTY.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const cwd = sessions.get(tabId)?.shellCwd ?? "";
+      void handleClickedToken(span.token, cwd, homeDirCache).catch((err) =>
+        console.warn("file link open failed (mouse-mode)", span.token, err)
+      );
+    };
+    s.el.addEventListener("mousedown", onCaptureMouseDown, true);
+    s.linkClickBridgeCleanup = () =>
+      s.el.removeEventListener("mousedown", onCaptureMouseDown, true);
   }
   resumeXtermRenderer(s);
   // defer fit until layout settles
@@ -872,6 +951,7 @@ export function disposeSession(tabId: string) {
   clearActivity(tabId);
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
+  s.linkClickBridgeCleanup?.();
   try {
     s.pty.kill();
   } catch {
