@@ -27,6 +27,12 @@ import { useGitStore } from "./stores/git-store";
 import { useLayoutStore } from "./stores/layout-store";
 import { clearAttention } from "./stores/attention-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
+import { matchAppShortcut } from "./lib/app-shortcut";
+import { detectIsMac } from "./lib/link-modifier";
+
+// Platform detected once at module load (same source as the link modifier).
+// Drives the shortcut modifier split: Cmd on macOS, Ctrl+Shift elsewhere.
+const isMac = detectIsMac();
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -164,70 +170,66 @@ export default function App() {
   // keyboard shortcuts: split / close pane
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
-      // Cmd/Ctrl+K: workspace/tab quick switcher. Works regardless of whether
-      // a workspace or tab is currently focused.
-      if (key === "k") {
+      // All bindings classified in one pure place. macOS uses Cmd(+Shift for
+      // sub-variants); Linux/Windows use Ctrl+Shift(+Alt for sub-variants) —
+      // bare Ctrl+letter is deliberately NOT matched so terminal control chars
+      // (Ctrl+W delete-word, Ctrl+T, …) still reach the shell. See app-shortcut.ts.
+      const sc = matchAppShortcut(e, isMac);
+      if (!sc) return;
+      // `consume` marks the shortcut as handled: preventDefault stops the
+      // OS/webview default, and stopPropagation is what makes these bindings
+      // work at all — the listener is registered in the CAPTURE phase (below)
+      // so it runs on `window` before the focused xterm textarea, and halting
+      // propagation here keeps xterm from also acting on the keystroke.
+      const consume = () => {
         e.preventDefault();
-        setPaletteOpen((open) => !open);
-        return;
-      }
-      // Cmd/Ctrl+I: toggle the AI sidebar. Works regardless of focus, like the
-      // palette — you can open it from an empty state and ask a question.
-      if (key === "i" && !e.shiftKey) {
-        e.preventDefault();
-        useAiStore.getState().toggleOpen();
-        return;
-      }
-      // Cmd/Ctrl+N: new workspace. Independent of any active workspace/tab
-      // so it works from a fully empty state too.
-      if (key === "n" && !e.shiftKey) {
-        e.preventDefault();
-        addWorkspace();
-        return;
-      }
-      // Cmd/Ctrl+T: new tab in the current workspace, inheriting the active
-      // pane's cwd. Cwd inheritance is scoped to this workspace only.
-      if (key === "t" && !e.shiftKey) {
-        e.preventDefault();
-        if (ws) void addTabInheritingCwd(ws.id);
-        return;
-      }
-      // Cmd/Ctrl+1..9 switch workspace by position; add Shift to switch the
-      // active tab within the current workspace. Uses e.code (Digit1..Digit9)
-      // so it's layout-independent — Cmd+Shift+1 stays "1" rather than "!".
-      const digitMatch = /^Digit([1-9])$/.exec(e.code);
-      if (digitMatch) {
-        const n = Number(digitMatch[1]);
-        if (e.shiftKey) {
-          // Cmd/Ctrl+Shift+N: jump to the Nth tab of the current workspace.
-          if (!ws) return;
-          const target = ws.tabs[n - 1];
-          if (target && target.id !== ws.activeTabId) {
-            e.preventDefault();
-            setActiveTab(ws.id, target.id);
-          } else if (target) {
-            e.preventDefault();
-          }
-        } else {
-          // Cmd/Ctrl+N: jump to the Nth workspace in sidebar order.
-          const target = workspaces[n - 1];
+        e.stopPropagation();
+      };
+      switch (sc.action) {
+        case "palette":
+          consume();
+          setPaletteOpen((open) => !open);
+          return;
+        case "aiSidebar":
+          consume();
+          useAiStore.getState().toggleOpen();
+          return;
+        case "newWorkspace":
+          consume();
+          addWorkspace();
+          return;
+        case "newTab":
+          consume();
+          if (ws) void addTabInheritingCwd(ws.id);
+          return;
+        case "switchWorkspace": {
+          // Jump to the Nth workspace in sidebar order (visual order).
+          const target = workspaces[sc.n - 1];
           if (target) {
-            e.preventDefault();
+            consume();
             if (target.id !== activeWorkspaceId) setActiveWorkspace(target.id);
           }
+          return;
         }
-        return;
+        case "switchTab": {
+          // Jump to the Nth tab of the current workspace (visual order).
+          if (!ws) return;
+          const target = ws.tabs[sc.n - 1];
+          if (target) {
+            consume();
+            if (target.id !== ws.activeTabId) setActiveTab(ws.id, target.id);
+          }
+          return;
+        }
       }
+      // Remaining actions need an active tab.
       if (!ws || !ws.activeTabId) return;
       const curTab = ws.tabs.find((t) => t.id === ws.activeTabId);
       // File-viewer tabs have no shell: split/search don't apply, and close
       // skips session disposal (just forgets the cached content).
       if (curTab?.file) {
-        if (key === "w") {
-          e.preventDefault();
+        if (sc.action === "closeCascade" || sc.action === "closePane") {
+          consume();
           useViewerStore.getState().drop(curTab.id);
           if (ws.tabs.length > 1 || workspaces.length > 1) {
             removeTab(ws.id, ws.activeTabId);
@@ -235,44 +237,55 @@ export default function App() {
         }
         return;
       }
-      if (key === "d") {
-        e.preventDefault();
-        splitActivePane(ws.id, ws.activeTabId, e.shiftKey ? "column" : "row");
-      } else if (key === "f") {
-        // Cmd/Ctrl+F: open in-terminal search for the focused pane
-        e.preventDefault();
-        const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
-        if (tab) setSearchPaneId(tab.activePaneId);
-      } else if (key === "w" && e.shiftKey) {
-        // Cmd/Ctrl+Shift+W: close the focused pane
-        e.preventDefault();
-        const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
-        if (tab) {
-          disposeSession(tab.activePaneId);
-          closePane(ws.id, ws.activeTabId, tab.activePaneId);
+      switch (sc.action) {
+        case "split":
+          consume();
+          splitActivePane(ws.id, ws.activeTabId, sc.column ? "column" : "row");
+          return;
+        case "search": {
+          // open in-terminal search for the focused pane
+          consume();
+          const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+          if (tab) setSearchPaneId(tab.activePaneId);
+          return;
         }
-      } else if (key === "w") {
-        // Cmd/Ctrl+W: cascade close — pane → tab → workspace.
-        // preventDefault stops the OS/webview from closing the window.
-        e.preventDefault();
-        const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
-        if (!tab) return;
-        const leafIds = collectLeafIds(tab.root);
-        if (leafIds.length > 1) {
-          disposeSession(tab.activePaneId);
-          closePane(ws.id, ws.activeTabId, tab.activePaneId);
-        } else if (ws.tabs.length > 1) {
-          for (const id of leafIds) disposeSession(id);
-          removeTab(ws.id, ws.activeTabId);
-        } else if (workspaces.length > 1) {
-          for (const t of ws.tabs)
-            for (const id of collectLeafIds(t.root)) disposeSession(id);
-          removeWorkspace(ws.id);
+        case "closePane": {
+          // close the focused pane
+          consume();
+          const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+          if (tab) {
+            disposeSession(tab.activePaneId);
+            closePane(ws.id, ws.activeTabId, tab.activePaneId);
+          }
+          return;
+        }
+        case "closeCascade": {
+          // cascade close — pane → tab → workspace.
+          consume();
+          const tab = ws.tabs.find((t) => t.id === ws.activeTabId);
+          if (!tab) return;
+          const leafIds = collectLeafIds(tab.root);
+          if (leafIds.length > 1) {
+            disposeSession(tab.activePaneId);
+            closePane(ws.id, ws.activeTabId, tab.activePaneId);
+          } else if (ws.tabs.length > 1) {
+            for (const id of leafIds) disposeSession(id);
+            removeTab(ws.id, ws.activeTabId);
+          } else if (workspaces.length > 1) {
+            for (const t of ws.tabs)
+              for (const id of collectLeafIds(t.root)) disposeSession(id);
+            removeWorkspace(ws.id);
+          }
+          return;
         }
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture phase (true): run on `window` before the focused xterm textarea.
+    // Only Cmd (mac) / Ctrl+Shift(+Alt) (Linux/Win) chords are consumed; every
+    // other key — including bare Ctrl+letter control chars — passes through to
+    // the terminal untouched. See matchAppShortcut.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [ws, workspaces, activeWorkspaceId, splitActivePane, closePane, removeTab, removeWorkspace, addWorkspace, setActiveWorkspace, setActiveTab]);
 
   // refit terminals whenever the active tab's tree changes
