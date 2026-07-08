@@ -42,6 +42,7 @@ import { useSettingsStore } from "../stores/settings-store";
 import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { markAttention } from "../stores/attention-store";
+import { markActivity, clearActivity } from "../stores/activity-store";
 import { playAlertSound } from "./alert-sound";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
@@ -666,7 +667,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
 
   // wire data both directions.
   // pty.onData yields Uint8Array; xterm's write() accepts Uint8Array directly.
-  pty.onData((data: Uint8Array) => term.write(data));
+  // Each chunk also stamps the activity store so "an agent is producing output
+  // right now" (executing) is distinguishable from "idle at a prompt".
+  pty.onData((data: Uint8Array) => {
+    markActivity(tabId);
+    term.write(data);
+  });
   term.onWriteParsed(() => {
     if (s) syncXtermViewport(s);
   });
@@ -713,6 +719,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     logger.info("term", `session exit pane=${tabId} code=${e.exitCode}`);
     if (s?.disposed) return;
     if (s) s.exited = true;
+    clearActivity(tabId);
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
     // notify the app so it can close the now-dead pane (standard terminal
     // behavior: exiting the shell closes the split / tab).
@@ -862,6 +869,7 @@ export function disposeSession(tabId: string) {
   logger.info("term", `dispose pane=${tabId} pid=${s.pty.pid ?? "?"}`);
   s.disposed = true;
   sessions.delete(tabId);
+  clearActivity(tabId);
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   try {

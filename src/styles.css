@@ -401,6 +401,37 @@ body {
   top: 4px;
   right: 4px;
 }
+/* Per-workspace agent status dot (cmux-style), shown when a row has running
+   agents but no bell-attention. executing = blinking green, idle = dim green. */
+.ws-agent-status-dot,
+.rail-agent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ece6a;
+  flex: 0 0 auto;
+}
+.ws-agent-status-dot {
+  margin-left: 4px;
+}
+.rail-agent-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+.ws-agent-status-dot.executing,
+.rail-agent-dot.executing {
+  animation: agent-blink 1s steps(2, jump-none) infinite;
+}
+.ws-agent-status-dot.idle,
+.rail-agent-dot.idle {
+  opacity: 0.4;
+}
+.ws-agent-status-dot.attention,
+.rail-agent-dot.attention {
+  background: #e0af68;
+  animation: attention-pulse 1.4s ease-in-out infinite;
+}
 .attention-chip-dot {
   width: 7px;
   height: 7px;
@@ -506,12 +537,31 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #9ece6a; /* green "running" pip */
+  background: #9ece6a; /* green pip */
   flex: 0 0 auto;
 }
+/* executing — the agent is streaming output right now: bright green, blinking. */
+.ws-agent-dot.executing {
+  background: #9ece6a;
+  animation: agent-blink 1s steps(2, jump-none) infinite;
+}
+/* idle — running but at rest / at a prompt: steady, dimmed green. */
+.ws-agent-dot.idle {
+  background: #9ece6a;
+  opacity: 0.4;
+}
+/* attention — blocked waiting for the operator: amber, slow pulse. */
 .ws-agent-dot.attention {
-  background: #e0af68; /* amber "waiting for you" pip */
+  background: #e0af68;
   animation: attention-pulse 1.4s ease-in-out infinite;
+}
+@keyframes agent-blink {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.25;
+  }
 }
 .ws-agent-kind {
   font-weight: 600;
