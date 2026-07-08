@@ -4,7 +4,9 @@ import { useAiStore } from "../stores/ai-store";
 import { useGitStore } from "../stores/git-store";
 import { useLayoutStore } from "../stores/layout-store";
 import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
+import { useActivityStore } from "../stores/activity-store";
 import { tabsNeedingAttention } from "../lib/attention";
+import { workspacesAgentStatus } from "../lib/workspace-agents";
 import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -82,11 +84,18 @@ export function WorkspaceSidebar({
   // per-row badge plus a jump list — rather than as a strip inside the tab
   // area, so it's visible no matter which workspace is active.
   const waiting = useAttentionStore((s) => s.waiting);
+  const active = useActivityStore((s) => s.active);
   const attentionEntries = tabsNeedingAttention(workspaces, waiting);
   const attentionByWs = new Map<string, number>();
   for (const e of attentionEntries) {
     attentionByWs.set(e.workspaceId, (attentionByWs.get(e.workspaceId) ?? 0) + 1);
   }
+  // Per-workspace agent status (cmux-style): one aggregate dot per row showing
+  // the most urgent agent state across the workspace. The bell-based attention
+  // pip above is a separate, tab-scoped signal (a chime you must acknowledge);
+  // this is a lower-key "N agents, currently working/idle" indicator so every
+  // row surfaces its own agents regardless of which workspace is active.
+  const agentByWs = workspacesAgentStatus(workspaces, waiting, active);
 
   /**
    * Navigate to a waiting tab: activate its workspace + tab, acknowledge the
@@ -252,11 +261,20 @@ export function WorkspaceSidebar({
               }}
             >
               {railGlyph(w.name, w.icon)}
-              {attentionByWs.has(w.id) && (
+              {attentionByWs.has(w.id) ? (
                 <span
                   className="rail-attention-dot"
                   aria-label="waiting for you"
                 />
+              ) : (
+                agentByWs.has(w.id) && (
+                  <span
+                    className={
+                      "rail-agent-dot " + agentByWs.get(w.id)!.state
+                    }
+                    aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
+                  />
+                )
               )}
             </button>
           ))}
@@ -475,6 +493,17 @@ export function WorkspaceSidebar({
                     className="ws-attention-dot"
                     title={`${attentionByWs.get(w.id)} tab(s) waiting for you`}
                     aria-label="waiting for you"
+                  />
+                )}
+                {!attentionByWs.has(w.id) && agentByWs.has(w.id) && (
+                  <span
+                    className={"ws-agent-status-dot " + agentByWs.get(w.id)!.state}
+                    title={
+                      agentByWs.get(w.id)!.state === "executing"
+                        ? `${agentByWs.get(w.id)!.total} agent(s) working`
+                        : `${agentByWs.get(w.id)!.total} agent(s) idle`
+                    }
+                    aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
                   />
                 )}
                 <span className="ws-count">{w.tabs.length}</span>

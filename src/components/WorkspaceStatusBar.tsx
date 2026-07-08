@@ -1,18 +1,27 @@
 // WorkspaceStatusBar: a slim strip under the terminal area summarizing the
 // coding agents running in the active workspace — inspired by cmux's per-
 // workspace agent status. Each agent gets a chip showing its kind and owning
-// tab; a chip pulses when its pane is blocked waiting for the operator (bell).
+// tab, plus a status dot:
+//   * executing (blinking green) — the agent is streaming output right now
+//   * idle (steady dim green)    — the agent is running but at rest / at a prompt
+//   * attention (pulsing amber)  — blocked waiting for the operator (bell)
 // Clicking a chip jumps to that tab/pane and acknowledges its attention flag.
 //
-// Purely a read-only view over two live signals the app already maintains:
+// Purely a read-only view over three live signals the app already maintains:
 //   * PaneLeaf.agent (snapshotAllAgents, ~15s) — which panes run an agent
 //   * attention-store `waiting` — which panes rang the bell (need input)
+//   * activity-store `active` — which panes produced PTY output in the last ~800ms
 // Renders nothing when the workspace has no running agents, so it stays out of
 // the way until there's something to report.
 
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
-import { workspaceAgentSummary, type AgentKind } from "../lib/workspace-agents";
+import { useActivityStore } from "../stores/activity-store";
+import {
+  workspaceAgentSummary,
+  type AgentKind,
+  type AgentRunState,
+} from "../lib/workspace-agents";
 import { collectLeafIds } from "../lib/pane-tree";
 import { scrollSessionToBottom } from "../lib/terminal-manager";
 
@@ -23,15 +32,23 @@ const KIND_LABEL: Record<AgentKind, string> = {
   opencode: "opencode",
 };
 
+/** Human words for each run-state, used in chip tooltips. */
+const STATE_WORD: Record<AgentRunState, string> = {
+  executing: "working",
+  idle: "idle",
+  attention: "waiting for you",
+};
+
 export function WorkspaceStatusBar() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const waiting = useAttentionStore((s) => s.waiting);
+  const active = useActivityStore((s) => s.active);
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
-  const summary = workspaceAgentSummary(workspace, waiting);
+  const summary = workspaceAgentSummary(workspace, waiting, active);
   if (summary.total === 0) return null;
 
   // Jump to the pane running an agent: activate its tab + pane, acknowledge the
@@ -62,22 +79,13 @@ export function WorkspaceStatusBar() {
           <button
             key={e.paneId}
             type="button"
-            className={
-              "ws-agent-chip" + (e.state === "attention" ? " attention" : "")
-            }
-            title={
-              e.state === "attention"
-                ? `${KIND_LABEL[e.kind]} in ${e.tabName} — waiting for you`
-                : `${KIND_LABEL[e.kind]} running in ${e.tabName} (${e.command})`
-            }
+            className={"ws-agent-chip " + e.state}
+            title={`${KIND_LABEL[e.kind]} in ${e.tabName} — ${
+              STATE_WORD[e.state]
+            } (${e.command})`}
             onClick={() => jumpTo(e.tabId, e.paneId)}
           >
-            <span
-              className={
-                "ws-agent-dot" + (e.state === "attention" ? " attention" : "")
-              }
-              aria-hidden="true"
-            />
+            <span className={"ws-agent-dot " + e.state} aria-hidden="true" />
             <span className="ws-agent-kind">{KIND_LABEL[e.kind]}</span>
             {e.tabIcon && <span className="ws-agent-icon">{e.tabIcon}</span>}
             <span className="ws-agent-tab">{e.tabName}</span>
