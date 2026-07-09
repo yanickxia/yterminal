@@ -107,7 +107,11 @@ describe("updater-store", () => {
     });
 
     await useUpdaterStore.getState().startDownload();
-    expect(installDebUpdate).toHaveBeenCalledWith("https://x/y.deb", "SIG");
+    expect(installDebUpdate).toHaveBeenCalledWith(
+      "https://x/y.deb",
+      "SIG",
+      expect.any(Function)
+    );
     expect(useUpdaterStore.getState().state).toBe("ready");
     expect(useUpdaterStore.getState().debManualPath).toBeNull();
   });
