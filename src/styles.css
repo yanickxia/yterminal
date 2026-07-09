@@ -1342,6 +1342,13 @@ body {
   cursor: default;
 }
 
+.file-viewer-more {
+  padding: 3px 8px;
+  line-height: 1;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .file-viewer-body {
   flex: 1;
   min-height: 0;

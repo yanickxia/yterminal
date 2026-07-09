@@ -254,7 +254,7 @@ fn process_cwd(pid: u32) -> Result<String, String> {
 /// One process in a pane's descendant tree. `argv` is the full command line
 /// (argv[0] first) so the frontend can match an agent even when it's launched
 /// via a node wrapper or a shell alias that resolves to a different binary.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct ProcInfo {
     pid: u32,
     ppid: u32,
@@ -271,7 +271,68 @@ struct ProcInfo {
 #[tauri::command]
 fn pane_process_tree(pid: u32) -> Vec<ProcInfo> {
     let all = enumerate_processes();
-    descendants_of(pid, all)
+    process_tree_with_tmux(pid, &all)
+}
+
+/// Descendants of `pid`, PLUS the panes tmux hosts on this client's behalf.
+///
+/// Why the extra step: tmux does NOT fork the programs running in its panes off
+/// the client shell. The client (`tmux attach`, or the shell that ran `tmux`)
+/// talks to a long-lived **tmux server** over a socket, and the server is the
+/// real parent of every pane's shell + whatever runs in it (e.g. `claude`). So
+/// a plain fork-tree walk from the pane's shell pid never reaches the agent —
+/// it lives under the server, a sibling branch entirely. When we spot a tmux
+/// *client* anywhere in the pane's own subtree, we fold in the descendants of
+/// every tmux *server* process too, so agent detection sees the pane contents.
+fn process_tree_with_tmux(pid: u32, all: &[ProcInfo]) -> Vec<ProcInfo> {
+    let mut tree = descendants_of(pid, all);
+    // Is a tmux client running in this pane? (`tmux`, `tmux attach`, …). The
+    // server shows up as `tmux: server` / `tmux -C` etc.; we treat any non-
+    // server tmux proc in the subtree as a client that implies attached panes.
+    let has_client = tree.iter().any(|p| is_tmux_client(&p.argv));
+    if !has_client {
+        return tree;
+    }
+    let mut seen: std::collections::HashSet<u32> = tree.iter().map(|p| p.pid).collect();
+    for srv in all.iter().filter(|p| is_tmux_server(&p.argv)) {
+        for d in descendants_of(srv.pid, all) {
+            if seen.insert(d.pid) {
+                tree.push(d);
+            }
+        }
+    }
+    tree
+}
+
+/// True when this argv looks like a tmux *client* invocation (attaches to /
+/// spawns a session), as opposed to the server. Basename must be `tmux` and it
+/// must NOT be the server form (`tmux: server`, or an explicit `-D`/server run).
+fn is_tmux_client(argv: &[String]) -> bool {
+    is_tmux_proc(argv) && !is_tmux_server(argv)
+}
+
+/// True when this argv is the tmux *server* process. tmux rewrites its own
+/// argv to `tmux: server` once daemonized; also match an explicit server run.
+fn is_tmux_server(argv: &[String]) -> bool {
+    let Some(first) = argv.first() else {
+        return false;
+    };
+    // The daemonized server sets argv[0] to "tmux: server" (with the colon).
+    if first.starts_with("tmux:") {
+        return true;
+    }
+    is_tmux_proc(argv) && argv.iter().any(|a| a == "-D")
+}
+
+/// True when argv[0]'s basename is `tmux` (any invocation form).
+fn is_tmux_proc(argv: &[String]) -> bool {
+    let Some(first) = argv.first() else {
+        return false;
+    };
+    // strip "tmux:" server-rewrite prefix before basename-matching.
+    let head = first.split(':').next().unwrap_or(first);
+    let base = head.rsplit(['/', '\\']).next().unwrap_or(head);
+    base == "tmux"
 }
 
 /// Read every process on the machine as (pid, ppid, argv).
@@ -352,7 +413,7 @@ fn enumerate_processes() -> Vec<ProcInfo> {
 }
 
 /// Filter `all` to the transitive descendants of `root` (excluding `root`).
-fn descendants_of(root: u32, all: Vec<ProcInfo>) -> Vec<ProcInfo> {
+fn descendants_of(root: u32, all: &[ProcInfo]) -> Vec<ProcInfo> {
     use std::collections::{HashMap, HashSet, VecDeque};
     let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, p) in all.iter().enumerate() {
@@ -370,10 +431,10 @@ fn descendants_of(root: u32, all: Vec<ProcInfo>) -> Vec<ProcInfo> {
             }
         }
     }
-    all.into_iter()
+    all.iter()
         .enumerate()
         .filter(|(i, _)| keep.contains(i))
-        .map(|(_, p)| p)
+        .map(|(_, p)| p.clone())
         .collect()
 }
 
@@ -2416,6 +2477,85 @@ mod ime_tests {
     fn cache_without_native_or_xim_is_left_alone() {
         let bare = "\"im-cedilla.so\"\n\"cedilla\" \"Cedilla\" \"gtk30\" \"\" \"\"\n";
         assert_eq!(plan_ime_module("fcitx", Some(bare)), ImePlan::LeaveAlone);
+    }
+}
+
+#[cfg(test)]
+mod process_tree_tests {
+    use super::{process_tree_with_tmux, ProcInfo};
+
+    fn p(pid: u32, ppid: u32, argv: &[&str]) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid,
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Plain fork tree (no tmux): only the shell's own descendants come back.
+    #[test]
+    fn walks_plain_fork_tree() {
+        let all = vec![
+            p(100, 1, &["/bin/zsh"]),         // pane shell
+            p(200, 100, &["node", "claude"]), // agent forked under the shell
+            p(300, 1, &["/other/proc"]),      // unrelated
+        ];
+        let tree = process_tree_with_tmux(100, &all);
+        let pids: Vec<u32> = tree.iter().map(|t| t.pid).collect();
+        assert!(pids.contains(&200));
+        assert!(!pids.contains(&300));
+    }
+
+    /// tmux: the agent lives under the tmux SERVER, not the pane shell. When a
+    /// tmux client is present in the pane, the server's descendants are folded
+    /// in so the agent is detected.
+    #[test]
+    fn folds_in_tmux_server_children() {
+        let all = vec![
+            p(100, 1, &["/bin/zsh"]),                 // pane shell
+            p(150, 100, &["tmux", "attach"]),         // tmux CLIENT in the pane
+            p(900, 1, &["tmux: server"]),             // long-lived server (sibling)
+            p(910, 900, &["/bin/bash"]),              // shell inside a tmux window
+            p(920, 910, &["node", "claude", "code"]), // the agent, under the server
+        ];
+        let tree = process_tree_with_tmux(100, &all);
+        let pids: Vec<u32> = tree.iter().map(|t| t.pid).collect();
+        // client is a direct descendant; agent is reached via the server fold-in.
+        assert!(pids.contains(&150));
+        assert!(pids.contains(&920));
+    }
+
+    /// No tmux client in the pane → server children are NOT folded in, so a
+    /// tmux session someone else is running doesn't leak into this pane's tree.
+    #[test]
+    fn does_not_fold_server_without_a_client() {
+        let all = vec![
+            p(100, 1, &["/bin/zsh"]),         // pane shell, no tmux
+            p(900, 1, &["tmux: server"]),     // server for a DIFFERENT client
+            p(920, 900, &["node", "claude"]), // its agent — must not leak in
+        ];
+        let tree = process_tree_with_tmux(100, &all);
+        let pids: Vec<u32> = tree.iter().map(|t| t.pid).collect();
+        assert!(!pids.contains(&920));
+    }
+
+    /// De-dupes when the server is itself already a descendant of the pane
+    /// shell (e.g. the client forked the server): no pid appears twice.
+    #[test]
+    fn dedupes_overlapping_descendants() {
+        let all = vec![
+            p(100, 1, &["/bin/zsh"]),
+            p(150, 100, &["tmux"]), // client that also spawned the server
+            p(900, 150, &["tmux: server"]), // server under the client
+            p(920, 900, &["node", "claude"]),
+        ];
+        let tree = process_tree_with_tmux(100, &all);
+        let mut pids: Vec<u32> = tree.iter().map(|t| t.pid).collect();
+        pids.sort_unstable();
+        let mut deduped = pids.clone();
+        deduped.dedup();
+        assert_eq!(pids, deduped, "no pid should be duplicated");
+        assert!(pids.contains(&920));
     }
 }
 

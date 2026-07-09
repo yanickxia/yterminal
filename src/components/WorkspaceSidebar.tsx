@@ -501,7 +501,7 @@ export function WorkspaceSidebar({
                     title={
                       agentByWs.get(w.id)!.state === "executing"
                         ? `${agentByWs.get(w.id)!.total} agent(s) working`
-                        : `${agentByWs.get(w.id)!.total} agent(s) idle`
+                        : `${agentByWs.get(w.id)!.total} agent(s) waiting`
                     }
                     aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
                   />
