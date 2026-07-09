@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useViewerStore } from "../stores/viewer-store";
 import { renderMarkdown, highlightCode } from "../lib/file-render";
 import { basename } from "../lib/file-link-classify";
+import { clipboardWrite } from "../lib/clipboard";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { TabFile } from "../lib/types";
 
 /**
@@ -32,6 +34,28 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
     setRaw(false);
   }, [path]);
 
+  // Overflow "…" menu anchored to its trigger button (Copy full path / content).
+  const moreBtn = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  function openMenu() {
+    const r = moreBtn.current?.getBoundingClientRect();
+    if (r) setMenu({ x: r.right, y: r.bottom + 4 });
+  }
+
+  const menuItems: MenuItem[] = [
+    {
+      label: "Copy full path",
+      disabled: !path,
+      onClick: () => void clipboardWrite(path).catch(() => {}),
+    },
+    {
+      label: "Copy content",
+      disabled: loading || !!error || !text,
+      onClick: () => void clipboardWrite(text).catch(() => {}),
+    },
+  ];
+
   // Memoize the (potentially heavy) render so it doesn't re-run on every
   // unrelated store change. Only markdown/highlighted views compute HTML.
   const html = useMemo(() => {
@@ -57,8 +81,26 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
           >
             {raw ? (markdown ? "Rendered" : "Highlighted") : "Raw"}
           </button>
+          <button
+            ref={moreBtn}
+            className="file-viewer-toggle file-viewer-more"
+            onClick={openMenu}
+            title="More actions"
+            aria-label="More actions"
+          >
+            …
+          </button>
         </div>
       </div>
+
+      {menu && (
+        <ContextMenu
+          items={menuItems}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+        />
+      )}
 
       <div className="file-viewer-body">
         {loading && <p className="file-viewer-status">Loading…</p>}
