@@ -52,6 +52,7 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 - Never tear down a session on tab/pane *switch* — only on explicit close (`disposeSession`) or shell exit.
 - `term.open()` requires its parent in the DOM; sessions track an `opened` flag and defer `open()` until first `attachSession`.
 - App-wide re-renders must not pass fresh callback identities into `PaneTerminal` — App.tsx wraps `onFocusPane`/`onExitPane`/`onResizePane` in `useCallback` for this reason.
+- **Renderer is WebGL, DOM is the fallback.** `attachSession` loads `@xterm/addon-webgl` right after the first `term.open()` (its contract needs the terminal in the DOM). The default DOM renderer repaints per-cell and is the dominant source of keystroke-to-screen lag, so WebGL is the intended path. The addon is kept on `Session.webgl`; `onContextLoss` disposes it and clears the handle so xterm silently falls back to the DOM renderer, and construction is wrapped in try/catch for headless/no-GPU environments. `disposeSession` disposes it before `term.dispose()` to release the GPU context.
 
 ### HTML5 drag-and-drop requires `dragDropEnabled: false`
 
