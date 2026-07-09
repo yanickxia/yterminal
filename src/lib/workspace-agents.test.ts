@@ -143,12 +143,26 @@ describe("workspaceAgentSummary", () => {
 });
 
 describe("workspacesAgentStatus", () => {
-  it("omits workspaces with no running agent", () => {
+  it("omits workspaces with no agent, and workspaces whose agents are all idle", () => {
     const a = ws([tab("t1", leaf("p1"))], "w1");
     const b = ws([tab("t2", leaf("p2", { agent: agent("claude") }))], "w2");
+    // w1 has no agent; w2's only agent is idle (not waiting, not active).
     const m = workspacesAgentStatus([a, b], new Set(), new Set());
     expect(m.has("w1")).toBe(false);
-    expect(m.get("w2")).toEqual({ total: 1, state: "idle" });
+    expect(m.has("w2")).toBe(false);
+  });
+
+  it("surfaces an executing agent even when other panes are idle", () => {
+    const w = ws(
+      [
+        tab("t1", leaf("p1", { agent: agent("claude") })),
+        tab("t2", leaf("p2", { agent: agent("codex") })),
+      ],
+      "w1"
+    );
+    // p1 idle, p2 executing → workspace shows, best state executing, total 2.
+    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]));
+    expect(m.get("w1")).toEqual({ total: 2, state: "executing" });
   });
 
   it("counts all agent panes in a workspace and takes the most urgent state", () => {

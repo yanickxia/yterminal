@@ -116,8 +116,11 @@ export interface WorkspaceAgentStatus {
 }
 
 /**
- * Map each workspace id to its aggregate agent status. Workspaces with no
- * running agent are omitted from the map (so `.has(id)` gates the dot).
+ * Map each workspace id to its aggregate agent status. Only workspaces with a
+ * *running* agent are included: an agent that is merely present but idle (at
+ * its prompt, producing no output) is omitted, so `.has(id)` gates the dot to
+ * "an agent is actively working / needs you" rather than "an agent exists".
+ * Workspaces whose agents are all idle are dropped entirely.
  */
 export function workspacesAgentStatus(
   workspaces: Workspace[],
@@ -142,7 +145,9 @@ export function workspacesAgentStatus(
         if (rank[state] > rank[best]) best = state;
       }
     }
-    if (total > 0) out.set(ws.id, { total, state: best });
+    // Only surface a dot when an agent is actually running (executing) or
+    // blocked on the user (attention). All-idle workspaces show nothing.
+    if (total > 0 && best !== "idle") out.set(ws.id, { total, state: best });
   }
   return out;
 }
