@@ -1498,6 +1498,15 @@ export function applyAppearance() {
     } catch {
       /* not measurable while detached */
     }
+    // WebGL caches rendered glyphs in a texture atlas keyed by the old font;
+    // changing fontFamily/fontSize alone leaves stale glyphs on screen (the
+    // DOM renderer reflows automatically, the GPU one does not). Invalidate the
+    // atlas so it's rebuilt with the new font and the terminal redraws.
+    try {
+      s.webgl?.clearTextureAtlas();
+    } catch {
+      /* addon disposed after context loss → DOM renderer, nothing to clear */
+    }
   }
 }
 
