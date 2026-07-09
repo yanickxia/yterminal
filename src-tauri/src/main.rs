@@ -2159,6 +2159,34 @@ async fn install_deb_update(url: String, signature: String) -> Result<DebUpdateR
     })
 }
 
+/// Fetch the updater manifest (latest.json) over HTTP and return its raw body.
+///
+/// Why this exists: the frontend used to `fetch()` this URL directly, but the
+/// WebView (tauri://localhost) is CORS-bound and GitHub's
+/// `releases/latest/download/latest.json` 302-redirects to a different-origin
+/// CDN — webkit2gtk blocks that cross-origin redirect, so the deb self-update
+/// path failed with "TypeError: Load failed". reqwest here is NOT CORS-bound
+/// and follows the redirect fine, so we do the fetch server-side and hand the
+/// JSON back to the store.
+#[tauri::command]
+async fn fetch_latest_json(url: String) -> Result<String, String> {
+    logger::info("updater", &format!("fetch_latest_json url={url:?}"));
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch latest.json: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("fetch latest.json: HTTP {}", resp.status()));
+    }
+    resp.text()
+        .await
+        .map_err(|e| format!("read latest.json body: {e}"))
+}
+
 /// First matching absolute path for a bare command name (PATH may be minimal
 /// when launched from a desktop/Dock), else None. Linux-only helper.
 #[cfg(target_os = "linux")]
@@ -2538,6 +2566,7 @@ fn main() {
             ai_chat_tools,
             install_kind,
             install_deb_update,
+            fetch_latest_json,
             scrollback_save,
             scrollback_load_all,
             scrollback_clear,
