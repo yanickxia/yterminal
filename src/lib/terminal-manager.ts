@@ -10,7 +10,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
@@ -19,6 +18,12 @@ import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { encodeEnter } from "./enter-key";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
+import {
+  computeUrlLinks,
+  isContinuation,
+  type UrlLink,
+  type UrlRow,
+} from "./terminal-url-links";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
@@ -85,6 +90,60 @@ function primeHomeDir(): void {
       /* non-Tauri or unavailable — leave undefined */
     }
   })();
+}
+
+// Bridge xterm's per-line `provideLinks(lineNumber)` to the pure, multi-row
+// `computeUrlLinks`. xterm asks about one buffer line at a time (1-based); to
+// stitch a hard-wrapped URL we walk UP to the first row of the physical group
+// containing `lineNumber`, then DOWN over its continuation rows, feed the slice
+// to `computeUrlLinks`, and keep only the links that actually cover the queried
+// line (so the same link isn't reported once per row it spans). Row indices in
+// the returned links are absolute buffer rows (0-based).
+function computeTerminalUrlLinks(
+  term: Terminal,
+  lineNumber: number
+): UrlLink[] {
+  const buf = term.buffer.active;
+  const cols = term.cols;
+  const queried = lineNumber - 1; // 0-based absolute buffer row
+
+  // Walk up to the physical group start: while THIS row is a continuation of
+  // the row above it (soft-wrapped, or the row above fills the width).
+  let first = queried;
+  while (first > 0) {
+    const prev = buf.getLine(first - 1);
+    const cur = buf.getLine(first);
+    if (!prev || !cur) break;
+    if (!isContinuation(prev.translateToString(true), cur.isWrapped, cols)) {
+      break;
+    }
+    first--;
+  }
+
+  // Collect the group's rows from `first` downward.
+  const rows: UrlRow[] = [];
+  let r = first;
+  const firstLine = buf.getLine(r);
+  if (!firstLine) return [];
+  rows.push({ text: firstLine.translateToString(true), isWrapped: false });
+  r++;
+  for (;;) {
+    const cur = buf.getLine(r);
+    if (!cur) break;
+    const prevText = rows[rows.length - 1].text;
+    if (!isContinuation(prevText, cur.isWrapped, cols)) break;
+    rows.push({ text: cur.translateToString(true), isWrapped: cur.isWrapped });
+    r++;
+  }
+
+  // Map slice-relative rows back to absolute buffer rows, and keep only links
+  // that touch the queried row (xterm will call us again for other rows).
+  const links = computeUrlLinks(rows, cols).map((l) => ({
+    ...l,
+    startRow: l.startRow + first,
+    endRow: l.endRow + first,
+  }));
+  return links.filter((l) => l.startRow <= queried && queried <= l.endRow);
 }
 
 // Git auto-refresh hook. The git sidebar wants to re-read status whenever a
@@ -490,21 +549,44 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(fit);
   term.loadAddon(serialize);
   term.loadAddon(search);
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (
-        shouldOpenLink(
-          event,
-          isMac,
-          useSettingsStore.getState().requireModifierForLinks
-        )
-      ) {
-        void openUrl(uri).catch((err) => {
-          console.warn("openUrl failed", uri, err);
-        });
+  // Web-URL link provider. We DON'T use @xterm/addon-web-links: it only stitches
+  // a URL back together across *soft*-wrapped rows (`isWrapped`), so a long URL
+  // that a CLI program hard-wraps at the terminal width (its own newline, so the
+  // continuation row has `isWrapped === false`) is only clickable on its first
+  // row. `computeUrlLinks` joins continuation rows when the previous row fills
+  // the width too, so the whole URL becomes one multi-row clickable link.
+  term.registerLinkProvider({
+    provideLinks(lineNumber, callback) {
+      const links = computeTerminalUrlLinks(term, lineNumber);
+      if (links.length === 0) {
+        callback(undefined);
+        return;
       }
-    }),
-  );
+      callback(
+        links.map((link) => ({
+          // IBufferRange is 1-based; end-inclusive on x, and may span rows.
+          range: {
+            start: { x: link.startCol + 1, y: link.startRow + 1 },
+            end: { x: link.endCol, y: link.endRow + 1 },
+          },
+          text: link.url,
+          activate: (event: MouseEvent, uri: string) => {
+            if (
+              !shouldOpenLink(
+                event,
+                isMac,
+                useSettingsStore.getState().requireModifierForLinks
+              )
+            )
+              return;
+            void openUrl(uri).catch((err) => {
+              console.warn("openUrl failed", uri, err);
+            });
+          },
+        }))
+      );
+    },
+  });
   // File-path link provider: makes path-like tokens in terminal output
   // clickable (Cmd/Ctrl+click, same modifier gate as web links). Resolution
   // is relative to the pane's live cwd; a recognized text type opens in the
