@@ -13,11 +13,14 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import {
   installKind,
   installDebUpdate,
+  fetchLatestJson,
   type InstallKind,
 } from "../lib/updater-deb";
 import { logger } from "../lib/logger";
 
-/** Updater manifest endpoint (mirrors plugins.updater.endpoints in the conf). */
+/** Updater manifest endpoint (mirrors plugins.updater.endpoints in the conf).
+ *  Fetched server-side (Rust reqwest) — see fetchLatestJson — because the
+ *  WebView's CORS check blocks GitHub's cross-origin 302 redirect. */
 const LATEST_JSON_URL =
   "https://github.com/yanickxia/yterminal/releases/latest/download/latest.json";
 
@@ -113,9 +116,8 @@ export const useUpdaterStore = create<UpdaterStore>()(
         if (get().installKind === "deb") {
           set({ state: "downloading", progress: null, debManualPath: null });
           try {
-            const res = await fetch(LATEST_JSON_URL);
-            if (!res.ok) throw new Error(`fetch latest.json: HTTP ${res.status}`);
-            const manifest = await res.json();
+            const body = await fetchLatestJson(LATEST_JSON_URL);
+            const manifest = JSON.parse(body);
             const deb = manifest?.["linux-deb"];
             if (!deb?.url || !deb?.signature) {
               throw new Error(

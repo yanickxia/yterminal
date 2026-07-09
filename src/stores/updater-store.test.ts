@@ -10,10 +10,15 @@ vi.mock("@tauri-apps/plugin-process", () => ({
 vi.mock("../lib/updater-deb", () => ({
   installKind: vi.fn().mockResolvedValue("other"),
   installDebUpdate: vi.fn(),
+  fetchLatestJson: vi.fn(),
 }));
 
 import { check } from "@tauri-apps/plugin-updater";
-import { installKind, installDebUpdate } from "../lib/updater-deb";
+import {
+  installKind,
+  installDebUpdate,
+  fetchLatestJson,
+} from "../lib/updater-deb";
 import { useUpdaterStore, __resetUpdaterForTests } from "./updater-store";
 
 beforeEach(() => {
@@ -91,12 +96,11 @@ describe("updater-store", () => {
     await useUpdaterStore.getState().check();
     expect(useUpdaterStore.getState().installKind).toBe("deb");
 
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    (fetchLatestJson as any).mockResolvedValue(
+      JSON.stringify({
         "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
-      }),
-    }) as any;
+      })
+    );
     (installDebUpdate as any).mockResolvedValue({
       installed: true,
       downloadedPath: "/tmp/y.deb",
@@ -118,12 +122,11 @@ describe("updater-store", () => {
     });
     await useUpdaterStore.getState().check();
 
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    (fetchLatestJson as any).mockResolvedValue(
+      JSON.stringify({
         "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
-      }),
-    }) as any;
+      })
+    );
     (installDebUpdate as any).mockResolvedValue({
       installed: false,
       downloadedPath: "/tmp/y.deb",
@@ -144,10 +147,9 @@ describe("updater-store", () => {
     });
     await useUpdaterStore.getState().check();
 
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ platforms: {} }),
-    }) as any;
+    (fetchLatestJson as any).mockResolvedValue(
+      JSON.stringify({ platforms: {} })
+    );
 
     await useUpdaterStore.getState().startDownload();
     expect(useUpdaterStore.getState().state).toBe("error");

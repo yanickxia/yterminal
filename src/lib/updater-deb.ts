@@ -40,3 +40,14 @@ export async function installDebUpdate(
 ): Promise<DebUpdateResult> {
   return invoke<DebUpdateResult>("install_deb_update", { url, signature });
 }
+
+/**
+ * Fetch the updater manifest (latest.json) server-side via reqwest and return
+ * its raw body text. The WebView can't fetch it directly: GitHub's
+ * `releases/latest/download/latest.json` 302-redirects to a different-origin
+ * CDN, and the CORS check on `tauri://localhost` blocks that redirect. reqwest
+ * follows it fine, so the deb update path routes the fetch through Rust.
+ */
+export async function fetchLatestJson(url: string): Promise<string> {
+  return invoke<string>("fetch_latest_json", { url });
+}
