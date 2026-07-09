@@ -6,7 +6,7 @@
 // deb-installed app must download + verify + `pkexec dpkg -i` its own .deb —
 // these commands are that path. See updater-store.ts for the state machine.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { logger } from "./logger";
 
 /** Which install flavor is running. Drives which updater path the store takes. */
@@ -18,6 +18,14 @@ export interface DebUpdateResult {
   /** where the verified .deb landed (for manual install when pkexec absent). */
   downloadedPath: string;
 }
+
+/** Download-progress event streamed from Rust while the .deb downloads. Shape
+ *  mirrors `DebProgressEvent` in main.rs: internally tagged on `event`
+ *  (lower-cased), fields flattened alongside the tag. */
+export type DebProgressEvent =
+  | { event: "started"; contentLength: number | null }
+  | { event: "progress"; chunkLength: number }
+  | { event: "finished" };
 
 /** Ask the backend which install flavor is running. Falls back to "other". */
 export async function installKind(): Promise<InstallKind> {
@@ -32,13 +40,21 @@ export async function installKind(): Promise<InstallKind> {
 /**
  * Download the .deb at `url`, verify its minisign `signature`, and install it
  * via pkexec. Rejects (without installing) on a bad signature. Propagates
- * errors so the store can surface them in the update dialog.
+ * errors so the store can surface them in the update dialog. `onProgress`, when
+ * given, receives download-progress events so the UI can render a progress bar.
  */
 export async function installDebUpdate(
   url: string,
-  signature: string
+  signature: string,
+  onProgress?: (e: DebProgressEvent) => void
 ): Promise<DebUpdateResult> {
-  return invoke<DebUpdateResult>("install_deb_update", { url, signature });
+  const channel = new Channel<DebProgressEvent>();
+  if (onProgress) channel.onmessage = onProgress;
+  return invoke<DebUpdateResult>("install_deb_update", {
+    url,
+    signature,
+    onProgress: channel,
+  });
 }
 
 /**

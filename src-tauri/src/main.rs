@@ -2157,11 +2157,32 @@ struct DebUpdateResult {
     downloaded_path: String,
 }
 
+/// Progress event pushed to the frontend while the .deb downloads, so the
+/// update dialog can show a real progress bar instead of jumping straight to
+/// the pkexec password prompt. Tagged so the TS side can switch on `event`.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
+enum DebProgressEvent {
+    /// Download started; `contentLength` is the total bytes when the server
+    /// reported a Content-Length, else null.
+    Started { content_length: Option<u64> },
+    /// One downloaded chunk; `chunkLength` bytes just arrived.
+    Progress { chunk_length: u64 },
+    /// Bytes are all in; verification + pkexec install begin next.
+    Finished,
+}
+
 /// Download the .deb from `url`, verify its `signature` (base64 Tauri `.sig`),
 /// and install it via `pkexec dpkg -i`. Errors out (WITHOUT installing) if the
-/// signature doesn't verify — the file is about to be handed to root.
+/// signature doesn't verify — the file is about to be handed to root. Streams
+/// download progress down `on_progress` so the UI can render a progress bar.
 #[tauri::command]
-async fn install_deb_update(url: String, signature: String) -> Result<DebUpdateResult, String> {
+async fn install_deb_update(
+    url: String,
+    signature: String,
+    on_progress: Channel<DebProgressEvent>,
+) -> Result<DebUpdateResult, String> {
+    use futures_util::StreamExt;
     logger::info("updater", &format!("install_deb_update url={url:?}"));
 
     let client = reqwest::Client::builder()
@@ -2175,10 +2196,23 @@ async fn install_deb_update(url: String, signature: String) -> Result<DebUpdateR
     if !resp.status().is_success() {
         return Err(format!("download deb: HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read deb body: {e}"))?;
+
+    // Stream the body so we can report progress. reqwest exposes Content-Length
+    // up front when the server sends it; GitHub's release CDN does.
+    let total = resp.content_length();
+    let _ = on_progress.send(DebProgressEvent::Started {
+        content_length: total,
+    });
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("read deb body: {e}"))?;
+        let _ = on_progress.send(DebProgressEvent::Progress {
+            chunk_length: chunk.len() as u64,
+        });
+        bytes.extend_from_slice(&chunk);
+    }
+    let _ = on_progress.send(DebProgressEvent::Finished);
 
     // Verify BEFORE touching disk / root.
     verify_minisign(&bytes, &signature)?;

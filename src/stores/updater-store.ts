@@ -124,7 +124,24 @@ export const useUpdaterStore = create<UpdaterStore>()(
                 "This release has no signed .deb for in-app update. Install the new .deb from the Releases page."
               );
             }
-            const result = await installDebUpdate(deb.url, deb.signature);
+            // Stream download progress so the dialog shows a real bar instead
+            // of jumping straight to the pkexec password prompt.
+            let downloaded = 0;
+            let total: number | null = null;
+            const result = await installDebUpdate(
+              deb.url,
+              deb.signature,
+              (e) => {
+                if (e.event === "started") {
+                  total = e.contentLength;
+                  set({ progress: { downloaded: 0, total } });
+                } else if (e.event === "progress") {
+                  downloaded += e.chunkLength;
+                  set({ progress: { downloaded, total } });
+                }
+                // "finished" → bytes are in; verify + pkexec run next (no bar).
+              }
+            );
             if (result.installed) {
               set({ state: "ready" });
             } else {
