@@ -11,6 +11,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
@@ -181,6 +182,13 @@ interface Session {
    * terminal-composition-guard.ts.
    */
   compositionGuardCleanup?: () => void;
+  /**
+   * The GPU renderer addon, attached on first `open()` for a real speed-up over
+   * xterm's default DOM renderer. Kept on the session so we can dispose it on
+   * context loss (fall back to DOM) and on session teardown. `undefined` when
+   * WebGL is unavailable (headless / no GPU) — xterm then uses the DOM renderer.
+   */
+  webgl?: WebglAddon;
   /**
    * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
    * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
@@ -806,6 +814,29 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   if (!s.opened) {
     s.term.open(s.el);
     s.opened = true;
+    // GPU renderer: xterm's default DOM renderer repaints per-cell and is the
+    // dominant source of keystroke-to-screen lag. Load the WebGL addon now that
+    // the terminal is in the DOM (its contract requires open() first). On GPU
+    // context loss the addon self-disposes; we drop our handle so xterm falls
+    // back to the DOM renderer instead of rendering nothing. Construction can
+    // throw when WebGL is unavailable (headless / blocked) — swallow and keep
+    // the DOM renderer.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
+        try {
+          webgl.dispose();
+        } catch {
+          /* already disposed */
+        }
+        if (s.webgl === webgl) s.webgl = undefined;
+      });
+      s.term.loadAddon(webgl);
+      s.webgl = webgl;
+    } catch (e) {
+      logger.warn("term", `webgl unavailable pane=${tabId}: ${String(e)}`);
+    }
     // Attach the orphan-composition guard now that the textarea exists. `s.el`
     // is an ancestor of xterm's textarea, so capture-phase listeners here run
     // before xterm's own. Delivered CJK is written straight to the pty (it
@@ -956,6 +987,12 @@ export function disposeSession(tabId: string) {
     s.pty.kill();
   } catch {
     /* already dead */
+  }
+  // Release the GPU context before tearing down the terminal.
+  try {
+    s.webgl?.dispose();
+  } catch {
+    /* already disposed (e.g. after context loss) */
   }
   s.term.dispose();
   s.el.remove();
