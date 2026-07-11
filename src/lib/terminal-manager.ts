@@ -269,6 +269,13 @@ interface Session {
    * context-menu-suppress.ts.
    */
   modifiedEnterAt?: number;
+  /**
+   * Latest sanitized-input title the shell/agent reported via OSC 0/2. Kept on
+   * the session (not just the onTitleChange closure) so clearing a tab's manual
+   * name can immediately re-apply the live title instead of waiting for the next
+   * redraw. Empty until the first title event.
+   */
+  lastTitle?: string;
 }
 
 interface XtermCoreInternals {
@@ -389,6 +396,18 @@ function applyPaneTitle(paneId: string, rawTitle: string) {
   const name = sanitizeTabTitle(rawTitle);
   if (!name) return;
   store.setTabAutoName(workspaceId, tabId, name);
+}
+
+/**
+ * Re-apply a pane's last shell/agent-reported title as the tab's auto name.
+ * Used right after a tab's manual `customName` is cleared, so the tab snaps
+ * back to the live title immediately instead of waiting for the next OSC 0/2
+ * redraw (an idle shell might not emit one for a while). No-op when the pane
+ * never reported a usable title — the tab then keeps its existing auto name.
+ */
+export function reapplyPaneTitle(paneId: string) {
+  const s = sessions.get(paneId);
+  if (s?.lastTitle) applyPaneTitle(paneId, s.lastTitle);
 }
 
 /**
@@ -776,6 +795,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.onTitleChange((title) => {
     if (title === lastTitle) return;
     lastTitle = title;
+    if (s) s.lastTitle = title;
     if (titleTimer) return;
     titleTimer = setTimeout(() => {
       titleTimer = undefined;
@@ -1556,6 +1576,41 @@ export async function snapshotAllAgents() {
 }
 
 /**
+ * Ensure the terminal font family is actually loaded before we rebuild the
+ * WebGL glyph atlas. xterm rasterizes glyphs lazily into the atlas and never
+ * awaits the document FontFaceSet, so on macOS WKWebView — where CoreText
+ * loads a freshly-picked font asynchronously — the atlas gets baked with the
+ * fallback font and the new family never appears: the terminal looks "stuck"
+ * on the old font even though the DOM renderer would reflow once the font
+ * arrives. Linux webkit2gtk resolves fonts eagerly via fontconfig, so this is
+ * a near-no-op there. `document.fonts.load` resolves (does not reject) for
+ * missing families, so an unknown/hand-edited font id won't stall the flow.
+ */
+function ensureTerminalFontLoaded(
+  stack: string,
+  fontSize: number
+): Promise<void> {
+  if (typeof document === "undefined" || !document.fonts) {
+    return Promise.resolve();
+  }
+  const first = stack
+    .split(",")[0]
+    ?.trim()
+    .replace(/^["']|["']$/g, "");
+  if (!first) return Promise.resolve();
+  return document.fonts
+    .load(`${fontSize}px "${first}"`)
+    .then(
+      () => undefined,
+      () => undefined
+    );
+}
+
+/** Bumped on every applyAppearance call so a slow font-load from a stale call
+ * can't overwrite a newer one (rapid font switching). */
+let applyAppearanceToken = 0;
+
+/**
  * Apply the current appearance settings to the app chrome and every live
  * terminal. Called whenever theme / font / font size changes so the update is
  * instant, without re-spawning shells.
@@ -1569,27 +1624,33 @@ export function applyAppearance() {
   const scrollback = resolveScrollback(
     useSettingsStore.getState().scrollbackLines
   );
-  for (const [, s] of sessions) {
-    if (s.disposed) continue;
-    s.term.options.theme = xtermTheme;
-    s.term.options.fontFamily = font.stack;
-    s.term.options.fontSize = fontSize;
-    s.term.options.scrollback = scrollback;
-    try {
-      s.fit.fit();
-    } catch {
-      /* not measurable while detached */
+  const token = ++applyAppearanceToken;
+  void ensureTerminalFontLoaded(font.stack, fontSize).then(() => {
+    if (token !== applyAppearanceToken) return;
+    for (const [, s] of sessions) {
+      if (s.disposed) continue;
+      s.term.options.theme = xtermTheme;
+      s.term.options.fontFamily = font.stack;
+      s.term.options.fontSize = fontSize;
+      s.term.options.scrollback = scrollback;
+      try {
+        s.fit.fit();
+      } catch {
+        /* not measurable while detached */
+      }
+      // WebGL caches rendered glyphs in a texture atlas keyed by the old font;
+      // changing fontFamily/fontSize alone leaves stale glyphs on screen (the
+      // DOM renderer reflows automatically, the GPU one does not). Invalidate
+      // the atlas so it's rebuilt with the new font and the terminal redraws.
+      // This runs after ensureTerminalFontLoaded so the atlas re-rasterizes
+      // with the real glyphs, not the fallback the browser used pre-load.
+      try {
+        s.webgl?.clearTextureAtlas();
+      } catch {
+        /* addon disposed after context loss → DOM renderer, nothing to clear */
+      }
     }
-    // WebGL caches rendered glyphs in a texture atlas keyed by the old font;
-    // changing fontFamily/fontSize alone leaves stale glyphs on screen (the
-    // DOM renderer reflows automatically, the GPU one does not). Invalidate the
-    // atlas so it's rebuilt with the new font and the terminal redraws.
-    try {
-      s.webgl?.clearTextureAtlas();
-    } catch {
-      /* addon disposed after context loss → DOM renderer, nothing to clear */
-    }
-  }
+  });
 }
 
 /** Push divider width/color from settings onto CSS variables. */

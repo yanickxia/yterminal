@@ -103,6 +103,13 @@ interface WorkspaceState {
   removeTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, name: string) => void;
   /**
+   * Clear a tab's manual `customName` so the shell/agent title stream (OSC 0/2)
+   * drives `Tab.name` again — the "let Claude control the tab name" reset. The
+   * caller (TabBar) re-applies the pane's last reported title right after, so
+   * the tab snaps back to the live title instead of stalling on the old name.
+   */
+  clearTabCustomName: (workspaceId: string, tabId: string) => void;
+  /**
    * Update a tab's *auto* display name (Tab.name) without touching customName.
    * Fed by the shell/agent title stream (OSC 0/2). A tab the user renamed by
    * hand has a customName, which always wins, so this is a no-op there.
@@ -375,6 +382,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             customName: name,
           })),
         })),
+
+      clearTabCustomName: (workspaceId, tabId) =>
+        set((s) => {
+          const ws = s.workspaces.find((w) => w.id === workspaceId);
+          const tab = ws?.tabs.find((t) => t.id === tabId);
+          if (!tab || tab.customName === undefined) return s;
+          return {
+            workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => {
+              const { customName: _drop, ...rest } = t;
+              return rest;
+            }),
+          };
+        }),
 
       setTabAutoName: (workspaceId, tabId, name) =>
         set((s) => {

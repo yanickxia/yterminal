@@ -15,9 +15,18 @@
 //     the last ~800ms. Presence == "the agent is streaming output right now".
 //
 // An agent pane is therefore classified, in precedence order:
-//   "attention" — agent present AND in `waiting`   (blocked on the user)
+//   "attention" — agent present AND in `waiting`   (rang the bell, blocked on the user)
 //   "executing" — agent present, not waiting, AND in `active` (working now)
-//   "idle"      — agent present, not waiting, not active (at rest / at a prompt)
+//   "waiting"   — agent present, not active, but in `everActive` (it produced
+//                 output earlier this session and has since fallen silent — i.e.
+//                 it worked and is now waiting for your input). This is the
+//                 common "agent paused at a prompt" case; a bell may or may not
+//                 have fired (it's suppressed while the pane is focused, and some
+//                 wrapper CLIs never ring), so `active`→silent is the reliable
+//                 signal that it's your turn.
+//   "idle"      — agent present but never produced output this session (freshly
+//                 launched / restored and dormant). Kept quiet so a just-opened
+//                 agent doesn't paint a "waiting" dot before it has done anything.
 
 import type { AgentKind, Workspace } from "./types";
 import { collectLeaves } from "./pane-tree";
@@ -27,7 +36,7 @@ import { collectLeaves } from "./pane-tree";
 export type { AgentKind };
 
 /** Run-state of a single agent pane. */
-export type AgentRunState = "executing" | "idle" | "attention";
+export type AgentRunState = "executing" | "waiting" | "idle" | "attention";
 
 /** One coding agent detected in a workspace, with its owning tab/pane. */
 export interface WorkspaceAgentEntry {
@@ -52,16 +61,20 @@ export interface WorkspaceAgentSummary {
   attention: number;
   /** how many are actively producing output right now. */
   executing: number;
+  /** how many worked earlier and are now silent, waiting for input. */
+  waiting: number;
 }
 
-/** Classify one agent pane from the two ephemeral signal sets. */
+/** Classify one agent pane from the three ephemeral signal sets. */
 function classify(
   paneId: string,
   waiting: Set<string>,
-  active: Set<string>
+  active: Set<string>,
+  everActive: Set<string>
 ): AgentRunState {
   if (waiting.has(paneId)) return "attention";
   if (active.has(paneId)) return "executing";
+  if (everActive.has(paneId)) return "waiting";
   return "idle";
 }
 
@@ -74,19 +87,23 @@ function classify(
 export function workspaceAgentSummary(
   workspace: Workspace | undefined,
   waiting: Set<string>,
-  active: Set<string> = new Set()
+  active: Set<string> = new Set(),
+  everActive: Set<string> = new Set()
 ): WorkspaceAgentSummary {
   const entries: WorkspaceAgentEntry[] = [];
-  if (!workspace) return { entries, total: 0, attention: 0, executing: 0 };
+  if (!workspace)
+    return { entries, total: 0, attention: 0, executing: 0, waiting: 0 };
   let attention = 0;
   let executing = 0;
+  let waitingCount = 0;
   for (const tab of workspace.tabs) {
     if (tab.file) continue;
     for (const leaf of collectLeaves(tab.root)) {
       if (!leaf.agent) continue;
-      const state = classify(leaf.id, waiting, active);
+      const state = classify(leaf.id, waiting, active, everActive);
       if (state === "attention") attention++;
       else if (state === "executing") executing++;
+      else if (state === "waiting") waitingCount++;
       entries.push({
         kind: leaf.agent.kind,
         command: leaf.agent.command,
@@ -98,7 +115,13 @@ export function workspaceAgentSummary(
       });
     }
   }
-  return { entries, total: entries.length, attention, executing };
+  return {
+    entries,
+    total: entries.length,
+    attention,
+    executing,
+    waiting: waitingCount,
+  };
 }
 
 /**
@@ -116,22 +139,25 @@ export interface WorkspaceAgentStatus {
 }
 
 /**
- * Map each workspace id to its aggregate agent status. Only workspaces with a
- * *running* agent are included: an agent that is merely present but idle (at
- * its prompt, producing no output) is omitted, so `.has(id)` gates the dot to
- * "an agent is actively working / needs you" rather than "an agent exists".
- * Workspaces whose agents are all idle are dropped entirely.
+ * Map each workspace id to its aggregate agent status. Only workspaces with an
+ * agent that is executing, waiting for input, or blocked on the bell are
+ * included: an agent that has *never* produced output this session (freshly
+ * launched / restored and dormant, classified `idle`) is omitted, so `.has(id)`
+ * gates the dot to "an agent is working / waiting on you" rather than merely
+ * "an agent exists". Workspaces whose agents are all idle are dropped entirely.
  */
 export function workspacesAgentStatus(
   workspaces: Workspace[],
   waiting: Set<string>,
-  active: Set<string>
+  active: Set<string>,
+  everActive: Set<string> = new Set()
 ): Map<string, WorkspaceAgentStatus> {
   const out = new Map<string, WorkspaceAgentStatus>();
   const rank: Record<AgentRunState, number> = {
     idle: 0,
-    executing: 1,
-    attention: 2,
+    waiting: 1,
+    executing: 2,
+    attention: 3,
   };
   for (const ws of workspaces) {
     let total = 0;
@@ -141,12 +167,12 @@ export function workspacesAgentStatus(
       for (const leaf of collectLeaves(tab.root)) {
         if (!leaf.agent) continue;
         total++;
-        const state = classify(leaf.id, waiting, active);
+        const state = classify(leaf.id, waiting, active, everActive);
         if (rank[state] > rank[best]) best = state;
       }
     }
-    // Only surface a dot when an agent is actually running (executing) or
-    // blocked on the user (attention). All-idle workspaces show nothing.
+    // Only surface a dot when an agent is actually running (executing), waiting
+    // on the user, or ringing the bell. All-idle workspaces show nothing.
     if (total > 0 && best !== "idle") out.set(ws.id, { total, state: best });
   }
   return out;

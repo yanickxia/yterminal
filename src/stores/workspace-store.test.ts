@@ -196,3 +196,65 @@ describe("reorderTab pinned guard", () => {
     expect(tabs.map((t) => t.id)).toEqual(["u3", "u1", "u2"]);
   });
 });
+
+describe("tab name: manual override vs auto title", () => {
+  function seedOneTab() {
+    useWorkspaceStore.setState({
+      workspaces: [
+        {
+          id: "w",
+          name: "w",
+          tabs: [
+            {
+              id: "t",
+              name: "shell",
+              cwd: "~",
+              root: { id: "t-leaf", kind: "leaf", cwd: "~" },
+              activePaneId: "t-leaf",
+            },
+          ],
+          activeTabId: "t",
+        },
+      ] as any,
+      activeWorkspaceId: "w",
+    });
+  }
+  const tab = () => useWorkspaceStore.getState().workspaces[0].tabs[0];
+
+  it("setTabAutoName drives Tab.name while there is no customName", () => {
+    seedOneTab();
+    useWorkspaceStore.getState().setTabAutoName("w", "t", "claude");
+    expect(tab().name).toBe("claude");
+    expect(tab().customName).toBeUndefined();
+  });
+
+  it("renameTab pins customName and blocks the auto title", () => {
+    seedOneTab();
+    useWorkspaceStore.getState().renameTab("w", "t", "My Tab");
+    expect(tab().name).toBe("My Tab");
+    expect(tab().customName).toBe("My Tab");
+    // auto title is now suppressed
+    useWorkspaceStore.getState().setTabAutoName("w", "t", "claude");
+    expect(tab().name).toBe("My Tab");
+  });
+
+  it("clearTabCustomName lets the auto title take over again", () => {
+    seedOneTab();
+    useWorkspaceStore.getState().renameTab("w", "t", "My Tab");
+    useWorkspaceStore.getState().clearTabCustomName("w", "t");
+    expect(tab().customName).toBeUndefined();
+    // name is unchanged until the next title arrives
+    expect(tab().name).toBe("My Tab");
+    // and the auto title now flows through
+    useWorkspaceStore.getState().setTabAutoName("w", "t", "claude");
+    expect(tab().name).toBe("claude");
+  });
+
+  it("clearTabCustomName is a no-op when there is no customName", () => {
+    seedOneTab();
+    const before = useWorkspaceStore.getState().workspaces;
+    useWorkspaceStore.getState().clearTabCustomName("w", "t");
+    // same object reference back => store did not churn
+    expect(useWorkspaceStore.getState().workspaces).toBe(before);
+  });
+});

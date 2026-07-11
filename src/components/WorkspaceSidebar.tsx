@@ -85,6 +85,7 @@ export function WorkspaceSidebar({
   // area, so it's visible no matter which workspace is active.
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
+  const everActive = useActivityStore((s) => s.everActive);
   const attentionEntries = tabsNeedingAttention(workspaces, waiting);
   const attentionByWs = new Map<string, number>();
   for (const e of attentionEntries) {
@@ -93,9 +94,9 @@ export function WorkspaceSidebar({
   // Per-workspace agent status (cmux-style): one aggregate dot per row showing
   // the most urgent agent state across the workspace. The bell-based attention
   // pip above is a separate, tab-scoped signal (a chime you must acknowledge);
-  // this is a lower-key "N agents, currently working/idle" indicator so every
+  // this is a lower-key "N agents, currently working/waiting" indicator so every
   // row surfaces its own agents regardless of which workspace is active.
-  const agentByWs = workspacesAgentStatus(workspaces, waiting, active);
+  const agentByWs = workspacesAgentStatus(workspaces, waiting, active, everActive);
 
   /**
    * Navigate to a waiting tab: activate its workspace + tab, acknowledge the
@@ -501,7 +502,7 @@ export function WorkspaceSidebar({
                     title={
                       agentByWs.get(w.id)!.state === "executing"
                         ? `${agentByWs.get(w.id)!.total} agent(s) working`
-                        : `${agentByWs.get(w.id)!.total} agent(s) waiting`
+                        : `${agentByWs.get(w.id)!.total} agent(s) waiting for input`
                     }
                     aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
                   />

@@ -1,7 +1,7 @@
 import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Tab, Workspace } from "../lib/types";
-import { addTabInheritingCwd, disposeSession } from "../lib/terminal-manager";
+import { addTabInheritingCwd, disposeSession, reapplyPaneTitle } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { useViewerStore } from "../stores/viewer-store";
 import { EmojiPicker } from "./EmojiPicker";
@@ -12,6 +12,7 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const removeTab = useWorkspaceStore((s) => s.removeTab);
   const renameTab = useWorkspaceStore((s) => s.renameTab);
+  const clearTabCustomName = useWorkspaceStore((s) => s.clearTabCustomName);
   const setTabIcon = useWorkspaceStore((s) => s.setTabIcon);
   const splitActivePane = useWorkspaceStore((s) => s.splitActivePane);
   const reorderTab = useWorkspaceStore((s) => s.reorderTab);
@@ -58,7 +59,17 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
   }
 
   function commitRename(tabId: string) {
-    if (draft.trim()) renameTab(workspace.id, tabId, draft.trim());
+    const trimmed = draft.trim();
+    if (trimmed) {
+      renameTab(workspace.id, tabId, trimmed);
+    } else {
+      // Clearing the field = "reset to auto name": drop the manual customName so
+      // the shell/agent title stream drives the tab again, and re-apply the last
+      // reported title immediately. No-op for file tabs (no title stream).
+      const tab = workspace.tabs.find((t) => t.id === tabId);
+      clearTabCustomName(workspace.id, tabId);
+      if (tab && !tab.file) reapplyPaneTitle(tab.activePaneId);
+    }
     setEditingId(null);
   }
 
@@ -126,6 +137,20 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
         label: "Rename",
         onClick: () => beginEdit(tab.id, tab.name),
       },
+      // Only meaningful for a manually-renamed terminal tab: dropping customName
+      // hands the name back to the shell/agent title stream (OSC 0/2), so e.g.
+      // Claude can drive it again. File tabs have no title stream.
+      ...(tab.customName !== undefined && !tab.file
+        ? [
+            {
+              label: "Use Auto Name",
+              onClick: () => {
+                clearTabCustomName(workspace.id, tab.id);
+                reapplyPaneTitle(tab.activePaneId);
+              },
+            },
+          ]
+        : []),
       { separator: true },
       {
         label: "Close",
