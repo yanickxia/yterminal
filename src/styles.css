@@ -423,6 +423,13 @@ body {
 .rail-agent-dot.executing {
   animation: agent-blink 1s steps(2, jump-none) infinite;
 }
+/* waiting — worked and is now silent, waiting for your input: steady, full
+   brightness green so it reads as "it's your turn" (calmer than the amber
+   bell-attention pip, brighter than a dormant idle agent). */
+.ws-agent-status-dot.waiting,
+.rail-agent-dot.waiting {
+  opacity: 1;
+}
 .ws-agent-status-dot.idle,
 .rail-agent-dot.idle {
   opacity: 0.4;
@@ -545,7 +552,12 @@ body {
   background: #9ece6a;
   animation: agent-blink 1s steps(2, jump-none) infinite;
 }
-/* idle — running but at rest / at a prompt: steady, dimmed green. */
+/* waiting — worked, now silent, waiting for your input: steady bright green. */
+.ws-agent-dot.waiting {
+  background: #9ece6a;
+  opacity: 1;
+}
+/* idle — never produced output this session (dormant): steady, dimmed green. */
 .ws-agent-dot.idle {
   background: #9ece6a;
   opacity: 0.4;

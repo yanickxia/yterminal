@@ -35,6 +35,7 @@ const KIND_LABEL: Record<AgentKind, string> = {
 /** Human words for each run-state, used in chip tooltips. */
 const STATE_WORD: Record<AgentRunState, string> = {
   executing: "working",
+  waiting: "waiting for input",
   idle: "idle",
   attention: "waiting for you",
 };
@@ -46,9 +47,10 @@ export function WorkspaceStatusBar() {
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
+  const everActive = useActivityStore((s) => s.everActive);
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
-  const summary = workspaceAgentSummary(workspace, waiting, active);
+  const summary = workspaceAgentSummary(workspace, waiting, active, everActive);
   if (summary.total === 0) return null;
 
   // Jump to the pane running an agent: activate its tab + pane, acknowledge the
@@ -68,9 +70,9 @@ export function WorkspaceStatusBar() {
       <span className="ws-statusbar-summary">
         <span className="ws-statusbar-title">Agents</span>
         <span className="ws-statusbar-count">{summary.total}</span>
-        {summary.attention > 0 && (
+        {summary.attention + summary.waiting > 0 && (
           <span className="ws-statusbar-attention">
-            {summary.attention} waiting
+            {summary.attention + summary.waiting} waiting
           </span>
         )}
       </span>

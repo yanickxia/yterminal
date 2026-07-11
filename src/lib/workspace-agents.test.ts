@@ -41,7 +41,13 @@ function ws(tabs: Tab[], id = "w1", name = "Work"): Workspace {
 describe("workspaceAgentSummary", () => {
   it("returns an empty summary for an undefined workspace", () => {
     const s = workspaceAgentSummary(undefined, new Set());
-    expect(s).toEqual({ entries: [], total: 0, attention: 0, executing: 0 });
+    expect(s).toEqual({
+      entries: [],
+      total: 0,
+      attention: 0,
+      executing: 0,
+      waiting: 0,
+    });
   });
 
   it("returns an empty summary when no pane has an agent", () => {
@@ -60,8 +66,34 @@ describe("workspaceAgentSummary", () => {
     expect(s.total).toBe(2);
     expect(s.entries.map((e) => e.kind)).toEqual(["claude", "codex"]);
     expect(s.entries.map((e) => e.paneId)).toEqual(["p1", "p2"]);
-    // no active set given → both fall to "idle".
+    // no active/everActive set given → both fall to "idle" (never produced output).
     expect(s.entries.every((e) => e.state === "idle")).toBe(true);
+  });
+
+  it("classifies a worked-then-quiet agent (everActive, not active) as waiting", () => {
+    const w = ws([
+      tab("t1", leaf("p1", { agent: agent("claude") })),
+      tab("t2", leaf("p2", { agent: agent("codex") })),
+    ]);
+    // p1 produced output earlier this session but is silent now → waiting.
+    // p2 never produced output → idle.
+    const s = workspaceAgentSummary(w, new Set(), new Set(), new Set(["p1"]));
+    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("waiting");
+    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("idle");
+    expect(s.waiting).toBe(1);
+  });
+
+  it("prefers executing over waiting when an everActive pane is still active", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(["p1"]),
+      new Set(["p1"])
+    );
+    expect(s.entries[0].state).toBe("executing");
+    expect(s.executing).toBe(1);
+    expect(s.waiting).toBe(0);
   });
 
   it("walks split trees left-to-right and finds nested agent panes", () => {
@@ -143,13 +175,20 @@ describe("workspaceAgentSummary", () => {
 });
 
 describe("workspacesAgentStatus", () => {
-  it("omits workspaces with no agent, and workspaces whose agents are all idle", () => {
+  it("omits workspaces with no agent, and workspaces whose agents never ran", () => {
     const a = ws([tab("t1", leaf("p1"))], "w1");
     const b = ws([tab("t2", leaf("p2", { agent: agent("claude") }))], "w2");
-    // w1 has no agent; w2's only agent is idle (not waiting, not active).
-    const m = workspacesAgentStatus([a, b], new Set(), new Set());
+    // w1 has no agent; w2's only agent never produced output (idle) → hidden.
+    const m = workspacesAgentStatus([a, b], new Set(), new Set(), new Set());
     expect(m.has("w1")).toBe(false);
     expect(m.has("w2")).toBe(false);
+  });
+
+  it("surfaces a worked-then-quiet agent as waiting", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
+    // p1 produced output earlier but is silent now → waiting dot shows.
+    const m = workspacesAgentStatus([w], new Set(), new Set(), new Set(["p1"]));
+    expect(m.get("w1")).toEqual({ total: 1, state: "waiting" });
   });
 
   it("surfaces an executing agent even when other panes are idle", () => {
@@ -161,7 +200,7 @@ describe("workspacesAgentStatus", () => {
       "w1"
     );
     // p1 idle, p2 executing → workspace shows, best state executing, total 2.
-    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]));
+    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]), new Set());
     expect(m.get("w1")).toEqual({ total: 2, state: "executing" });
   });
 
@@ -174,7 +213,12 @@ describe("workspacesAgentStatus", () => {
       "w1"
     );
     // p1 executing, p2 waiting → most urgent = attention, total 2.
-    const m = workspacesAgentStatus([w], new Set(["p2"]), new Set(["p1"]));
+    const m = workspacesAgentStatus(
+      [w],
+      new Set(["p2"]),
+      new Set(["p1"]),
+      new Set()
+    );
     expect(m.get("w1")).toEqual({ total: 2, state: "attention" });
   });
 
@@ -186,7 +230,7 @@ describe("workspacesAgentStatus", () => {
       ],
       "w1"
     );
-    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]));
+    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]), new Set());
     expect(m.get("w1")).toEqual({ total: 2, state: "executing" });
   });
 
@@ -199,7 +243,7 @@ describe("workspacesAgentStatus", () => {
       ],
       "w1"
     );
-    const m = workspacesAgentStatus([w], new Set(), new Set());
+    const m = workspacesAgentStatus([w], new Set(), new Set(), new Set());
     expect(m.has("w1")).toBe(false);
   });
 });
