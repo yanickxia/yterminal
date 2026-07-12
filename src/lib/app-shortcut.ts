@@ -29,6 +29,7 @@ export type AppShortcut =
   | { action: "newWorkspace" }
   | { action: "newTab" }
   | { action: "search" }
+  | { action: "overview" }
   | { action: "split"; column: boolean }
   | { action: "closeCascade" }
   | { action: "closePane" }
@@ -74,6 +75,8 @@ export function matchAppShortcut(e: KeyLike, isMac: boolean): AppShortcut | null
       return sub ? null : { action: "newTab" };
     case "f":
       return sub ? null : { action: "search" };
+    case "o":
+      return sub ? null : { action: "overview" };
     // Has a sub-variant.
     case "d":
       return { action: "split", column: sub };
