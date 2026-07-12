@@ -4,8 +4,8 @@
 
 import type { Workspace } from "./types";
 import type { AgentHookState } from "./agent-hook-osc";
-import type { WorkspaceAgentEntry, AgentRunState } from "./workspace-agents";
-import { classify } from "./workspace-agents";
+import type { WorkspaceAgentEntry } from "./workspace-agents";
+import { classify, AGENT_STATE_RANK } from "./workspace-agents";
 import { collectLeaves } from "./pane-tree";
 
 /** 透视图卡片网格的固定列数。用固定值让键盘方向键的行/列换算确定、可测。 */
@@ -17,14 +17,6 @@ export interface AgentOverviewEntry extends WorkspaceAgentEntry {
   workspaceName: string;
   workspaceIcon?: string;
 }
-
-// 紧急度排序权重（数值大 = 更靠前）。
-const RANK: Record<AgentRunState, number> = {
-  attention: 3,
-  executing: 2,
-  waiting: 1,
-  idle: 0,
-};
 
 /**
  * 跨所有 workspace 收集每一个运行着 coding agent 的 pane（含空闲）。file tab
@@ -70,6 +62,6 @@ export function collectAllAgents(
   }
   return entries
     .map((e, i) => ({ e, i }))
-    .sort((a, b) => RANK[b.e.state] - RANK[a.e.state] || a.i - b.i)
+    .sort((a, b) => AGENT_STATE_RANK[b.e.state] - AGENT_STATE_RANK[a.e.state] || a.i - b.i)
     .map(({ e }) => e);
 }

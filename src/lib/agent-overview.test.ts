@@ -75,4 +75,11 @@ describe("collectAllAgents", () => {
   it("导出固定网格列数常量", () => {
     expect(OVERVIEW_COLS).toBe(3);
   });
+
+  it("focusedPaneId 抑制 waiting -> idle（跨 workspace 透传 classify）", () => {
+    const workspaces = [ws("w1", "Alpha", [leaf("p1", "claude")])];
+    const everActive = new Set(["p1"]);
+    const out = collectAllAgents(workspaces, empty, empty, everActive, "p1");
+    expect(out[0].state).toBe("idle");
+  });
 });

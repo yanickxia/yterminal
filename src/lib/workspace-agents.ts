@@ -38,6 +38,15 @@ export type { AgentKind };
 /** Run-state of a single agent pane. */
 export type AgentRunState = "executing" | "waiting" | "idle" | "attention";
 
+/** Urgency ranking of agent run-states (higher = more urgent). Shared so the
+ * sidebar roll-up and the overview aggregator sort by one definition. */
+export const AGENT_STATE_RANK: Record<AgentRunState, number> = {
+  idle: 0,
+  waiting: 1,
+  executing: 2,
+  attention: 3,
+};
+
 /** One coding agent detected in a workspace, with its owning tab/pane. */
 export interface WorkspaceAgentEntry {
   kind: AgentKind;
@@ -184,12 +193,6 @@ export function workspacesAgentStatus(
   hookState?: Map<string, AgentHookState>
 ): Map<string, WorkspaceAgentStatus> {
   const out = new Map<string, WorkspaceAgentStatus>();
-  const rank: Record<AgentRunState, number> = {
-    idle: 0,
-    waiting: 1,
-    executing: 2,
-    attention: 3,
-  };
   for (const ws of workspaces) {
     let total = 0;
     let best: AgentRunState = "idle";
@@ -206,7 +209,7 @@ export function workspacesAgentStatus(
           focusedPaneId,
           hookState
         );
-        if (rank[state] > rank[best]) best = state;
+        if (AGENT_STATE_RANK[state] > AGENT_STATE_RANK[best]) best = state;
       }
     }
     // Only surface a dot when an agent is actually running (executing), waiting
