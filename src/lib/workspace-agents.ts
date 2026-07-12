@@ -76,7 +76,7 @@ export interface WorkspaceAgentSummary {
  * already staring at it (same rule the bell path applies via `isPaneFocused`).
  * Focus does NOT suppress `executing` or `attention`; it only mutes the passive
  * waiting nag, dropping the pane to `idle`. */
-function classify(
+export function classify(
   paneId: string,
   waiting: Set<string>,
   active: Set<string>,
