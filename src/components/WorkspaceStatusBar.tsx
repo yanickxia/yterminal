@@ -42,7 +42,11 @@ const STATE_WORD: Record<AgentRunState, string> = {
   attention: "waiting for you",
 };
 
-export function WorkspaceStatusBar() {
+export function WorkspaceStatusBar({
+  onOpenOverview,
+}: {
+  onOpenOverview: () => void;
+}) {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
@@ -87,6 +91,14 @@ export function WorkspaceStatusBar() {
           </span>
         )}
       </span>
+      <button
+        type="button"
+        className="ws-statusbar-overview"
+        title="打开 Agent 透视图 (⌘O)"
+        onClick={onOpenOverview}
+      >
+        ⤢
+      </button>
       <div className="ws-statusbar-chips">
         {summary.entries.map((e) => (
           <button
