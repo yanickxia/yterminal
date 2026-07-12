@@ -13,6 +13,7 @@ import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { Workspace } from "../lib/types";
 import { disposeSession, scrollSessionToBottom } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
+import { useFocusedPaneId } from "../lib/use-focused-pane";
 
 /** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
 function railGlyph(name: string, icon?: string): string {
@@ -86,6 +87,7 @@ export function WorkspaceSidebar({
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
   const everActive = useActivityStore((s) => s.everActive);
+  const focusedPaneId = useFocusedPaneId();
   const attentionEntries = tabsNeedingAttention(workspaces, waiting);
   const attentionByWs = new Map<string, number>();
   for (const e of attentionEntries) {
@@ -95,8 +97,16 @@ export function WorkspaceSidebar({
   // the most urgent agent state across the workspace. The bell-based attention
   // pip above is a separate, tab-scoped signal (a chime you must acknowledge);
   // this is a lower-key "N agents, currently working/waiting" indicator so every
-  // row surfaces its own agents regardless of which workspace is active.
-  const agentByWs = workspacesAgentStatus(workspaces, waiting, active, everActive);
+  // row surfaces its own agents regardless of which workspace is active. The
+  // focused pane is passed so its passive "waiting" nag is suppressed while the
+  // user is looking at it (matches the bell path).
+  const agentByWs = workspacesAgentStatus(
+    workspaces,
+    waiting,
+    active,
+    everActive,
+    focusedPaneId
+  );
 
   /**
    * Navigate to a waiting tab: activate its workspace + tab, acknowledge the

@@ -24,6 +24,7 @@ import {
 } from "../lib/workspace-agents";
 import { collectLeafIds } from "../lib/pane-tree";
 import { scrollSessionToBottom } from "../lib/terminal-manager";
+import { useFocusedPaneId } from "../lib/use-focused-pane";
 
 /** Short display label per agent kind. */
 const KIND_LABEL: Record<AgentKind, string> = {
@@ -48,9 +49,16 @@ export function WorkspaceStatusBar() {
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
   const everActive = useActivityStore((s) => s.everActive);
+  const focusedPaneId = useFocusedPaneId();
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
-  const summary = workspaceAgentSummary(workspace, waiting, active, everActive);
+  const summary = workspaceAgentSummary(
+    workspace,
+    waiting,
+    active,
+    everActive,
+    focusedPaneId
+  );
   if (summary.total === 0) return null;
 
   // Jump to the pane running an agent: activate its tab + pane, acknowledge the
