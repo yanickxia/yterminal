@@ -153,6 +153,7 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
                 className={
                   "agent-card " + e.state + (i === cursor ? " active" : "")
                 }
+                aria-label={`${KIND_LABEL[e.kind]} in ${e.tabName}, ${e.workspaceName}`}
                 onMouseEnter={() => setCursor(i)}
                 onMouseDown={(ev) => {
                   ev.preventDefault();
@@ -173,7 +174,7 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
                   {e.tabIcon && <span className="agent-card-tab-icon">{e.tabIcon}</span>}
                   {e.tabName}
                 </div>
-                <pre className="agent-card-preview">
+                <pre className="agent-card-preview" aria-hidden="true">
                   {previews.get(e.paneId) || "（无输出）"}
                 </pre>
               </button>
