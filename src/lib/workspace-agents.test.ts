@@ -96,6 +96,94 @@ describe("workspaceAgentSummary", () => {
     expect(s.waiting).toBe(0);
   });
 
+  it("hook `permission` maps to attention, even on the focused pane", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(),
+      new Set(),
+      "p1", // focused
+      new Map([["p1", "permission"]])
+    );
+    expect(s.entries[0].state).toBe("attention");
+    expect(s.attention).toBe(1);
+  });
+
+  it("hook `working` maps to executing", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(),
+      new Set(),
+      undefined,
+      new Map([["p1", "working"]])
+    );
+    expect(s.entries[0].state).toBe("executing");
+  });
+
+  it("hook `idle` maps to waiting, and is focus-suppressed", () => {
+    const w = ws([
+      tab("t1", leaf("p1", { agent: agent("claude") })),
+      tab("t2", leaf("p2", { agent: agent("claude") })),
+    ]);
+    // p1 focused → suppressed to idle; p2 unfocused → waiting.
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(),
+      new Set(),
+      "p1",
+      new Map([
+        ["p1", "idle"],
+        ["p2", "idle"],
+      ])
+    );
+    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("idle");
+    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("waiting");
+  });
+
+  it("live output (active) overrides a stale hook `idle` → executing", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(["p1"]), // producing output right now
+      new Set(["p1"]),
+      undefined,
+      new Map([["p1", "idle"]]) // stale hook state
+    );
+    expect(s.entries[0].state).toBe("executing");
+  });
+
+  it("bell attention still wins over a hook `working` state", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    const s = workspaceAgentSummary(
+      w,
+      new Set(["p1"]), // rang the bell
+      new Set(),
+      new Set(),
+      undefined,
+      new Map([["p1", "working"]])
+    );
+    expect(s.entries[0].state).toBe("attention");
+  });
+
+  it("falls back to the heuristic when no hook state is present", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("codex") }))]);
+    // no hook (Codex has none): worked-then-quiet → waiting via everActive.
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(),
+      new Set(["p1"]),
+      undefined,
+      new Map()
+    );
+    expect(s.entries[0].state).toBe("waiting");
+  });
+
   it("does not mark the focused pane as waiting (you're already looking at it)", () => {
     const w = ws([
       tab("t1", leaf("p1", { agent: agent("claude") })),
@@ -290,5 +378,31 @@ describe("workspacesAgentStatus", () => {
     );
     const m = workspacesAgentStatus([w], new Set(), new Set(), new Set());
     expect(m.has("w1")).toBe(false);
+  });
+
+  it("surfaces a hook `permission` as attention", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
+    const m = workspacesAgentStatus(
+      [w],
+      new Set(),
+      new Set(),
+      new Set(),
+      undefined,
+      new Map([["p1", "permission"]])
+    );
+    expect(m.get("w1")).toEqual({ total: 1, state: "attention" });
+  });
+
+  it("surfaces a hook `working` as executing", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
+    const m = workspacesAgentStatus(
+      [w],
+      new Set(),
+      new Set(),
+      new Set(),
+      undefined,
+      new Map([["p1", "working"]])
+    );
+    expect(m.get("w1")).toEqual({ total: 1, state: "executing" });
   });
 });

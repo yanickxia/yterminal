@@ -49,6 +49,8 @@ import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { markAttention } from "../stores/attention-store";
 import { markActivity, clearActivity } from "../stores/activity-store";
+import { setHookState, clearHookState } from "../stores/hook-state-store";
+import { parseAgentHookOsc } from "./agent-hook-osc";
 import { playAlertSound } from "./alert-sound";
 import { findLeaf } from "./pane-tree";
 import { logger } from "./logger";
@@ -719,6 +721,20 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     return true;
   });
 
+  // OSC 777 (agent status): the Claude Code hooks we install (see
+  // install_claude_hooks in main.rs) emit `notify;yt-agent;<state>` through the
+  // agent's own PTY on each lifecycle event, so the bytes arrive on THIS pane's
+  // stream and this handler closure-captures the pane id — no session matching
+  // needed. parseAgentHookOsc returns null for any real (non-yterminal) OSC 777
+  // notification, which we pass through (return false) untouched.
+  term.parser.registerOscHandler(777, (data) => {
+    const parsed = parseAgentHookOsc(data);
+    if (parsed === null) return false;
+    if (parsed === "ended") clearHookState(tabId);
+    else setHookState(tabId, parsed);
+    return true;
+  });
+
   // Multi-line input bridge for TUIs (Claude Code, Ink-based prompts, fish/zsh
   // continuation, etc.) AND multiplexer key passthrough: plain Enter sends CR
   // (submit). Any modified Enter (Cmd/Ctrl/Alt/Shift) is emitted as its CSI-u
@@ -858,6 +874,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (s?.disposed) return;
     if (s) s.exited = true;
     clearActivity(tabId);
+    clearHookState(tabId);
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
     // notify the app so it can close the now-dead pane (standard terminal
     // behavior: exiting the shell closes the split / tab).
@@ -1082,6 +1099,7 @@ export function disposeSession(tabId: string) {
   s.disposed = true;
   sessions.delete(tabId);
   clearActivity(tabId);
+  clearHookState(tabId);
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();

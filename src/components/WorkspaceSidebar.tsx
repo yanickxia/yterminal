@@ -5,6 +5,7 @@ import { useGitStore } from "../stores/git-store";
 import { useLayoutStore } from "../stores/layout-store";
 import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
 import { useActivityStore } from "../stores/activity-store";
+import { useHookStateStore } from "../stores/hook-state-store";
 import { tabsNeedingAttention } from "../lib/attention";
 import { workspacesAgentStatus } from "../lib/workspace-agents";
 import { SettingsPanel } from "./SettingsPanel";
@@ -87,6 +88,7 @@ export function WorkspaceSidebar({
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
   const everActive = useActivityStore((s) => s.everActive);
+  const hookState = useHookStateStore((s) => s.state);
   const focusedPaneId = useFocusedPaneId();
   const attentionEntries = tabsNeedingAttention(workspaces, waiting);
   const attentionByWs = new Map<string, number>();
@@ -105,7 +107,8 @@ export function WorkspaceSidebar({
     waiting,
     active,
     everActive,
-    focusedPaneId
+    focusedPaneId,
+    hookState
   );
 
   /**

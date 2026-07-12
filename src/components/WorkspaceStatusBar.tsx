@@ -17,6 +17,7 @@
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
 import { useActivityStore } from "../stores/activity-store";
+import { useHookStateStore } from "../stores/hook-state-store";
 import {
   workspaceAgentSummary,
   type AgentKind,
@@ -49,6 +50,7 @@ export function WorkspaceStatusBar() {
   const waiting = useAttentionStore((s) => s.waiting);
   const active = useActivityStore((s) => s.active);
   const everActive = useActivityStore((s) => s.everActive);
+  const hookState = useHookStateStore((s) => s.state);
   const focusedPaneId = useFocusedPaneId();
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -57,7 +59,8 @@ export function WorkspaceStatusBar() {
     waiting,
     active,
     everActive,
-    focusedPaneId
+    focusedPaneId,
+    hookState
   );
   if (summary.total === 0) return null;
 
