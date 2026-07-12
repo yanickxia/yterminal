@@ -2297,3 +2297,8 @@ body {
   opacity: 0.7;
 }
 .ws-statusbar-overview:hover { opacity: 1; }
+
+.palette-row.palette-action {
+  border-bottom: 1px solid var(--bg-light, #333);
+  opacity: 0.9;
+}

@@ -439,7 +439,10 @@ export default function App() {
       )}
       {aiOpen && <AiSidebar />}
       {paletteOpen && (
-        <WorkspacePalette onClose={() => setPaletteOpen(false)} />
+        <WorkspacePalette
+          onClose={() => setPaletteOpen(false)}
+          onOpenOverview={() => setOverviewOpen(true)}
+        />
       )}
       {overviewOpen && <AgentOverview onClose={() => setOverviewOpen(false)} />}
       <UpdateDialog

@@ -5,7 +5,13 @@ import { useWorkspaceStore } from "../stores/workspace-store";
  * Cmd/Ctrl+K quick switcher: fuzzy-search every (workspace, tab) pair and jump
  * to one with the keyboard. Modeled on the VSCode / Linear command palette.
  */
-export function WorkspacePalette({ onClose }: { onClose: () => void }) {
+export function WorkspacePalette({
+  onClose,
+  onOpenOverview,
+}: {
+  onClose: () => void;
+  onOpenOverview: () => void;
+}) {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
@@ -119,6 +125,19 @@ export function WorkspacePalette({ onClose }: { onClose: () => void }) {
           onChange={(e) => setQuery(e.target.value)}
           spellCheck={false}
         />
+        <div className="palette-actions">
+          <div
+            className="palette-row palette-action"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onOpenOverview();
+              onClose();
+            }}
+          >
+            <span className="palette-icon">⤢</span>
+            <span className="palette-ws">打开 Agent 透视图</span>
+          </div>
+        </div>
         <div className="palette-list" ref={listRef}>
           {matches.length === 0 ? (
             <div className="palette-empty">No matches</div>
