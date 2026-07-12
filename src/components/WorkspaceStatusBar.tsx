@@ -26,6 +26,11 @@ import {
 import { collectLeafIds } from "../lib/pane-tree";
 import { scrollSessionToBottom } from "../lib/terminal-manager";
 import { useFocusedPaneId } from "../lib/use-focused-pane";
+import { detectIsMac } from "../lib/link-modifier";
+
+// Platform detected once at module load (same canonical source as App.tsx and
+// the link modifier), so the overview-button tooltip shows the right chord.
+const isMac = detectIsMac();
 
 /** Short display label per agent kind. */
 const KIND_LABEL: Record<AgentKind, string> = {
@@ -94,7 +99,7 @@ export function WorkspaceStatusBar({
       <button
         type="button"
         className="ws-statusbar-overview"
-        title="打开 Agent 透视图 (⌘O)"
+        title={`打开 Agent 透视图 (${isMac ? "⌘O" : "Ctrl+Shift+O"})`}
         onClick={onOpenOverview}
       >
         ⤢
