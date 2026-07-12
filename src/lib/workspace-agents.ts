@@ -65,16 +65,25 @@ export interface WorkspaceAgentSummary {
   waiting: number;
 }
 
-/** Classify one agent pane from the three ephemeral signal sets. */
+/** Classify one agent pane from the ephemeral signal sets.
+ *
+ * `focusedPaneId` is the pane the user is currently looking at (active pane of
+ * the active tab in the active workspace, when the window has focus). The
+ * focused pane is never reported as `waiting`: "worked, now it's your turn" is
+ * pointless when you're already staring at it — same rule the bell path applies
+ * via `isPaneFocused`. Focus does NOT suppress `executing` (it's genuinely
+ * producing output) or `attention` (an explicit bell); it only mutes the
+ * passive waiting nag, dropping the pane to `idle`. */
 function classify(
   paneId: string,
   waiting: Set<string>,
   active: Set<string>,
-  everActive: Set<string>
+  everActive: Set<string>,
+  focusedPaneId?: string
 ): AgentRunState {
   if (waiting.has(paneId)) return "attention";
   if (active.has(paneId)) return "executing";
-  if (everActive.has(paneId)) return "waiting";
+  if (everActive.has(paneId) && paneId !== focusedPaneId) return "waiting";
   return "idle";
 }
 
@@ -88,7 +97,8 @@ export function workspaceAgentSummary(
   workspace: Workspace | undefined,
   waiting: Set<string>,
   active: Set<string> = new Set(),
-  everActive: Set<string> = new Set()
+  everActive: Set<string> = new Set(),
+  focusedPaneId?: string
 ): WorkspaceAgentSummary {
   const entries: WorkspaceAgentEntry[] = [];
   if (!workspace)
@@ -100,7 +110,7 @@ export function workspaceAgentSummary(
     if (tab.file) continue;
     for (const leaf of collectLeaves(tab.root)) {
       if (!leaf.agent) continue;
-      const state = classify(leaf.id, waiting, active, everActive);
+      const state = classify(leaf.id, waiting, active, everActive, focusedPaneId);
       if (state === "attention") attention++;
       else if (state === "executing") executing++;
       else if (state === "waiting") waitingCount++;
@@ -150,7 +160,8 @@ export function workspacesAgentStatus(
   workspaces: Workspace[],
   waiting: Set<string>,
   active: Set<string>,
-  everActive: Set<string> = new Set()
+  everActive: Set<string> = new Set(),
+  focusedPaneId?: string
 ): Map<string, WorkspaceAgentStatus> {
   const out = new Map<string, WorkspaceAgentStatus>();
   const rank: Record<AgentRunState, number> = {
@@ -167,7 +178,7 @@ export function workspacesAgentStatus(
       for (const leaf of collectLeaves(tab.root)) {
         if (!leaf.agent) continue;
         total++;
-        const state = classify(leaf.id, waiting, active, everActive);
+        const state = classify(leaf.id, waiting, active, everActive, focusedPaneId);
         if (rank[state] > rank[best]) best = state;
       }
     }

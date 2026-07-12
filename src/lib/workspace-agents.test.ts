@@ -96,6 +96,38 @@ describe("workspaceAgentSummary", () => {
     expect(s.waiting).toBe(0);
   });
 
+  it("does not mark the focused pane as waiting (you're already looking at it)", () => {
+    const w = ws([
+      tab("t1", leaf("p1", { agent: agent("claude") })),
+      tab("t2", leaf("p2", { agent: agent("codex") })),
+    ]);
+    // both worked and fell silent, but p1 is the pane the user is looking at →
+    // p1 drops to idle (no nag), p2 stays waiting.
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(),
+      new Set(["p1", "p2"]),
+      "p1"
+    );
+    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("idle");
+    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("waiting");
+    expect(s.waiting).toBe(1);
+  });
+
+  it("still marks the focused pane as executing while it is producing output", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
+    // focused AND active → executing wins; focus only suppresses the waiting nag.
+    const s = workspaceAgentSummary(
+      w,
+      new Set(),
+      new Set(["p1"]),
+      new Set(["p1"]),
+      "p1"
+    );
+    expect(s.entries[0].state).toBe("executing");
+  });
+
   it("walks split trees left-to-right and finds nested agent panes", () => {
     const w = ws([
       tab(
@@ -189,6 +221,19 @@ describe("workspacesAgentStatus", () => {
     // p1 produced output earlier but is silent now → waiting dot shows.
     const m = workspacesAgentStatus([w], new Set(), new Set(), new Set(["p1"]));
     expect(m.get("w1")).toEqual({ total: 1, state: "waiting" });
+  });
+
+  it("hides the dot when the only waiting agent is the focused pane", () => {
+    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
+    // p1 is worked-then-quiet but it's the focused pane → drops to idle → no dot.
+    const m = workspacesAgentStatus(
+      [w],
+      new Set(),
+      new Set(),
+      new Set(["p1"]),
+      "p1"
+    );
+    expect(m.has("w1")).toBe(false);
   });
 
   it("surfaces an executing agent even when other panes are idle", () => {
