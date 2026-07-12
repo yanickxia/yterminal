@@ -48,7 +48,11 @@
 
 ```ts
 // src/lib/agent-overview.ts
-import type { WorkspaceAgentEntry } from "./workspace-agents";
+import type { Workspace } from "./types";
+import type { AgentHookState } from "./agent-hook-osc";
+import type { WorkspaceAgentEntry, AgentRunState } from "./workspace-agents";
+import { classify } from "./workspace-agents"; // 导出后复用
+import { collectLeaves } from "./pane-tree";
 
 /** 一个 agent 条目，在 WorkspaceAgentEntry 基础上带上归属 workspace 信息。 */
 export interface AgentOverviewEntry extends WorkspaceAgentEntry {
@@ -94,7 +98,7 @@ export function collectAllAgents(
    - `useHookStateStore(s => s.state)`
    - `useFocusedPaneId()`
 3. `useMemo` 调 `collectAllAgents(...)` 得到 `AgentOverviewEntry[]`。
-4. **预览快照**：挂载时（一次性 `useEffect`）对每个 entry 调 `getSessionText(paneId)`，`split("\n").slice(-24)` 取尾部约 24 行，存入本地 state `Map<paneId, string>`。**只抓一次**，之后不刷新。
+4. **预览快照**：挂载时（一次性 `useEffect`）对每个 entry 调 `getSessionText(paneId)`，`split("\n").slice(-24)` 取尾部约 24 行，存入本地 state `Map<paneId, string>`。**只抓一次**，之后不刷新。（注意：`getSessionText` 的形参虽名为 `tabId`，但 terminal-manager 的 sessions Map 实际按 **pane id** 键入——`AiSidebar.tsx` 也是传 paneId，所以此处传 `paneId` 正确。）
 
 ### 卡片内容
 
@@ -107,25 +111,27 @@ export function collectAllAgents(
 ### 键盘导航
 
 - `Esc` 关闭。
-- `↑/↓/←/→` 在网格里移动选中卡片（`selectedIndex` + 当前渲染列数推算行列）。
+- `↑/↓/←/→` 在网格里移动选中卡片。**列数为固定值**（如常量 `OVERVIEW_COLS = 3`，CSS grid 用 `repeat(3, 1fr)` 对齐），使 `selectedIndex` 的行/列换算确定、可测；不依赖响应式列数的运行时测量。
 - `Enter` 跳转到选中卡片的 agent，然后关闭。
 - 鼠标点击任意卡片 = 直接跳转并关闭。
 - 挂载时自动聚焦浮层容器以接管键盘（照 `WorkspacePalette` 的 `ref` focus 模式）。
 
-### 跳转实现（复用 StatusBar 三步）
+### 跳转实现（在 StatusBar 三步基础上补 setActiveWorkspace）
+
+透视图是跨 workspace 的，所以必须**先** `setActiveWorkspace(wsId)`（StatusBar 的 `jumpTo` 假设已在当前 workspace，故没有这一步——这是有意的补充，不是照抄）。`tab.root` 要用**目标 workspace 的 tabs** 解析（不能像 StatusBar 那样闭包当前 `workspace`）：
 
 ```
 setActiveWorkspace(wsId)
 setActiveTab(wsId, tabId)
 setActivePane(wsId, tabId, paneId)
-clearAttentionMany(collectLeafIds(tab.root))
+clearAttentionMany(collectLeafIds(targetTab.root))   // targetTab 从目标 workspace 查
 scrollSessionToBottom(paneId)
 onClose()
 ```
 
 ## 打开入口
 
-1. **快捷键**：`app-shortcut.ts` 新增 `"overview"` action，字母 `O`（overview，当前未占用）。遵循平台修饰键不变量：macOS `Cmd+Shift+O`，Linux/Windows `Ctrl+Shift+Alt+O`（O 作为 base action，走 `Cmd+Shift` / `Ctrl+Shift` 主链；具体 sub 变体由现有 matchAppShortcut 结构决定，实现时对齐现有 action 的绑定形态）。`App.tsx` 的 `case "overview"` 里 `consume()` + `setOverviewOpen(v => !v)`。
+1. **快捷键**：`app-shortcut.ts` 新增 `"overview"` action，字母 `O`（overview，当前未占用）。作为 **base action**，绑定形态与 `case "k"`（palette）完全一致——即 `sub ? null : { action: "overview" }`，只在**主链**触发、按住 sub 修饰时不触发。据 `app-shortcut.ts` 的平台不变量，这对应 macOS 的 **`Cmd+O`**（Cmd 单独为 base 链）、Linux/Windows 的 **`Ctrl+Shift+O`**（Ctrl+Shift 为 base 链）。O 无 sub 变体。`App.tsx` 的 `case "overview"` 里 `consume()`（已 preventDefault，覆盖掉 WKWebView 可能的 `Cmd+O` 默认行为）+ `setOverviewOpen(v => !v)`。
 2. **状态栏按钮**：`WorkspaceStatusBar.tsx` 增加一个小图标按钮，点击调用打开回调（通过 props 从 App 传入，或直接用一个轻量 store —— 实现时二选一，倾向 props 保持依赖单向）。
 3. **命令面板条目**：`WorkspacePalette.tsx` 当前是纯 workspace/tab 切换器（无"动作"概念）。在其列表**顶部**插入一条特殊的固定动作行"打开 Agent 透视图"，选中/回车时不做 tab 切换而是触发打开透视图回调并关闭面板。
 
