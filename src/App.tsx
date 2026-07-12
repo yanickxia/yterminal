@@ -202,10 +202,12 @@ export default function App() {
       switch (sc.action) {
         case "palette":
           consume();
+          setOverviewOpen(false);
           setPaletteOpen((open) => !open);
           return;
         case "overview":
           consume();
+          setPaletteOpen(false);
           setOverviewOpen((open) => !open);
           return;
         case "aiSidebar":
