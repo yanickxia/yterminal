@@ -125,6 +125,7 @@ export function WorkspacePalette({
           onChange={(e) => setQuery(e.target.value)}
           spellCheck={false}
         />
+        {/* Mouse-only: the keyboard cursor intentionally indexes only palette-list tab rows. */}
         <div className="palette-actions">
           <div
             className="palette-row palette-action"
