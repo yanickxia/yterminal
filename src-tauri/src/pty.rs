@@ -148,6 +148,11 @@ pub async fn pty_spawn(
     // and dies with `unknown proxy name`. Strip it from the shell's env so
     // child processes get a clean argv[0]. Harmless outside AppImage (unset).
     cmd.env_remove("ARGV0");
+    // Marker so hooks/scripts can tell they're running inside yterminal. The
+    // agent-status hooks we install into ~/.claude/settings.json emit their
+    // OSC 777 status sequence only when this is set, so the hooks are inert in
+    // any other terminal (see main.rs install_claude_hooks).
+    cmd.env("YTERMINAL", "1");
     let child = pair.slave.spawn_command(cmd).map_err(|e| {
         logger::error("pty", &format!("pty_spawn: spawn_command failed: {e}"));
         e.to_string()

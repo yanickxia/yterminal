@@ -30,6 +30,7 @@ import {
   DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
   DEFAULT_COPY_ON_SELECT,
   DEFAULT_AUTO_TAB_TITLE,
+  DEFAULT_AGENT_STATUS_HOOKS,
   type DefaultCwdMode,
 } from "../stores/settings-store";
 
@@ -69,6 +70,8 @@ export interface YterminalConfig {
     copyOnSelect: boolean;
     /** let the shell/agent terminal title drive an un-renamed tab's name */
     autoTabTitle: boolean;
+    /** install Claude Code hooks so agents report their exact run-state */
+    agentStatusHooks: boolean;
   };
 }
 
@@ -97,6 +100,7 @@ export function configFromStore(): YterminalConfig {
       requireModifierForLinks: s.requireModifierForLinks,
       copyOnSelect: s.copyOnSelect,
       autoTabTitle: s.autoTabTitle,
+      agentStatusHooks: s.agentStatusHooks,
     },
   };
 }
@@ -206,6 +210,10 @@ export function parseConfig(text: string): YterminalConfig | null {
       ),
       copyOnSelect: validBool(tm.copyOnSelect, DEFAULT_COPY_ON_SELECT),
       autoTabTitle: validBool(tm.autoTabTitle, DEFAULT_AUTO_TAB_TITLE),
+      agentStatusHooks: validBool(
+        tm.agentStatusHooks,
+        DEFAULT_AGENT_STATUS_HOOKS
+      ),
     },
   };
 }
@@ -241,6 +249,9 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   if (copyOnSelect !== s.copyOnSelect) s.setCopyOnSelect(copyOnSelect);
   const { autoTabTitle } = cfg.terminal;
   if (autoTabTitle !== s.autoTabTitle) s.setAutoTabTitle(autoTabTitle);
+  const { agentStatusHooks } = cfg.terminal;
+  if (agentStatusHooks !== s.agentStatusHooks)
+    s.setAgentStatusHooks(agentStatusHooks);
 }
 
 /** Absolute path of the config file (for display in the UI). */

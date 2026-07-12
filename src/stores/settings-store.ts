@@ -64,6 +64,14 @@ export const DEFAULT_COPY_ON_SELECT = false;
 export const DEFAULT_AUTO_TAB_TITLE = true;
 
 /**
+ * Install Claude Code hooks into ~/.claude/settings.json so a running agent
+ * reports its exact run-state (working / idle / needs-permission / ended) via
+ * an OSC 777 sequence, instead of yterminal inferring it from PTY activity.
+ * Writes a third-party config file, so it's user-controllable; default on.
+ */
+export const DEFAULT_AGENT_STATUS_HOOKS = true;
+
+/**
  * Play a short chime when a pane rings the terminal bell (BEL) while it isn't
  * the focused pane — the signal a coding agent emits when it pauses for input
  * or errors out. Pairs with the on-screen attention bar. Default on.
@@ -154,6 +162,8 @@ interface SettingsState {
   copyOnSelect: boolean;
   /** let the shell/agent terminal title drive an un-renamed tab's name */
   autoTabTitle: boolean;
+  /** install Claude Code hooks so agents report their exact run-state (see DEFAULT_AGENT_STATUS_HOOKS) */
+  agentStatusHooks: boolean;
   /** play a chime when an unfocused pane rings the bell (agent needs attention) */
   alertSoundEnabled: boolean;
   /** attention chime loudness, linear 0..1 */
@@ -180,6 +190,7 @@ interface SettingsState {
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
   setAutoTabTitle: (on: boolean) => void;
+  setAgentStatusHooks: (on: boolean) => void;
   setAlertSoundEnabled: (on: boolean) => void;
   setAlertVolume: (v: number) => void;
   setDebugVerbose: (on: boolean) => void;
@@ -208,6 +219,7 @@ export const useSettingsStore = create<SettingsState>()(
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       copyOnSelect: DEFAULT_COPY_ON_SELECT,
       autoTabTitle: DEFAULT_AUTO_TAB_TITLE,
+      agentStatusHooks: DEFAULT_AGENT_STATUS_HOOKS,
       alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
       alertVolume: DEFAULT_ALERT_VOLUME,
       debugVerbose: true,
@@ -252,6 +264,7 @@ export const useSettingsStore = create<SettingsState>()(
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
       setAutoTabTitle: (on) => set({ autoTabTitle: on }),
+      setAgentStatusHooks: (on) => set({ agentStatusHooks: on }),
       setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
       setAlertVolume: (v) =>
         set({ alertVolume: Math.max(0, Math.min(1, v)) }),
@@ -293,13 +306,15 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 7,
+    { name: "yterminal-settings", version: 8,
       // v4→v5: providers gained a `kind` field. Backfill "openai" so existing
       // configs keep working (they were all OpenAI-compatible before).
       // v5→v6: added a separate interface font (uiFontId). Backfill the "system"
       // preset so pre-existing configs keep the platform default UI font.
       // v6→v7: added an interface font size (uiFontSize). Backfill the historic
       // 13px chrome size so pre-existing configs look unchanged.
+      // v7→v8: added agentStatusHooks (Claude Code hook install). Backfill the
+      // default (on) so existing configs opt in like a fresh install.
       migrate: (persisted, version) => {
         const s = persisted as Partial<SettingsState> | undefined;
         if (s && version < 5 && Array.isArray(s.aiProviders)) {
@@ -313,6 +328,9 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (s && version < 7 && typeof s.uiFontSize !== "number") {
           s.uiFontSize = DEFAULT_UI_FONT_SIZE;
+        }
+        if (s && version < 8 && typeof s.agentStatusHooks !== "boolean") {
+          s.agentStatusHooks = DEFAULT_AGENT_STATUS_HOOKS;
         }
         return s as SettingsState;
       },

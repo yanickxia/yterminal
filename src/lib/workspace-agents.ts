@@ -1,34 +1,34 @@
 // Pure roll-up from per-pane agent snapshots + attention flags + activity flags
-// to the coding agents running inside a workspace. No React / no store — just a
-// tree walk so the workspace status bar, the sidebar rows, and their unit tests
-// share one implementation. Mirrors the shape of attention.ts.
+// + hook-reported run-state to the coding agents running inside a workspace. No
+// React / no store — just a tree walk so the workspace status bar, the sidebar
+// rows, and their unit tests share one implementation. Mirrors attention.ts.
 //
-// Three live signals feed this (all maintained elsewhere):
+// Signals feeding this (all maintained elsewhere):
 //   * PaneLeaf.agent — set by terminal-manager's snapshotAllAgents() every ~15s
 //     when a coding agent (claude/codex/opencode) is detected in a pane's
-//     process tree; cleared when the agent exits. Presence == "an agent is
-//     running in this pane".
+//     process tree; cleared when the agent exits. Presence == "an agent runs here".
 //   * the `waiting` set (attention-store) — pane ids that rang the terminal bell
 //     while unfocused (an agent pausing for input / finishing / erroring).
-//     Presence == "needs the operator". Our equivalent of cmux's `needsInput`.
 //   * the `active` set (activity-store) — pane ids that produced PTY output in
-//     the last ~800ms. Presence == "the agent is streaming output right now".
+//     the last ~800ms == "the agent is streaming output right now".
+//   * the `everActive` set (activity-store) — pane produced output at least once.
+//   * the hook-state map (hook-state-store) — the AUTHORITATIVE run-state a
+//     Claude Code agent reports via the OSC 777 hooks we install: working / idle
+//     / permission (see agent-hook-osc.ts). Present only for hook-enabled Claude
+//     agents; Codex/OpenCode and missed hooks fall back to the heuristic below.
 //
-// An agent pane is therefore classified, in precedence order:
-//   "attention" — agent present AND in `waiting`   (rang the bell, blocked on the user)
-//   "executing" — agent present, not waiting, AND in `active` (working now)
-//   "waiting"   — agent present, not active, but in `everActive` (it produced
-//                 output earlier this session and has since fallen silent — i.e.
-//                 it worked and is now waiting for your input). This is the
-//                 common "agent paused at a prompt" case; a bell may or may not
-//                 have fired (it's suppressed while the pane is focused, and some
-//                 wrapper CLIs never ring), so `active`→silent is the reliable
-//                 signal that it's your turn.
-//   "idle"      — agent present but never produced output this session (freshly
-//                 launched / restored and dormant). Kept quiet so a just-opened
-//                 agent doesn't paint a "waiting" dot before it has done anything.
+// An agent pane is classified in precedence order (see classify()):
+//   "attention" — bell rang (`waiting`) OR hook says `permission` (blocked on you)
+//   "executing" — live output right now (`active`, beats stale hook state) OR
+//                 hook says `working`
+//   "waiting"   — hook says `idle`, OR heuristic (everActive && !active) — the
+//                 agent worked and fell silent, i.e. it's your turn. Suppressed
+//                 on the focused pane (you're already looking) — same rule the
+//                 bell path applies via isPaneFocused.
+//   "idle"      — none of the above (freshly launched / restored, never active).
 
 import type { AgentKind, Workspace } from "./types";
+import type { AgentHookState } from "./agent-hook-osc";
 import { collectLeaves } from "./pane-tree";
 
 // Re-export so the status-bar UI can pull the agent-kind union from the same
@@ -65,25 +65,36 @@ export interface WorkspaceAgentSummary {
   waiting: number;
 }
 
-/** Classify one agent pane from the ephemeral signal sets.
+/** Classify one agent pane from the ephemeral signals + any hook-reported state.
  *
- * `focusedPaneId` is the pane the user is currently looking at (active pane of
- * the active tab in the active workspace, when the window has focus). The
- * focused pane is never reported as `waiting`: "worked, now it's your turn" is
- * pointless when you're already staring at it — same rule the bell path applies
- * via `isPaneFocused`. Focus does NOT suppress `executing` (it's genuinely
- * producing output) or `attention` (an explicit bell); it only mutes the
- * passive waiting nag, dropping the pane to `idle`. */
+ * Hook state (from a Claude Code agent's lifecycle hooks) is authoritative when
+ * present, but with one override: a pane producing output *right now* (`active`)
+ * is always `executing`, so a stale hook `idle`/`working` can't mask live work.
+ *
+ * `focusedPaneId` is the pane the user is currently looking at. The focused pane
+ * is never reported as `waiting` — "it's your turn" is pointless when you're
+ * already staring at it (same rule the bell path applies via `isPaneFocused`).
+ * Focus does NOT suppress `executing` or `attention`; it only mutes the passive
+ * waiting nag, dropping the pane to `idle`. */
 function classify(
   paneId: string,
   waiting: Set<string>,
   active: Set<string>,
   everActive: Set<string>,
-  focusedPaneId?: string
+  focusedPaneId?: string,
+  hookState?: Map<string, AgentHookState>
 ): AgentRunState {
-  if (waiting.has(paneId)) return "attention";
+  const hook = hookState?.get(paneId);
+  // Blocked on the user: an explicit bell, or a hook permission prompt.
+  if (waiting.has(paneId) || hook === "permission") return "attention";
+  // Live output beats any (possibly stale) hook state.
   if (active.has(paneId)) return "executing";
-  if (everActive.has(paneId) && paneId !== focusedPaneId) return "waiting";
+  if (hook === "working") return "executing";
+  // "It's your turn": hook idle, or the heuristic (worked then fell silent).
+  // Suppressed on the focused pane.
+  const wantsWaiting =
+    hook === "idle" || (hook === undefined && everActive.has(paneId));
+  if (wantsWaiting && paneId !== focusedPaneId) return "waiting";
   return "idle";
 }
 
@@ -98,7 +109,8 @@ export function workspaceAgentSummary(
   waiting: Set<string>,
   active: Set<string> = new Set(),
   everActive: Set<string> = new Set(),
-  focusedPaneId?: string
+  focusedPaneId?: string,
+  hookState?: Map<string, AgentHookState>
 ): WorkspaceAgentSummary {
   const entries: WorkspaceAgentEntry[] = [];
   if (!workspace)
@@ -110,7 +122,14 @@ export function workspaceAgentSummary(
     if (tab.file) continue;
     for (const leaf of collectLeaves(tab.root)) {
       if (!leaf.agent) continue;
-      const state = classify(leaf.id, waiting, active, everActive, focusedPaneId);
+      const state = classify(
+        leaf.id,
+        waiting,
+        active,
+        everActive,
+        focusedPaneId,
+        hookState
+      );
       if (state === "attention") attention++;
       else if (state === "executing") executing++;
       else if (state === "waiting") waitingCount++;
@@ -161,7 +180,8 @@ export function workspacesAgentStatus(
   waiting: Set<string>,
   active: Set<string>,
   everActive: Set<string> = new Set(),
-  focusedPaneId?: string
+  focusedPaneId?: string,
+  hookState?: Map<string, AgentHookState>
 ): Map<string, WorkspaceAgentStatus> {
   const out = new Map<string, WorkspaceAgentStatus>();
   const rank: Record<AgentRunState, number> = {
@@ -178,7 +198,14 @@ export function workspacesAgentStatus(
       for (const leaf of collectLeaves(tab.root)) {
         if (!leaf.agent) continue;
         total++;
-        const state = classify(leaf.id, waiting, active, everActive, focusedPaneId);
+        const state = classify(
+          leaf.id,
+          waiting,
+          active,
+          everActive,
+          focusedPaneId,
+          hookState
+        );
         if (rank[state] > rank[best]) best = state;
       }
     }

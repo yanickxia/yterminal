@@ -97,6 +97,126 @@ fn write_config(contents: String) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
+/// Absolute path to Claude Code's user settings file (`~/.claude/settings.json`).
+fn claude_settings_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("settings.json"))
+}
+
+/// Marker embedded in every hook command we install, so we can find and remove
+/// exactly our entries on a re-run without touching hooks the user added.
+const YT_HOOK_MARKER: &str = "yt-agent";
+
+/// The command string for a hook that reports `state`. Env-guarded on
+/// `YTERMINAL` (set by pty_spawn) so it emits nothing in any other terminal,
+/// and prints a Claude Code `terminalSequence` JSON whose value is an OSC 777
+/// notification carrying `notify;yt-agent;<state>`. Claude Code writes that
+/// sequence through its own PTY; yterminal parses it per-pane (see the OSC 777
+/// handler in terminal-manager.ts). No `jq` dependency — the state is literal.
+fn yt_hook_command(state: &str) -> String {
+    format!(
+        "[ -n \"$YTERMINAL\" ] && printf '%s' '{{\"terminalSequence\":\"\\u001b]777;notify;yt-agent;{state}\\u0007\"}}'"
+    )
+}
+
+/// One `{matcher?, hooks:[{type:command, command}]}` group for `state`.
+fn yt_hook_group(matcher: Option<&str>, state: &str) -> serde_json::Value {
+    let hook = serde_json::json!({ "type": "command", "command": yt_hook_command(state) });
+    match matcher {
+        Some(m) => serde_json::json!({ "matcher": m, "hooks": [hook] }),
+        None => serde_json::json!({ "hooks": [hook] }),
+    }
+}
+
+/// True if a hook group is one of ours (any nested command carries the marker).
+fn is_yt_hook_group(group: &serde_json::Value) -> bool {
+    group
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|arr| {
+            arr.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains(YT_HOOK_MARKER))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Install (or, when `enable` is false, remove) the yterminal agent-status
+/// hooks in `~/.claude/settings.json`. Idempotent: our entries are identified
+/// by the `yt-agent` marker and always stripped first, so re-running never
+/// duplicates them and the user's own hooks are preserved. Best-effort — a
+/// missing/malformed file is treated as an empty object; only a write failure
+/// returns Err.
+#[tauri::command]
+fn install_claude_hooks(enable: bool) -> Result<(), String> {
+    let Some(path) = claude_settings_path() else {
+        return Ok(());
+    };
+    // Read-or-init. A malformed file is left alone (return Ok) rather than
+    // clobbered — we don't own this file.
+    let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(s) if s.trim().is_empty() => serde_json::json!({}),
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+    };
+    if !root.is_object() {
+        return Ok(());
+    }
+
+    // The events we drive, with the (event, matcher, state) tuples.
+    let specs: [(&str, Option<&str>, &str); 4] = [
+        ("UserPromptSubmit", None, "working"),
+        ("Notification", Some("idle_prompt"), "idle"),
+        ("Notification", Some("permission_prompt"), "permission"),
+        ("SessionEnd", None, "ended"),
+    ];
+
+    let obj = root.as_object_mut().unwrap();
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+    let hooks = hooks.as_object_mut().unwrap();
+
+    // Strip our previous entries from every event array first (idempotency).
+    for arr in hooks.values_mut() {
+        if let Some(list) = arr.as_array_mut() {
+            list.retain(|g| !is_yt_hook_group(g));
+        }
+    }
+
+    if enable {
+        for (event, matcher, state) in specs {
+            let entry = hooks
+                .entry(event.to_string())
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(list) = entry.as_array_mut() {
+                list.push(yt_hook_group(matcher, state));
+            }
+        }
+    }
+
+    // Drop event arrays we emptied so we don't leave `"SessionEnd": []` litter.
+    hooks.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+    }
+    let pretty = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("failed to serialize settings: {e}"))?;
+    std::fs::write(&path, pretty)
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
 /// Enumerate the monospace font families installed on this machine.
 ///
 /// The WebViews Tauri uses (WKWebView on macOS, WebKitGTK on Linux) don't
@@ -2722,6 +2842,7 @@ fn main() {
             config_file_path,
             read_config,
             write_config,
+            install_claude_hooks,
             list_fonts,
             refresh_fonts,
             process_cwd,
