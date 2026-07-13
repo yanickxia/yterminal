@@ -57,6 +57,16 @@ describe("matchAppShortcut — macOS (Cmd, Shift = sub)", () => {
       matchAppShortcut(ev({ code: "KeyN", metaKey: true, shiftKey: true }), mac)
     ).toBeNull();
   });
+  it("maps Cmd+O to overview", () => {
+    expect(matchAppShortcut(ev({ code: "KeyO", metaKey: true }), mac)).toEqual({
+      action: "overview",
+    });
+  });
+  it("rejects Cmd+Shift+O (no sub-variant for overview)", () => {
+    expect(
+      matchAppShortcut(ev({ code: "KeyO", metaKey: true, shiftKey: true }), mac)
+    ).toBeNull();
+  });
   it("rejects when Ctrl or Alt are also held, or Cmd is missing", () => {
     expect(
       matchAppShortcut(ev({ code: "KeyK", metaKey: true, ctrlKey: true }), mac)
@@ -136,6 +146,11 @@ describe("matchAppShortcut — Linux/Windows (Ctrl+Shift, Alt = sub)", () => {
         mac
       )
     ).toBeNull();
+  });
+  it("maps Ctrl+Shift+O to overview", () => {
+    expect(
+      matchAppShortcut(ev({ code: "KeyO", ctrlKey: true, shiftKey: true }), mac)
+    ).toEqual({ action: "overview" });
   });
   it("ignores unmapped letters and non-key codes", () => {
     expect(

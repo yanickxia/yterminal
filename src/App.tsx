@@ -7,6 +7,7 @@ import { TabBar } from "./components/TabBar";
 import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
+import { AgentOverview } from "./components/AgentOverview";
 import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnCommandSettled } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
@@ -54,6 +55,7 @@ export default function App() {
   // when set, the in-terminal search box is open for this pane id
   const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const aiOpen = useAiStore((s) => s.open);
   const aiWidth = useLayoutStore((s) => s.aiWidth);
@@ -200,7 +202,13 @@ export default function App() {
       switch (sc.action) {
         case "palette":
           consume();
+          setOverviewOpen(false);
           setPaletteOpen((open) => !open);
+          return;
+        case "overview":
+          consume();
+          setPaletteOpen(false);
+          setOverviewOpen((open) => !open);
           return;
         case "aiSidebar":
           consume();
@@ -410,7 +418,7 @@ export default function App() {
                   />
                 )}
             </div>
-            <WorkspaceStatusBar />
+            <WorkspaceStatusBar onOpenOverview={() => setOverviewOpen(true)} />
           </>
         ) : (
           <div className="empty">No workspace.</div>
@@ -433,8 +441,12 @@ export default function App() {
       )}
       {aiOpen && <AiSidebar />}
       {paletteOpen && (
-        <WorkspacePalette onClose={() => setPaletteOpen(false)} />
+        <WorkspacePalette
+          onClose={() => setPaletteOpen(false)}
+          onOpenOverview={() => setOverviewOpen(true)}
+        />
       )}
+      {overviewOpen && <AgentOverview onClose={() => setOverviewOpen(false)} />}
       <UpdateDialog
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}
