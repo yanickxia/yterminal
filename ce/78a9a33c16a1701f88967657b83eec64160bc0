@@ -1,0 +1,29 @@
+CLAUDE.md
+  s_985eaa9f5dc336::t_3bddc24bc1e847 99-100
+src/lib/terminal-cell-columns.test.ts
+  s_985eaa9f5dc336::t_42e82f44b23302 1-125
+src/lib/terminal-cell-columns.ts
+  s_985eaa9f5dc336::t_7d4ce1918c9232 1-123
+src/lib/terminal-manager.ts
+  s_985eaa9f5dc336::t_b9e1976ff51fad 27-34,105-145,153-157,179-180,182,187,195,199-201,204-205,377,689-691,696-697,1085-1089
+src/lib/terminal-url-links.ts
+  s_985eaa9f5dc336::t_a630b3723fc9fa 75-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce78a9a33c16a1701f88967657b83eec64160bc0",
+  "prompts": {},
+  "sessions": {
+    "s_985eaa9f5dc336": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b26af5bd-7ade-4898-8d6c-782005d5ad98",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
