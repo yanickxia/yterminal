@@ -72,8 +72,10 @@ export function isContinuation(
 /**
  * Find every URL in a contiguous slice of buffer rows, reconstructing URLs that
  * span multiple rows (soft- or hard-wrapped). Returns links with slice-relative
- * row indices. Assumes URL characters are single-width cells (URLs are ASCII),
- * so a character offset maps directly to a column.
+ * row indices and **string-character offsets** for the columns. The caller
+ * (terminal-manager) converts those offsets to real terminal columns per row
+ * via a cell-width map, because a wide (CJK) char is one string char but two
+ * columns — see terminal-cell-columns.ts.
  */
 export function computeUrlLinks(rows: UrlRow[], cols: number): UrlLink[] {
   const links: UrlLink[] = [];

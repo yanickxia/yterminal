@@ -24,6 +24,14 @@ import {
   type UrlLink,
   type UrlRow,
 } from "./terminal-url-links";
+import {
+  buildColumnMap,
+  offsetToColumn,
+  offsetToColumnExclusive,
+  columnToOffset,
+  type ColumnMap,
+  type VisitedCell,
+} from "./terminal-cell-columns";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
@@ -94,6 +102,47 @@ function primeHomeDir(): void {
   })();
 }
 
+// Harvest the per-cell widths of a buffer line the same way xterm's
+// `translateToString(true)` walks it, then build the offset↔column map. This is
+// what lets us turn the string offsets our pure scanners return into the
+// terminal columns xterm's LinkProvider ranges are addressed in — without it a
+// wide (CJK) char before a link shifts the clickable range/underline left by
+// one cell per char (the "访问地址：http://…" bug). Walk stops at the trimmed
+// length so it matches `translateToString(true)` exactly (trailing blanks off).
+type BufferLineLike = {
+  readonly length: number;
+  getCell(
+    x: number,
+    cell?: unknown
+  ): { getWidth(): number; getChars(): string } | undefined;
+  translateToString(trim?: boolean): string;
+};
+
+function harvestColumnMap(line: BufferLineLike): ColumnMap {
+  const cells: VisitedCell[] = [];
+  // translateToString(true) trims trailing whitespace; mirror that by capping at
+  // the trimmed string length so map bounds line up with the text we scanned.
+  const trimmedLen = line.translateToString(true).length;
+  let produced = 0;
+  for (let x = 0; x < line.length && produced < trimmedLen; ) {
+    const cell = line.getCell(x);
+    if (!cell) break;
+    const width = cell.getWidth();
+    // A width-0 cell is the phantom trailing half of a wide char — skip it, it
+    // is not a visited cell and contributes no string char (matches xterm).
+    if (width === 0) {
+      x += 1;
+      continue;
+    }
+    const chars = cell.getChars();
+    const charLen = chars.length || 1; // empty cell still emits one space char
+    cells.push({ width, charLen });
+    produced += charLen;
+    x += width;
+  }
+  return buildColumnMap(cells);
+}
+
 // Bridge xterm's per-line `provideLinks(lineNumber)` to the pure, multi-row
 // `computeUrlLinks`. xterm asks about one buffer line at a time (1-based); to
 // stitch a hard-wrapped URL we walk UP to the first row of the physical group
@@ -101,6 +150,11 @@ function primeHomeDir(): void {
 // to `computeUrlLinks`, and keep only the links that actually cover the queried
 // line (so the same link isn't reported once per row it spans). Row indices in
 // the returned links are absolute buffer rows (0-based).
+//
+// `computeUrlLinks` reasons in string offsets (it only sees the collapsed row
+// text); we convert those to terminal columns per row via `harvestColumnMap`,
+// because a wide (CJK) char is 1 string char but 2 columns. A multi-row URL
+// maps its start through the first row's map and its end through the last row's.
 function computeTerminalUrlLinks(
   term: Terminal,
   lineNumber: number
@@ -122,12 +176,15 @@ function computeTerminalUrlLinks(
     first--;
   }
 
-  // Collect the group's rows from `first` downward.
+  // Collect the group's rows from `first` downward, keeping each row's
+  // offset↔column map alongside its text (indices align with `rows`).
   const rows: UrlRow[] = [];
+  const maps: ColumnMap[] = [];
   let r = first;
   const firstLine = buf.getLine(r);
   if (!firstLine) return [];
   rows.push({ text: firstLine.translateToString(true), isWrapped: false });
+  maps.push(harvestColumnMap(firstLine));
   r++;
   for (;;) {
     const cur = buf.getLine(r);
@@ -135,13 +192,17 @@ function computeTerminalUrlLinks(
     const prevText = rows[rows.length - 1].text;
     if (!isContinuation(prevText, cur.isWrapped, cols)) break;
     rows.push({ text: cur.translateToString(true), isWrapped: cur.isWrapped });
+    maps.push(harvestColumnMap(cur));
     r++;
   }
 
-  // Map slice-relative rows back to absolute buffer rows, and keep only links
-  // that touch the queried row (xterm will call us again for other rows).
+  // Convert string offsets → columns (per row), then map slice-relative rows
+  // back to absolute buffer rows, keeping only links that touch the queried row
+  // (xterm calls us again for other rows).
   const links = computeUrlLinks(rows, cols).map((l) => ({
     ...l,
+    startCol: offsetToColumn(maps[l.startRow], l.startCol),
+    endCol: offsetToColumnExclusive(maps[l.endRow], l.endCol),
     startRow: l.startRow + first,
     endRow: l.endRow + first,
   }));
@@ -313,9 +374,7 @@ interface XtermCoreInternals {
     buffer: {
       ydisp: number;
       lines: { length: number };
-      getLine: (
-        i: number
-      ) => { translateToString: (trim?: boolean) => string } | undefined;
+      getLine: (i: number) => BufferLineLike | undefined;
     };
   };
 }
@@ -627,12 +686,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
         callback(undefined);
         return;
       }
+      // findPathSpans returns string offsets; xterm ranges are terminal columns
+      // (a wide CJK char is 1 string char but 2 columns), so translate per line.
+      const map = harvestColumnMap(bufLine);
       callback(
         spans.map((span) => ({
           // IBufferRange is 1-based and end-inclusive.
           range: {
-            start: { x: span.start + 1, y: lineNumber },
-            end: { x: span.end, y: lineNumber },
+            start: { x: offsetToColumn(map, span.start) + 1, y: lineNumber },
+            end: { x: offsetToColumnExclusive(map, span.end), y: lineNumber },
           },
           text: span.token,
           activate: (event: MouseEvent, token: string) => {
@@ -1020,7 +1082,11 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const bufferRow = coords[1] - 1 + bufSvc.buffer.ydisp;
       const line = bufSvc.buffer.getLine(bufferRow);
       if (!line) return;
-      const span = pathSpanAtColumn(line.translateToString(true), col);
+      // `col` is a terminal column; pathSpanAtColumn hit-tests string offsets
+      // (a wide CJK char spans 2 columns but 1 string char), so translate first.
+      const text = line.translateToString(true);
+      const offset = columnToOffset(harvestColumnMap(line), col);
+      const span = pathSpanAtColumn(text, offset);
       if (!span) return; // not over a path → leave the click for tmux
       // We own this click: stop xterm from forwarding it to the PTY.
       e.preventDefault();
