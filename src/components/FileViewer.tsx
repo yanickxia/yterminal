@@ -1,10 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useViewerStore } from "../stores/viewer-store";
 import { renderMarkdown, highlightCode } from "../lib/file-render";
 import { basename } from "../lib/file-link-classify";
 import { clipboardWrite } from "../lib/clipboard";
+import { detectIsMac } from "../lib/link-modifier";
+import {
+  isViewerCopyShortcut,
+  selectionTextWithin,
+} from "../lib/file-viewer-copy";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { TabFile } from "../lib/types";
+
+const isMac = typeof navigator !== "undefined" && detectIsMac();
+
+type ViewerMenu =
+  | { kind: "more"; x: number; y: number }
+  | { kind: "selection"; x: number; y: number; text: string };
 
 /**
  * Read-only built-in file viewer rendered *inside a tab* (not a modal). The
@@ -17,6 +28,7 @@ import type { TabFile } from "../lib/types";
 export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
   const { path, language, markdown } = file;
   const load = useViewerStore((s) => s.load);
+  const setScrollTop = useViewerStore((s) => s.setScrollTop);
   const state = useViewerStore((s) => s.files[tabId]);
   const text = state?.text ?? "";
   const loading = state?.loading ?? true;
@@ -35,15 +47,24 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
   }, [path]);
 
   // Overflow "…" menu anchored to its trigger button (Copy full path / content).
+  const bodyRef = useRef<HTMLDivElement>(null);
   const moreBtn = useRef<HTMLButtonElement>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<ViewerMenu | null>(null);
+
+  function selectedText(): string {
+    const body = bodyRef.current;
+    if (!body) return "";
+    return selectionTextWithin(window.getSelection(), (node) =>
+      body.contains(node)
+    );
+  }
 
   function openMenu() {
     const r = moreBtn.current?.getBoundingClientRect();
-    if (r) setMenu({ x: r.right, y: r.bottom + 4 });
+    if (r) setMenu({ kind: "more", x: r.right, y: r.bottom + 4 });
   }
 
-  const menuItems: MenuItem[] = [
+  const moreMenuItems: MenuItem[] = [
     {
       label: "Copy full path",
       disabled: !path,
@@ -55,6 +76,43 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
       onClick: () => void clipboardWrite(text).catch(() => {}),
     },
   ];
+
+  const selectionMenuItems: MenuItem[] = [
+    {
+      label: "Copy",
+      disabled: menu?.kind !== "selection" || !menu.text,
+      onClick: () => {
+        if (menu?.kind === "selection" && menu.text) {
+          void clipboardWrite(menu.text).catch(() => {});
+        }
+      },
+    },
+  ];
+
+  // The active tab is the only FileViewer mounted. Its scroll container is
+  // therefore replaced/reused on every tab switch; restore this tab's saved
+  // position after DOM layout and update the transient store while scrolling.
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    body.scrollTop = useViewerStore.getState().scrollTops[tabId] ?? 0;
+  }, [tabId, loading, raw]);
+
+  // Native browser clipboard support is unreliable in webkit2gtk. Route the
+  // standard viewer copy chord through the same Tauri clipboard plugin as the
+  // terminal, but only when both ends of the selection are inside this body.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isViewerCopyShortcut(event, isMac)) return;
+      const text = selectedText();
+      if (!text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void clipboardWrite(text).catch(() => {});
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
 
   // Memoize the (potentially heavy) render so it doesn't re-run on every
   // unrelated store change. Only markdown/highlighted views compute HTML.
@@ -95,14 +153,27 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
 
       {menu && (
         <ContextMenu
-          items={menuItems}
+          items={menu.kind === "more" ? moreMenuItems : selectionMenuItems}
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
         />
       )}
 
-      <div className="file-viewer-body">
+      <div
+        ref={bodyRef}
+        className="file-viewer-body"
+        onScroll={(event) => setScrollTop(tabId, event.currentTarget.scrollTop)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({
+            kind: "selection",
+            x: event.clientX,
+            y: event.clientY,
+            text: selectedText(),
+          });
+        }}
+      >
         {loading && <p className="file-viewer-status">Loading…</p>}
 
         {!loading && error && (

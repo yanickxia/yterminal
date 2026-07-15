@@ -19,6 +19,8 @@ interface FileState {
 interface ViewerState {
   /** loaded content per file-tab id */
   files: Record<string, FileState>;
+  /** transient vertical reading position per file-tab id */
+  scrollTops: Record<string, number>;
 
   /**
    * Ensure the file at `path` is loaded for tab `tabId`. Idempotent: a tab that
@@ -26,12 +28,15 @@ interface ViewerState {
    * tab doesn't re-read the disk.
    */
   load: (tabId: string, path: string) => Promise<void>;
+  /** Remember a file tab's vertical reading position. */
+  setScrollTop: (tabId: string, scrollTop: number) => void;
   /** Forget a tab's content (call when the file tab is closed). */
   drop: (tabId: string) => void;
 }
 
 export const useViewerStore = create<ViewerState>((set, get) => ({
   files: {},
+  scrollTops: {},
 
   load: async (tabId, path) => {
     const existing = get().files[tabId];
@@ -60,11 +65,20 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
     }
   },
 
+  setScrollTop: (tabId, scrollTop) =>
+    set((s) => {
+      const next = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0;
+      if (s.scrollTops[tabId] === next) return s;
+      return { scrollTops: { ...s.scrollTops, [tabId]: next } };
+    }),
+
   drop: (tabId) =>
     set((s) => {
-      if (!s.files[tabId]) return s;
+      if (!s.files[tabId] && s.scrollTops[tabId] === undefined) return s;
       const files = { ...s.files };
+      const scrollTops = { ...s.scrollTops };
       delete files[tabId];
-      return { files };
+      delete scrollTops[tabId];
+      return { files, scrollTops };
     }),
 }));
