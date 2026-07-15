@@ -118,6 +118,38 @@ export function computeUrlLinks(rows: UrlRow[], cols: number): UrlLink[] {
   return links;
 }
 
+/**
+ * Return the URL range containing a row/column position, or null when the
+ * position is outside every link. Coordinates use the same convention as
+ * {@link UrlLink}: rows and columns are 0-based and endCol is exclusive.
+ *
+ * This is deliberately independent of terminal cell widths. Callers that
+ * work with xterm cells must convert link offsets to terminal columns first.
+ */
+export function urlLinkAtPosition(
+  links: readonly UrlLink[],
+  row: number,
+  col: number
+): UrlLink | null {
+  for (const link of links) {
+    if (row < link.startRow || row > link.endRow) continue;
+    if (link.startRow === link.endRow) {
+      if (col >= link.startCol && col < link.endCol) return link;
+      continue;
+    }
+    if (row === link.startRow) {
+      if (col >= link.startCol) return link;
+      continue;
+    }
+    if (row === link.endRow) {
+      if (col < link.endCol) return link;
+      continue;
+    }
+    return link;
+  }
+  return null;
+}
+
 /** Map a character offset within a joined group to its {row, col}. */
 function mapOffset(
   offsets: number[],

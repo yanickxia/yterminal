@@ -3,6 +3,7 @@ import {
   computeUrlLinks,
   isContinuation,
   isValidUrl,
+  urlLinkAtPosition,
   type UrlRow,
 } from "./terminal-url-links";
 
@@ -128,5 +129,44 @@ describe("computeUrlLinks", () => {
     const links = computeUrlLinks([row("go to https://example.com/x.")], 80);
     expect(links).toHaveLength(1);
     expect(links[0].url).toBe("https://example.com/x");
+  });
+});
+
+describe("urlLinkAtPosition", () => {
+  const wrappedLink = {
+    url: "https://example.com/a-long-url",
+    startRow: 4,
+    startCol: 20,
+    endRow: 6,
+    endCol: 7,
+  };
+
+  it("hit-tests every row of a wrapped URL with an exclusive end", () => {
+    const links = [wrappedLink];
+
+    expect(urlLinkAtPosition(links, 4, 19)).toBeNull();
+    expect(urlLinkAtPosition(links, 4, 20)).toBe(wrappedLink);
+    expect(urlLinkAtPosition(links, 4, 79)).toBe(wrappedLink);
+    expect(urlLinkAtPosition(links, 5, 0)).toBe(wrappedLink);
+    expect(urlLinkAtPosition(links, 5, 79)).toBe(wrappedLink);
+    expect(urlLinkAtPosition(links, 6, 6)).toBe(wrappedLink);
+    expect(urlLinkAtPosition(links, 6, 7)).toBeNull();
+    expect(urlLinkAtPosition(links, 3, 20)).toBeNull();
+    expect(urlLinkAtPosition(links, 7, 0)).toBeNull();
+  });
+
+  it("respects both bounds for a single-row URL", () => {
+    const link = {
+      url: "https://example.com",
+      startRow: 2,
+      startCol: 5,
+      endRow: 2,
+      endCol: 24,
+    };
+
+    expect(urlLinkAtPosition([link], 2, 4)).toBeNull();
+    expect(urlLinkAtPosition([link], 2, 5)).toBe(link);
+    expect(urlLinkAtPosition([link], 2, 23)).toBe(link);
+    expect(urlLinkAtPosition([link], 2, 24)).toBeNull();
   });
 });
