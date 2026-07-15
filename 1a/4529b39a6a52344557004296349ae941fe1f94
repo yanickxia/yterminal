@@ -1,0 +1,27 @@
+src/lib/input-latency.test.ts
+  s_87ff3602d84aaf::t_67b7441aa88f6d 61-71
+src/lib/input-latency.ts
+  s_87ff3602d84aaf::t_a249899d93c18b 53-57,66-67,71,73-75,77,82,84-86,91-93
+src/lib/pty.ts
+  s_87ff3602d84aaf::t_9f699fe58bc81a 156-157
+src/lib/terminal-manager.ts
+  s_87ff3602d84aaf::t_1b4c342f994114 64,85-88,633,895-905,912
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a4529b39a6a52344557004296349ae941fe1f94",
+  "prompts": {},
+  "sessions": {
+    "s_87ff3602d84aaf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6451-1f09-7401-ab97-796f14fc5f92",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
