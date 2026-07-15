@@ -21,6 +21,7 @@ import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
 import {
   computeUrlLinks,
   isContinuation,
+  urlLinkAtPosition,
   type UrlLink,
   type UrlRow,
 } from "./terminal-url-links";
@@ -1055,16 +1056,17 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     s.pasteDedupeCleanup = () =>
       s.el.removeEventListener("paste", onNativePaste, true);
 
-    // tmux / TUI mouse-mode file-link click bridge. When a program (tmux with
+    // tmux / TUI mouse-mode link click bridge. When a program (tmux with
     // `mouse on`, or a full-screen TUI) turns on terminal mouse reporting,
     // xterm forwards clicks straight to the PTY and calls preventDefault —
-    // so its LinkProvider `activate` never fires and Cmd/Ctrl+click on a file
-    // path does nothing. We install a capture-phase mousedown that runs BEFORE
-    // xterm's own listener: only in mouse-reporting mode, only with the link
-    // modifier held, and only when the click lands on a path token, we hit-test
-    // the clicked cell ourselves, open the file, and swallow the event so it
-    // doesn't reach tmux. Everything else (plain clicks, non-path cells, mouse
-    // mode off) passes through untouched — the normal LinkProvider still works.
+    // so its LinkProvider `activate` never fires and Cmd/Ctrl+click on a URL or
+    // file path does nothing. We install a capture-phase mousedown that runs
+    // BEFORE xterm's own listener: only in mouse-reporting mode, only with the
+    // link modifier held, and only when the click lands on a URL or path token,
+    // we hit-test the clicked cell ourselves, open the target, and swallow the
+    // event so it doesn't reach tmux. Everything else (plain clicks, non-link
+    // cells, mouse mode off) passes through untouched — the normal LinkProvider
+    // still works.
     const onCaptureMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return; // left click only
       const core = xtermCore(s);
@@ -1092,6 +1094,21 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const bufferRow = coords[1] - 1 + bufSvc.buffer.ydisp;
       const line = bufSvc.buffer.getLine(bufferRow);
       if (!line) return;
+      // Reuse the LinkProvider's wrapped-row and CJK-aware URL ranges so the
+      // mouse-mode path behaves exactly like the normal URL activation path.
+      const urlLink = urlLinkAtPosition(
+        computeTerminalUrlLinks(s.term, bufferRow + 1),
+        bufferRow,
+        col
+      );
+      if (urlLink) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        void openUrl(urlLink.url).catch((err) =>
+          console.warn("web link open failed (mouse-mode)", urlLink.url, err)
+        );
+        return;
+      }
       // `col` is a terminal column; pathSpanAtColumn hit-tests string offsets
       // (a wide CJK char spans 2 columns but 1 string char), so translate first.
       const text = line.translateToString(true);
