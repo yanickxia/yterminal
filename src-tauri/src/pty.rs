@@ -378,11 +378,6 @@ pub async fn pty_read(
                     "pty",
                     &format!("pty_read: SLOW lock pid={pid} bytes={n} lock_wait={lock_ms}ms blocked={read_ms}ms"),
                 );
-            } else {
-                logger::trace(
-                    "pty",
-                    &format!("pty_read: pid={pid} bytes={n} lock_wait={lock_ms}ms blocked={read_ms}ms"),
-                );
             }
             Ok(tauri::ipc::Response::new(buf))
         }

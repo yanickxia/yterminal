@@ -144,24 +144,17 @@ class Pty implements IPty {
     let bytes = 0;
     try {
       for (;;) {
-        const t0 = performance.now();
         const data = await invoke<ArrayBuffer | Uint8Array>("pty_read", {
           pid: this.pid,
         });
-        const waited = performance.now() - t0;
         // Tauri's ipc::Response::new(buf) deserializes to a Uint8Array on
         // recent versions; older paths produce ArrayBuffer. Normalize.
         const bytesArr =
           data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
         reads++;
         bytes += bytesArr.length;
-        // A read that resolved after a long wait is normal (idle shell). We log
-        // a periodic heartbeat instead of every read to avoid flooding, plus a
-        // TRACE per read for full detail when verbose.
-        logger.trace(
-          "pty",
-          `read pid=${this.pid} bytes=${bytesArr.length} waited=${Math.round(waited)}ms`
-        );
+        // A read that resolves after a long wait is normal (idle shell). Keep a
+        // sparse heartbeat instead of logging every output chunk on this path.
         if (reads % 200 === 0) {
           logger.debug(
             "pty",

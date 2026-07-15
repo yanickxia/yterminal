@@ -58,4 +58,15 @@ describe("input latency tracker", () => {
 
     expect(tracker.markRendered(5)).toBeNull();
   });
+
+  it("drops a pending sample when output arrives after its timeout", () => {
+    const tracker = makeInputLatencyTracker({ batchSize: 1, timeoutMs: 100 });
+
+    tracker.start(0);
+    tracker.markOutput(101);
+    tracker.markParsed(102);
+
+    expect(tracker.markRendered(103)).toBeNull();
+    expect(tracker.start(104)).toBe(true);
+  });
 });

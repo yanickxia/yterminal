@@ -50,6 +50,11 @@ export function makeInputLatencyTracker(
   let pending: PendingSample | undefined;
   let samples: LatencySample[] = [];
 
+  const pendingAt = (now: number): PendingSample | undefined => {
+    if (pending && now - pending.inputAt > timeoutMs) pending = undefined;
+    return pending;
+  };
+
   return {
     start(now) {
       if (pending && now - pending.inputAt <= timeoutMs) return false;
@@ -58,31 +63,34 @@ export function makeInputLatencyTracker(
     },
 
     markOutput(now) {
-      if (pending && pending.outputAt === undefined) pending.outputAt = now;
+      const sample = pendingAt(now);
+      if (sample && sample.outputAt === undefined) sample.outputAt = now;
     },
 
     markParsed(now) {
+      const sample = pendingAt(now);
       if (
-        pending &&
-        pending.outputAt !== undefined &&
-        pending.parsedAt === undefined
+        sample &&
+        sample.outputAt !== undefined &&
+        sample.parsedAt === undefined
       ) {
-        pending.parsedAt = now;
+        sample.parsedAt = now;
       }
     },
 
     markRendered(now) {
+      const sample = pendingAt(now);
       if (
-        !pending ||
-        pending.outputAt === undefined ||
-        pending.parsedAt === undefined
+        !sample ||
+        sample.outputAt === undefined ||
+        sample.parsedAt === undefined
       ) {
         return null;
       }
       samples.push({
-        inputToOutput: pending.outputAt - pending.inputAt,
-        outputToParsed: pending.parsedAt - pending.outputAt,
-        inputToRender: now - pending.inputAt,
+        inputToOutput: sample.outputAt - sample.inputAt,
+        outputToParsed: sample.parsedAt - sample.outputAt,
+        inputToRender: now - sample.inputAt,
       });
       pending = undefined;
       if (samples.length < batchSize) return null;

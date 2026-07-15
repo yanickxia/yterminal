@@ -168,10 +168,6 @@ pub fn error(source: &str, message: &str) {
 pub fn debug(source: &str, message: &str) {
     log("DEBUG", source, message);
 }
-pub fn trace(source: &str, message: &str) {
-    log("TRACE", source, message);
-}
-
 // ============================================================================
 // Tauri commands (all synchronous on purpose — see module docs).
 // ============================================================================
