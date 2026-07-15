@@ -1,0 +1,23 @@
+CLAUDE.md
+  s_87ff3602d84aaf::t_2807d7f8001a66 68
+src-tauri/src/pty.rs
+  s_87ff3602d84aaf::t_7976524da459d0 29-30,68-72,96,182-197,219,231-256,311-324,327,499-553
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d05bcecfcf2da90ea72f39fffebcf2fa8687fc29",
+  "prompts": {},
+  "sessions": {
+    "s_87ff3602d84aaf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6451-1f09-7401-ab97-796f14fc5f92",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
