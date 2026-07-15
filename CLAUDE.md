@@ -65,7 +65,7 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 Blocking syscalls (`reader.read`, `child.wait`, `writer.write_all`) MUST stay off the async worker pool. Each live session runs `readLoop` + `waitForExit` from the JS side; if either parks an async worker via a sync syscall, ~8 sessions exhaust the default 16-worker tokio runtime and the next shell's first read never schedules (blank tab forever). Current shape:
 
 - Reader: `pty_spawn` starts a dedicated OS thread per session that loops `read()` into a `tokio::sync::mpsc` channel; `pty_read` only `recv().await`s. The thread self-terminates on receiver drop (session removed) or EOF.
-- `pty_exitstatus` and `pty_write` run their sync calls inside `tauri::async_runtime::spawn_blocking`.
+- `pty_write` enqueues bytes on a bounded channel drained by a dedicated OS writer thread per session; `pty_exitstatus` runs `child.wait()` inside `tauri::async_runtime::spawn_blocking`.
 - Do not re-introduce a direct sync call inside any `#[tauri::command] async fn` here.
 
 `pty_spawn` strips `ARGV0` (`cmd.env_remove("ARGV0")`). The AppImage runtime sets `ARGV0` to the `.AppImage` filename; zsh re-injects it as `argv[0]` of every spawned command, so a rustup proxy shim sees the AppImage name and dies with `unknown proxy name`. Invisible outside AppImage but load-bearing inside it.

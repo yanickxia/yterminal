@@ -75,28 +75,60 @@ export const useActivityStore = create<ActivityState>((set) => ({
     }),
 }));
 
-// Per-pane silence timers. A fresh stamp re-arms the timer; when it fires the
-// pane drops out of the active set. Kept module-local so the store stays pure.
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
+interface ActivityTimerState {
+  lastActivityAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+// Per-pane silence deadlines. A pane owns at most one timer even during a busy
+// output stream; fresh activity only moves the deadline forward.
+const timers = new Map<string, ActivityTimerState>();
+
+export function activityIdleDelay(
+  now: number,
+  lastActivityAt: number,
+  idleMs = ACTIVITY_IDLE_MS
+): number | null {
+  const remaining = idleMs - (now - lastActivityAt);
+  return remaining > 0 ? remaining : null;
+}
+
+function scheduleIdleCheck(
+  paneId: string,
+  state: ActivityTimerState,
+  delay: number
+): void {
+  state.timer = setTimeout(() => {
+    if (timers.get(paneId) !== state) return;
+    const remaining = activityIdleDelay(Date.now(), state.lastActivityAt);
+    if (remaining !== null) {
+      scheduleIdleCheck(paneId, state, remaining);
+      return;
+    }
+    timers.delete(paneId);
+    useActivityStore.getState()._set(paneId, false);
+  }, delay);
+}
 
 /**
  * Stamp a pane as having just produced output. Marks it active immediately and
  * schedules it to fall idle after ACTIVITY_IDLE_MS of no further stamps. Called
- * on the hot path (every PTY chunk), so it's intentionally cheap: the store
- * no-ops when the pane is already active, so a burst of chunks only re-arms the
- * timer rather than churning React.
+ * on the hot path (every PTY chunk), so a burst only updates one timestamp; the
+ * existing timer observes the newer deadline when it fires.
  */
 export function markActivity(paneId: string): void {
   useActivityStore.getState()._set(paneId, true);
   const existing = timers.get(paneId);
-  if (existing) clearTimeout(existing);
-  timers.set(
-    paneId,
-    setTimeout(() => {
-      timers.delete(paneId);
-      useActivityStore.getState()._set(paneId, false);
-    }, ACTIVITY_IDLE_MS)
-  );
+  const now = Date.now();
+  if (existing) {
+    existing.lastActivityAt = now;
+    return;
+  }
+  const state = {
+    lastActivityAt: now,
+  };
+  timers.set(paneId, state);
+  scheduleIdleCheck(paneId, state, ACTIVITY_IDLE_MS);
 }
 
 /** Immediately clear a pane's activity (e.g. on dispose/exit), including its
@@ -104,7 +136,7 @@ export function markActivity(paneId: string): void {
 export function clearActivity(paneId: string): void {
   const existing = timers.get(paneId);
   if (existing) {
-    clearTimeout(existing);
+    if (existing.timer) clearTimeout(existing.timer);
     timers.delete(paneId);
   }
   useActivityStore.getState()._drop(paneId);

@@ -61,7 +61,7 @@ import { setHookState, clearHookState } from "../stores/hook-state-store";
 import { parseAgentHookOsc } from "./agent-hook-osc";
 import { playAlertSound } from "./alert-sound";
 import { findLeaf } from "./pane-tree";
-import { logger } from "./logger";
+import { getVerbose, logger } from "./logger";
 import type { AgentKind, PaneAgent } from "./types";
 import { paneProcessTree, agentSessionId, processEnv } from "./agent";
 import {
@@ -82,6 +82,10 @@ import {
   sentinelCommand,
   scrubCommandEcho,
 } from "./agent-run";
+import {
+  formatLatencySummary,
+  makeInputLatencyTracker,
+} from "./input-latency";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 
@@ -626,6 +630,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   const fit = new FitAddon();
   const serialize = new SerializeAddon();
   const search = new SearchAddon();
+  const inputLatency = makeInputLatencyTracker();
   term.loadAddon(fit);
   term.loadAddon(serialize);
   term.loadAddon(search);
@@ -887,19 +892,24 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // right now" (executing) is distinguishable from "idle at a prompt".
   pty.onData((data: Uint8Array) => {
     markActivity(tabId);
-    term.write(data);
+    if (getVerbose()) {
+      inputLatency.markOutput(performance.now());
+      term.write(data, () => inputLatency.markParsed(performance.now()));
+    } else {
+      term.write(data);
+    }
+  });
+  term.onRender(() => {
+    if (!getVerbose()) return;
+    const summary = inputLatency.markRendered(performance.now());
+    if (summary) logger.debug("perf", formatLatencySummary(summary));
   });
   term.onWriteParsed(() => {
     if (s) syncXtermViewport(s);
   });
   // term.onData fires for every keystroke/paste leaving xterm toward the pty.
-  // Log size + a rough latency tag so a "can't type" report can be traced from
-  // the very first hop (xterm) all the way to the OS write.
   term.onData((data: string) => {
-    logger.trace(
-      "term",
-      `input pane=${tabId} bytes=${data.length}`
-    );
+    if (getVerbose()) inputLatency.start(performance.now());
     // Reconstruct the user's current input line so we can capture the literal
     // launch token (possibly a shell alias) when a coding agent is started.
     // The running process argv only ever shows the resolved binary, so this is

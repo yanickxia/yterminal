@@ -26,10 +26,10 @@
 //!     `read()` and pushes chunks through a `tokio::sync::mpsc::channel`.
 //!     `pty_read` just `recv().await`s from that channel — no blocking
 //!     syscall on the async worker pool.
+//!   * `pty_write` only enqueues bytes onto a bounded channel. A dedicated
+//!     writer thread per session owns the blocking writer and drains the queue.
 //!   * `pty_exitstatus` runs `child.wait()` inside `spawn_blocking`, which
 //!     dispatches to tokio's blocking-thread pool (default 512 threads).
-//!   * `pty_write` keeps its sync `write_all` but inside `spawn_blocking`,
-//!     so a stuck pty buffer can't park an async worker either.
 
 use std::{
     collections::BTreeMap,
@@ -65,6 +65,11 @@ const READ_CHUNK: usize = 4096;
 /// without becoming a leak vector.
 const READ_CHANNEL_CAP: usize = 64;
 
+/// Bounded input queue between `pty_write` and the session's writer thread.
+/// Keyboard input is normally one byte and a paste arrives as one message, so
+/// this leaves burst headroom without allowing unbounded growth on a stuck PTY.
+const WRITE_CHANNEL_CAP: usize = 64;
+
 /// Events emitted by the per-session reader thread into the mpsc channel.
 enum ReadEvent {
     Data(Vec<u8>),
@@ -88,7 +93,7 @@ struct Session {
     // is sync and would block the worker if held by an async task.
     child: std::sync::Mutex<Box<dyn Child + Send + Sync>>,
     child_killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
-    writer: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
+    writer_tx: mpsc::Sender<Vec<u8>>,
     /// Receiver side of the per-session reader thread's mpsc channel. Wrapped
     /// in an async Mutex because tokio's `Receiver::recv` requires `&mut self`
     /// and `pty_read` is concurrent in principle — though in practice only one
@@ -174,6 +179,22 @@ pub async fn pty_spawn(
     };
     let child_killer = child.clone_killer();
 
+    let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(WRITE_CHANNEL_CAP);
+    let writer_thread_name = format!("pty-writer-{id}");
+    if let Err(e) = std::thread::Builder::new()
+        .name(writer_thread_name.clone())
+        .spawn(move || match writer_loop(id, writer, writer_rx) {
+            Ok(()) => logger::info("pty", &format!("writer thread: pid={id} closed, exiting")),
+            Err(message) => logger::error("pty", &message),
+        })
+    {
+        logger::error(
+            "pty",
+            &format!("pty_spawn: failed to spawn writer thread {writer_thread_name}: {e}"),
+        );
+        return Err(format!("spawn writer thread: {e}"));
+    }
+
     let (tx, rx) = mpsc::channel::<ReadEvent>(READ_CHANNEL_CAP);
     // Reader thread owns the blocking reader for the session's lifetime.
     // When the session is dropped (pty_kill or shell exit), the Receiver is
@@ -195,7 +216,7 @@ pub async fn pty_spawn(
         pair: Mutex::new(pair),
         child: std::sync::Mutex::new(child),
         child_killer: Mutex::new(child_killer),
-        writer: std::sync::Mutex::new(writer),
+        writer_tx,
         rx: Mutex::new(rx),
     });
     state.sessions.write().await.insert(id, session);
@@ -205,6 +226,32 @@ pub async fn pty_spawn(
         &format!("pty_spawn: session ready pid={id} live_sessions={count}"),
     );
     Ok(id)
+}
+
+/// Drain frontend input in order on a dedicated OS thread. `blocking_recv` is
+/// intentional here: this function never runs on Tauri's async worker pool.
+fn writer_loop<W: std::io::Write>(
+    pid: u32,
+    mut writer: W,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+) -> Result<(), String> {
+    while let Some(data) = rx.blocking_recv() {
+        let write_t = Instant::now();
+        writer
+            .write_all(&data)
+            .map_err(|e| format!("pty writer: pid={pid} write failed: {e}"))?;
+        let write_ms = write_t.elapsed().as_millis();
+        if write_ms >= SLOW_MS {
+            logger::warn(
+                "pty",
+                &format!(
+                    "pty writer: SLOW pid={pid} bytes={} write={write_ms}ms",
+                    data.len()
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Per-session blocking read loop. Lives on its own OS thread for the entire
@@ -261,39 +308,23 @@ pub async fn pty_write(
             "Unavailable pid"
         })?
         .clone();
-    // Sync write_all is fast in the common case (the kernel pty buffer absorbs
-    // small keystrokes immediately), but a full slave-side buffer can block for
-    // an unbounded time — same starvation hazard as `read()`. Run it on the
-    // blocking pool so even pathological backpressure never costs an async
-    // worker. Lock-wait and write timing are measured inside the closure so
-    // the existing log shape is preserved.
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let lock_t = Instant::now();
-        let mut writer = session
-            .writer
-            .lock()
-            .map_err(|e| format!("writer mutex poisoned: {e}"))?;
-        let lock_ms = lock_t.elapsed().as_millis();
-        let write_t = Instant::now();
-        let res = writer.write_all(data.as_bytes()).map_err(|e| e.to_string());
-        let write_ms = write_t.elapsed().as_millis();
-        res.map(|_| (lock_ms, write_ms))
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking join failed: {e}"))?;
-    let (lock_ms, write_ms) = outcome.map_err(|e| {
-        logger::error("pty", &format!("pty_write: pid={pid} write failed: {e}"));
-        e
-    })?;
-    if lock_ms >= SLOW_MS || write_ms >= SLOW_MS {
+    // Queueing is async and bounded. The session's dedicated writer thread owns
+    // the blocking write_all call, so a full PTY can never park this worker.
+    let enqueue_t = Instant::now();
+    session
+        .writer_tx
+        .send(data.into_bytes())
+        .await
+        .map_err(|_| {
+            let message = format!("pty_write: writer queue closed pid={pid}");
+            logger::error("pty", &message);
+            message
+        })?;
+    let enqueue_ms = enqueue_t.elapsed().as_millis();
+    if enqueue_ms >= SLOW_MS {
         logger::warn(
             "pty",
-            &format!("pty_write: SLOW pid={pid} bytes={nbytes} lock_wait={lock_ms}ms write={write_ms}ms"),
-        );
-    } else {
-        logger::debug(
-            "pty",
-            &format!("pty_write: pid={pid} bytes={nbytes} lock_wait={lock_ms}ms write={write_ms}ms"),
+            &format!("pty_write: SLOW pid={pid} bytes={nbytes} enqueue={enqueue_ms}ms"),
         );
     }
     Ok(())
@@ -346,11 +377,6 @@ pub async fn pty_read(
                 logger::warn(
                     "pty",
                     &format!("pty_read: SLOW lock pid={pid} bytes={n} lock_wait={lock_ms}ms blocked={read_ms}ms"),
-                );
-            } else {
-                logger::trace(
-                    "pty",
-                    &format!("pty_read: pid={pid} bytes={n} lock_wait={lock_ms}ms blocked={read_ms}ms"),
                 );
             }
             Ok(tauri::ipc::Response::new(buf))
@@ -464,4 +490,59 @@ pub async fn pty_exitstatus(pid: u32, state: tauri::State<'_, PtyState>) -> Resu
         .exit_code();
     logger::info("pty", &format!("pty_exitstatus: pid={pid} exited code={exit_code}"));
     Ok(exit_code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("expected write failure"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writer_loop_preserves_message_order_and_exits_when_closed() {
+        let output = Arc::new(StdMutex::new(Vec::new()));
+        let writer = SharedWriter(output.clone());
+        let (tx, rx) = mpsc::channel(4);
+        tx.blocking_send(b"ab".to_vec()).unwrap();
+        tx.blocking_send(b"cd".to_vec()).unwrap();
+        drop(tx);
+
+        assert!(writer_loop(7, writer, rx).is_ok());
+        assert_eq!(&*output.lock().unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn writer_loop_stops_on_write_error() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.blocking_send(b"x".to_vec()).unwrap();
+        drop(tx);
+
+        let err = writer_loop(8, FailingWriter, rx).unwrap_err();
+        assert!(err.contains("expected write failure"));
+    }
 }
