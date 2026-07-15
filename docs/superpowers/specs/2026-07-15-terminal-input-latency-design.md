@@ -138,3 +138,12 @@ reader thread
 ## 后续升级条件
 
 只有在 writer 优化和 viewport 验证后，`inputToOutput` 仍占主要延迟，才进入下一阶段：评估用 Tauri binary Channel 替换 `pty_read` 长轮询并设计显式流控。该重构不与本阶段混合。
+
+## 2026-07-15 实施结果
+
+- `pty_write` 已改为有界队列入队，专用 writer OS 线程按序执行阻塞写入；不再为每个按键创建 `spawn_blocking` job。
+- activity 状态改为每 pane 单计时器和滑动 deadline，持续输出只更新时间戳。
+- 移除了逐输入、逐 read 和成功 write 的 TRACE 热路径日志，保留慢请求、错误及周期 heartbeat。
+- 增加了无内容、纯耗时的输入延迟聚合器；verbose 模式每 100 个完整样本输出一次 p50/p95/max。
+- 保留 `term.onWriteParsed -> syncXtermViewport`。本轮没有得到足以证明其可安全删除的 A/B 数据，保留比冒险破坏 scrollback/re-parent 滚动更稳妥。
+- 用户在 Linux WebKitGTK GUI 中完成当前版本的交互自测并确认可用，随后要求停止进一步自动化 GUI/性能测试。
