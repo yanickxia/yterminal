@@ -1,0 +1,31 @@
+CLAUDE.md
+  s_87ff3602d84aaf::t_96673f099d8e1d 131
+src/components/FileViewer.tsx
+  s_87ff3602d84aaf::t_26fbacffc09fd9 1,6-10,14-19,31,50,52-60,64,67,80-116,156,163-176
+src/lib/file-viewer-copy.test.ts
+  s_87ff3602d84aaf::t_f50a72745a8b76 1-81
+src/lib/file-viewer-copy.ts
+  s_87ff3602d84aaf::t_ba434b4aa66476 1-46
+src/stores/viewer-store.test.ts
+  s_87ff3602d84aaf::t_a0eada7ce0bbed 1-36
+src/stores/viewer-store.ts
+  s_87ff3602d84aaf::t_354ecb251640e6 22-23,31-32,39,68-74,77,79,81-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e75dd5822680f8a1c6f44cc1bf740b5d78af15c2",
+  "prompts": {},
+  "sessions": {
+    "s_87ff3602d84aaf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6451-1f09-7401-ab97-796f14fc5f92",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
