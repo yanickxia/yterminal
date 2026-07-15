@@ -92,11 +92,6 @@ class Pty implements IPty {
               "pty",
               `write SLOW pid=${this.pid} bytes=${data.length} rtt=${Math.round(ms)}ms`
             );
-          } else {
-            logger.trace(
-              "pty",
-              `write pid=${this.pid} bytes=${data.length} rtt=${Math.round(ms)}ms`
-            );
           }
         })
         .catch((e) => {
