@@ -1,0 +1,25 @@
+CLAUDE.md
+  s_87ff3602d84aaf::t_8e8a80b6a47f6e 127
+src/lib/file-link-classify.test.ts
+  s_87ff3602d84aaf::t_85463715ed7ab0 177-216
+src/lib/file-link-classify.ts
+  s_87ff3602d84aaf::t_8c1f2b486a2f38 237-240,244-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9234688133e10738500c0512523e129ae9a53a2e",
+  "prompts": {},
+  "sessions": {
+    "s_87ff3602d84aaf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6451-1f09-7401-ab97-796f14fc5f92",
+        "model": "unknown"
+      },
+      "human_author": "xiayan.cn <xiayan.cn@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
