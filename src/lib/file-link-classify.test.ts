@@ -174,6 +174,46 @@ describe("findPathSpans", () => {
       "docs/specs/2026-07-06-tce-file-logging-design.md"
     );
   });
+  it("starts the link after the CJK colon in the reported Codex output", () => {
+    const path =
+      "docs/superpowers/specs/2026-07-15-block-id-scorer-multi-role-workload-design.md";
+    const line = `设计文档已就绪：${path}`;
+
+    expect(findPathSpans(line)).toEqual([
+      {
+        token: path,
+        start: line.indexOf(path),
+        end: line.length,
+      },
+    ]);
+  });
+  it.each(["，", "。", "；", "：", "！", "？", "、"])(
+    "treats %s as a path boundary without surrounding whitespace",
+    (punctuation) => {
+      const path = "docs/specs/design.md";
+      const line = `前文${punctuation}${path}${punctuation}后文`;
+
+      expect(findPathSpans(line)).toEqual([
+        {
+          token: path,
+          start: line.indexOf(path),
+          end: line.indexOf(path) + path.length,
+        },
+      ]);
+    }
+  );
+  it("preserves Windows drive and line-column colons after a CJK boundary", () => {
+    const path = "C:\\work\\src\\app.ts:42:9";
+    const line = `文件：${path}。`;
+
+    expect(findPathSpans(line)).toEqual([
+      {
+        token: path,
+        start: line.indexOf(path),
+        end: line.indexOf(path) + path.length,
+      },
+    ]);
+  });
   it("trims CJK full-width brackets wrapping a path token", () => {
     const spans = findPathSpans("见 （src/app.ts） 里");
     expect(spans).toHaveLength(1);

@@ -234,15 +234,17 @@ const LEAD_PUNCT = "\"'`([{<（【《「『‘“";
 /**
  * Scan a single line of terminal text for path-like tokens, returning their
  * character spans. Pure (no IO): the caller probes existence before turning a
- * span into a real link. Tokens are split on whitespace; surrounding quotes,
- * brackets and trailing punctuation are trimmed, and a trailing `:line[:col]`
- * suffix is kept as part of the token (resolvePath strips it later) so editor
- * style `file.ts:42` references stay clickable.
+ * span into a real link. Tokens are split on whitespace and CJK sentence
+ * delimiters; surrounding quotes, brackets and trailing punctuation are
+ * trimmed. ASCII punctuation remains part of a token so Windows drive letters
+ * and trailing `:line[:col]` suffixes stay clickable.
  */
 export function findPathSpans(line: string): PathSpan[] {
   const spans: PathSpan[] = [];
-  // Walk whitespace-delimited chunks, tracking absolute offsets.
-  const re = /\S+/g;
+  // CJK prose commonly places a path directly after punctuation with no space
+  // (`说明：docs/spec.md`). Treat only unambiguous sentence delimiters as token
+  // boundaries; path-significant ASCII punctuation remains untouched.
+  const re = /[^\s，。；：！？、]+/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(line))) {
     const chunk = m[0];
