@@ -1,5 +1,6 @@
 [package]
 name = "yterminal"
+default-run = "yterminal"
 version = "0.17.2"
 description = "A workspace-first terminal emulator"
 authors = ["you"]
@@ -17,23 +18,26 @@ tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# pseudo-terminal: spawn the user's shell, stream IO, propagate resize/exit.
-# upstream `tauri-plugin-pty` wraps this same crate but hides the real OS pid;
-# we depend on portable-pty directly so cwd lookups via /proc and lsof work.
+# pseudo-terminal ownership in the per-user agent: spawn the user's shell,
+# stream IO, and propagate resize/exit independently of the GUI lifecycle.
 portable-pty = "0.9"
 # enumerate installed system fonts natively (the WebViews Tauri uses don't
 # expose the Local Font Access API). source-only to keep the build self-contained.
 font-kit = "0.14"
-# unbounded per-pane scrollback storage backed by a single SQLite file. `bundled`
-# includes SQLite C source so we don't depend on a system libsqlite3.
+# Agent workspace documents, PTY journals/checkpoints, plus the legacy local
+# scrollback cache. `bundled` avoids a system libsqlite3 dependency.
 rusqlite = { version = "0.31", features = ["bundled"] }
-# direct tokio dep (already a transitive of tauri) so we can use mpsc channels
-# to bridge a per-session blocking reader thread into async `pty_read`. Keeps
-# the blocking `read()` and `child.wait()` syscalls off the async worker pool,
-# which would otherwise starve once enough PTYs are open (8 sessions × 2
-# blocking tasks already exceeds tokio's default 16-worker pool on a 16-core
-# Mac, leaving new shells unable to schedule their first read).
-tokio = { version = "1", features = ["sync"] }
+# Async socket/SSH protocol and bounded channels. PTY read/write stay on
+# dedicated OS threads and child.wait() uses spawn_blocking, keeping blocking
+# syscalls off Tokio's worker pool.
+tokio = { version = "1", features = ["sync", "io-util", "io-std", "net", "process", "rt-multi-thread", "macros", "time"] }
+# Compact binary protocol carried over SSH stdio / the local Unix socket.
+# CBOR preserves terminal byte chunks without JSON/base64 expansion.
+ciborium = "0.2"
+serde_bytes = "0.11"
+# Stable identifiers for devices, workspaces and PTY sessions. OS pids stay
+# private to the owner agent and are never used as cross-device handles.
+uuid = { version = "1", features = ["v4", "serde"] }
 # HTTP client for the AI sidebar: POST to an OpenAI-compatible chat endpoint.
 # rustls (not native-tls) keeps the build self-contained — no system OpenSSL.
 # `stream` lets us consume Server-Sent-Events deltas for the streaming variant.

@@ -12,6 +12,12 @@ import {
 import { pathIsFile } from "./file-reader";
 import { openUrl, openPath } from "./opener";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import {
+  isRemoteWorkspace,
+  transportForWorkspace,
+} from "./workspace-sync";
+
+const remoteHomes = new Map<string, string>();
 
 /**
  * Decide what a clicked terminal token is and act on it. `cwd`/`home` resolve
@@ -22,7 +28,8 @@ import { useWorkspaceStore } from "../stores/workspace-store";
 export async function handleClickedToken(
   token: string,
   cwd: string,
-  home?: string
+  home?: string,
+  workspaceId?: string
 ): Promise<boolean> {
   const trimmed = token.trim();
   if (!trimmed) return false;
@@ -37,18 +44,35 @@ export async function handleClickedToken(
 
   if (!looksLikePath(trimmed)) return false;
 
-  const abs = resolvePath(trimmed, cwd, home);
+  const store = useWorkspaceStore.getState();
+  const wsId = workspaceId ?? store.activeWorkspaceId ?? undefined;
+  let ownerHome = home;
+  if (wsId && isRemoteWorkspace(wsId) && trimmed.startsWith("~")) {
+    ownerHome = remoteHomes.get(wsId);
+    if (!ownerHome) {
+      try {
+        const response = await transportForWorkspace(wsId)?.request({
+          method: "home_dir",
+        });
+        if (response?.kind === "home_directory" && response.data.path) {
+          ownerHome = response.data.path;
+          remoteHomes.set(wsId, ownerHome);
+        }
+      } catch {
+        return false;
+      }
+    }
+    if (!ownerHome) return false;
+  }
+  const abs = resolvePath(trimmed, cwd, ownerHome);
   // Only act on paths that actually exist as a regular file. Directories and
-  // missing paths are left to the OS-open fallback below would mis-handle, so
-  // we simply ignore them.
-  const exists = await pathIsFile(abs);
+  // missing paths are left alone.
+  const exists = await pathIsFile(abs, wsId);
   if (!exists) return false;
 
   const target = classifyFilePath(abs);
   if (target.kind === "view") {
     // Open (or re-activate) a read-only file viewer tab in the active workspace.
-    const store = useWorkspaceStore.getState();
-    const wsId = store.activeWorkspaceId;
     if (!wsId) return false;
     store.openFileTab(wsId, {
       path: target.path,
@@ -58,6 +82,10 @@ export async function handleClickedToken(
     return true;
   }
   if (target.kind === "os-open") {
+    // `openPath` runs on the GUI machine. A remote absolute path has no local
+    // meaning, so leave unsupported binary files untouched instead of opening
+    // a same-named local file by accident.
+    if (wsId && isRemoteWorkspace(wsId)) return false;
     // Recognized as a file but not a viewable text type: hand to the OS.
     await openPath(target.path).catch((err) =>
       console.warn("openPath failed", target.path, err)

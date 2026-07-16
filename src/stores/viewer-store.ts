@@ -27,7 +27,7 @@ interface ViewerState {
    * already has content (or is mid-load) is left alone, so re-activating a file
    * tab doesn't re-read the disk.
    */
-  load: (tabId: string, path: string) => Promise<void>;
+  load: (tabId: string, path: string, workspaceId?: string) => Promise<void>;
   /** Remember a file tab's vertical reading position. */
   setScrollTop: (tabId: string, scrollTop: number) => void;
   /** Forget a tab's content (call when the file tab is closed). */
@@ -38,14 +38,14 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   files: {},
   scrollTops: {},
 
-  load: async (tabId, path) => {
+  load: async (tabId, path, workspaceId) => {
     const existing = get().files[tabId];
     if (existing) return; // already loaded or loading
     set((s) => ({
       files: { ...s.files, [tabId]: { text: "", loading: true, error: null } },
     }));
     try {
-      const { text } = await readTextFile(path);
+      const { text } = await readTextFile(path, workspaceId);
       set((s) =>
         s.files[tabId]
           ? { files: { ...s.files, [tabId]: { text, loading: false, error: null } } }

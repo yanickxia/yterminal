@@ -8,7 +8,7 @@ import { PaneRenderer, refitTree } from "./components/PaneRenderer";
 import { SearchBox } from "./components/SearchBox";
 import { WorkspacePalette } from "./components/WorkspacePalette";
 import { AgentOverview } from "./components/AgentOverview";
-import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnCommandSettled } from "./lib/terminal-manager";
+import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnCommandSettled, pruneSessionsToWorkspaceProjection } from "./lib/terminal-manager";
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
@@ -31,6 +31,11 @@ import { clearAttention } from "./stores/attention-store";
 import { logger, installGlobalErrorLogging, setVerbose } from "./lib/logger";
 import { matchAppShortcut } from "./lib/app-shortcut";
 import { detectIsMac } from "./lib/link-modifier";
+import {
+  configureWorkspaceProjection,
+  startWorkspaceSync,
+} from "./lib/workspace-sync";
+import { startConfiguredRemoteHosts } from "./lib/remote-host-manager";
 
 // Platform detected once at module load (same source as the link modifier).
 // Drives the shortcut modifier split: Cmd on macOS, Ctrl+Shift elsewhere.
@@ -52,6 +57,7 @@ export default function App() {
   // gate the UI until the real login shell is resolved, so the first pane
   // doesn't spawn against a fallback shell before $SHELL is known.
   const [ready, setReady] = useState(false);
+  const [startupError, setStartupError] = useState<string | null>(null);
   // when set, the in-terminal search box is open for this pane id
   const [searchPaneId, setSearchPaneId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -96,6 +102,22 @@ export default function App() {
       await preloadScrollbacks();
       if (cancelled) return;
       ensureSeedWorkspace();
+      configureWorkspaceProjection({
+        replaceHost: (hostId, documents) => {
+          useWorkspaceStore.getState().applyAgentSnapshot(hostId, documents);
+          pruneSessionsToWorkspaceProjection();
+        },
+        upsert: (hostId, document) => {
+          useWorkspaceStore.getState().applyAgentWorkspace(hostId, document);
+          pruneSessionsToWorkspaceProjection();
+        },
+        remove: (hostId, workspaceId) => {
+          useWorkspaceStore.getState().removeAgentWorkspace(hostId, workspaceId);
+          pruneSessionsToWorkspaceProjection();
+        },
+      });
+      await startWorkspaceSync(useWorkspaceStore.getState().workspaces);
+      if (cancelled) return;
       // sync app-chrome colors to the saved theme before any terminal opens
       applyAppearance();
       // drop scrollback snapshots whose panes no longer exist in the store
@@ -106,6 +128,7 @@ export default function App() {
       pruneScrollback(live);
       setReady(true);
       logger.info("app", "startup ready");
+      startConfiguredRemoteHosts();
       scheduleAutoCheck();
 
       // probe installed monospace fonts in the background — the native call is
@@ -116,7 +139,12 @@ export default function App() {
       detectSystemFonts().then((fonts) => {
         if (!cancelled) registerSystemFonts(fonts);
       });
-    })();
+    })().catch((error) => {
+      if (cancelled) return;
+      const message = String(error);
+      logger.error("app", `startup failed: ${message}`);
+      setStartupError(message);
+    });
     return () => {
       cancelled = true;
     };
@@ -388,14 +416,20 @@ export default function App() {
       )}
       <div className="main">
         {!ready ? (
-          <div className="empty">Starting…</div>
+          <div className="empty">
+            {startupError ? `Agent startup failed: ${startupError}` : "Starting…"}
+          </div>
         ) : ws ? (
           <>
             <TabBar workspace={ws} />
             <div className="terminal-area">
               {activeTab ? (
                 activeTab.file ? (
-                  <FileViewer tabId={activeTab.id} file={activeTab.file} />
+                  <FileViewer
+                    tabId={activeTab.id}
+                    file={activeTab.file}
+                    workspaceId={ws.id}
+                  />
                 ) : (
                   <PaneRenderer
                     node={activeTab.root}

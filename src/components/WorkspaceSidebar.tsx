@@ -15,6 +15,12 @@ import type { Workspace } from "../lib/types";
 import { disposeSession, scrollSessionToBottom } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { useFocusedPaneId } from "../lib/use-focused-pane";
+import { useHostStore } from "../stores/host-store";
+import {
+  pauseRemoteHost,
+  reconnectRemoteHost,
+} from "../lib/remote-host-manager";
+import { takeWorkspaceControl } from "../lib/workspace-sync";
 
 /** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
 function railGlyph(name: string, icon?: string): string {
@@ -33,6 +39,7 @@ export function WorkspaceSidebar({
   const setActive = useWorkspaceStore((s) => s.setActiveWorkspace);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const addWorkspace = useWorkspaceStore((s) => s.addWorkspace);
+  const addWorkspaceOnHost = useWorkspaceStore((s) => s.addWorkspaceOnHost);
   const removeWorkspace = useWorkspaceStore((s) => s.removeWorkspace);
   const renameWorkspace = useWorkspaceStore((s) => s.renameWorkspace);
   const reorderWorkspace = useWorkspaceStore((s) => s.reorderWorkspace);
@@ -49,6 +56,8 @@ export function WorkspaceSidebar({
   );
   const toggleAi = useAiStore((s) => s.toggleOpen);
   const toggleGit = useGitStore((s) => s.toggleOpen);
+  const hostProfiles = useHostStore((s) => s.profiles);
+  const hostRuntime = useHostStore((s) => s.runtime);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -110,6 +119,39 @@ export function WorkspaceSidebar({
     focusedPaneId,
     hookState
   );
+  const configuredHostIds = new Set(hostProfiles.map((profile) => profile.id));
+  const orphanHostIds = Array.from(
+    new Set(
+      workspaces
+        .map((workspace) => workspace.hostId ?? "local")
+        .filter((hostId) => hostId !== "local" && !configuredHostIds.has(hostId))
+    )
+  );
+  const hostGroups = [
+    {
+      id: "local",
+      name: "This device",
+      status: "online",
+      workspaces: workspaces.filter(
+        (workspace) => (workspace.hostId ?? "local") === "local"
+      ),
+    },
+    ...hostProfiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name || profile.sshTarget || "Remote",
+      status: hostRuntime[profile.id]?.status ?? "offline",
+      workspaces: workspaces.filter(
+        (workspace) => (workspace.hostId ?? "local") === profile.id
+      ),
+    })),
+    ...orphanHostIds.map((hostId) => ({
+      id: hostId,
+      name: "Removed host",
+      status: "offline",
+      workspaces: workspaces.filter((workspace) => workspace.hostId === hostId),
+    })),
+  ];
+  const hostLabels = new Map(hostGroups.map((group) => [group.id, group.name]));
 
   /**
    * Navigate to a waiting tab: activate its workspace + tab, acknowledge the
@@ -182,16 +224,51 @@ export function WorkspaceSidebar({
   }
 
   function buildMenu(w: Workspace, allowRename: boolean): MenuItem[] {
-    const idx = workspaces.findIndex((x) => x.id === w.id);
-    const closableOthers = workspaces.filter(
+    const hostId = w.hostId ?? "local";
+    const sameHost = workspaces.filter(
+      (workspace) => (workspace.hostId ?? "local") === hostId
+    );
+    const idx = sameHost.findIndex((x) => x.id === w.id);
+    const closableOthers = sameHost.filter(
       (x) => x.id !== w.id && !x.pinned
     );
-    const closableBefore = workspaces.filter(
+    const closableBefore = sameHost.filter(
       (x, i) => i < idx && !x.pinned
     );
-    const closableAfter = workspaces.filter(
+    const closableAfter = sameHost.filter(
       (x, i) => i > idx && !x.pinned
     );
+    if (hostId !== "local") {
+      return [
+        {
+          label: "Take Control",
+          onClick: () => {
+            void takeWorkspaceControl(w.id);
+          },
+        },
+        {
+          label: "Reconnect Host",
+          onClick: () => {
+            void reconnectRemoteHost(hostId);
+          },
+        },
+        {
+          label: "Disconnect Host",
+          onClick: () => {
+            void pauseRemoteHost(hostId);
+          },
+        },
+        { separator: true },
+        {
+          label: "Terminate Workspace",
+          danger: true,
+          onClick: () => {
+            disposeWorkspaces([w]);
+            removeWorkspace(w.id);
+          },
+        },
+      ];
+    }
     return [
       {
         label: w.pinned ? "Unpin" : "Pin",
@@ -266,7 +343,7 @@ export function WorkspaceSidebar({
                 (w.id === activeId ? " active" : "") +
                 (w.pinned ? " pinned" : "")
               }
-              title={w.pinned ? `${w.name} (pinned)` : w.name}
+              title={`${hostLabels.get(w.hostId ?? "local") ?? "Host"} · ${w.name}${w.pinned ? " (pinned)" : ""}`}
               onClick={() => setActive(w.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -407,7 +484,25 @@ export function WorkspaceSidebar({
             ))}
           </div>
         )}
-        {workspaces.map((w) => {
+        {hostGroups.map((group) => (
+          <div className="ws-host-group" key={group.id}>
+            <div className="ws-host-header">
+              <span className={`remote-status ${group.status}`} />
+              <span className="ws-host-name">{group.name}</span>
+              {group.id !== "local" && (
+                <span className="ws-host-state">{group.status}</span>
+              )}
+              <button
+                type="button"
+                className="icon-btn ws-host-add"
+                title={`New workspace on ${group.name}`}
+                disabled={group.status !== "online"}
+                onClick={() => addWorkspaceOnHost(group.id)}
+              >
+                +
+              </button>
+            </div>
+            {group.workspaces.map((w) => {
           const isOver = over?.id === w.id && dragId && w.id !== dragId;
           const dragSrc = dragId
             ? workspaces.find((x) => x.id === dragId)
@@ -416,7 +511,9 @@ export function WorkspaceSidebar({
           // to preserve the "pinned items render before unpinned" invariant —
           // mirror it here so we don't paint a misleading insertion line.
           const allowed =
-            !dragSrc || Boolean(dragSrc.pinned) === Boolean(w.pinned);
+            !dragSrc ||
+            ((dragSrc.hostId ?? "local") === (w.hostId ?? "local") &&
+              Boolean(dragSrc.pinned) === Boolean(w.pinned));
           return (
           <div
             key={w.id}
@@ -523,14 +620,23 @@ export function WorkspaceSidebar({
                 <span className="ws-count">{w.tabs.length}</span>
                 <button
                   className="icon-btn ws-close"
-                  title="Delete workspace"
+                  title={
+                    (w.hostId ?? "local") === "local"
+                      ? "Terminate workspace"
+                      : "Disconnect host (remote processes keep running)"
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
-                    disposeWorkspaces([w]);
-                    removeWorkspace(w.id);
+                    const hostId = w.hostId ?? "local";
+                    if (hostId === "local") {
+                      disposeWorkspaces([w]);
+                      removeWorkspace(w.id);
+                    } else {
+                      void pauseRemoteHost(hostId);
+                    }
                   }}
                 >
-                  ×
+                  {(w.hostId ?? "local") === "local" ? "×" : "⏏"}
                 </button>
                 {iconPicker?.id === w.id && (
                   <EmojiPicker
@@ -543,7 +649,9 @@ export function WorkspaceSidebar({
             )}
           </div>
           );
-        })}
+            })}
+          </div>
+        ))}
       </div>
 
       <div className="sidebar-footer">

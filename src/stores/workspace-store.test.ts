@@ -258,3 +258,187 @@ describe("tab name: manual override vs auto title", () => {
     expect(useWorkspaceStore.getState().workspaces).toBe(before);
   });
 });
+
+describe("agent workspace projection", () => {
+  it("preserves each client's workspace order when an agent snapshot is reordered", () => {
+    useWorkspaceStore.setState({
+      workspaces: [
+        {
+          id: "second-in-agent",
+          hostId: "host-b",
+          name: "First locally",
+          tabs: [],
+          activeTabId: null,
+        },
+        {
+          id: "first-in-agent",
+          hostId: "host-b",
+          name: "Second locally",
+          tabs: [],
+          activeTabId: null,
+        },
+      ],
+      activeWorkspaceId: "second-in-agent",
+    });
+    useWorkspaceStore.getState().applyAgentSnapshot("host-b", [
+      {
+        id: "first-in-agent",
+        revision: 2,
+        name: "Second locally",
+        tabs: [],
+      },
+      {
+        id: "second-in-agent",
+        revision: 3,
+        name: "First locally",
+        tabs: [],
+      },
+    ]);
+    expect(
+      useWorkspaceStore.getState().workspaces.map((workspace) => workspace.id)
+    ).toEqual(["second-in-agent", "first-in-agent"]);
+  });
+
+  it("keeps client-private resume env while applying public runtime updates", () => {
+    useWorkspaceStore.setState({
+      workspaces: [
+        {
+          id: "remote-w",
+          hostId: "host-b",
+          name: "Remote",
+          tabs: [
+            {
+              id: "tab",
+              name: "shell",
+              cwd: "/work",
+              root: {
+                type: "leaf",
+                id: "pane",
+                cwd: "/work",
+                agent: {
+                  kind: "claude",
+                  command: "claude-company",
+                  sessionId: "agent-session",
+                  env: { ANTHROPIC_AUTH_TOKEN: "private" },
+                },
+              },
+              activePaneId: "pane",
+            },
+          ],
+          activeTabId: "tab",
+        },
+      ],
+      activeWorkspaceId: "remote-w",
+    });
+    useWorkspaceStore.getState().applyAgentWorkspace("host-b", {
+      id: "remote-w",
+      revision: 2,
+      name: "Remote",
+      tabs: [
+        {
+          id: "tab",
+          name: "claude",
+          cwd: "/work/new",
+          root: {
+            type: "leaf",
+            id: "pane",
+            cwd: "/work/new",
+            runtimeStatus: "working",
+            runtimeTitle: "remote build",
+            agent: {
+              kind: "claude",
+              command: "claude-company",
+              sessionId: "agent-session",
+            },
+          },
+        },
+      ],
+    });
+    const leaf = useWorkspaceStore.getState().workspaces[0].tabs[0].root;
+    expect(leaf.type).toBe("leaf");
+    if (leaf.type !== "leaf") throw new Error("expected leaf");
+    expect(leaf.runtimeStatus).toBe("working");
+    expect(useWorkspaceStore.getState().workspaces[0].tabs[0].name).toBe(
+      "remote build"
+    );
+    expect(leaf.agent?.env).toEqual({ ANTHROPIC_AUTH_TOKEN: "private" });
+  });
+
+  it("preserves client-local split sizes until the shared structure changes", () => {
+    const leaf = (id: string) => ({
+      type: "leaf" as const,
+      id,
+      cwd: "/work",
+    });
+    useWorkspaceStore.setState({
+      workspaces: [
+        {
+          id: "remote-w",
+          hostId: "host-b",
+          name: "Remote",
+          tabs: [
+            {
+              id: "tab",
+              name: "shell",
+              cwd: "/work",
+              root: {
+                type: "split",
+                id: "split",
+                direction: "row",
+                children: [leaf("a"), leaf("b")],
+                sizes: [25, 75],
+              },
+              activePaneId: "a",
+            },
+          ],
+          activeTabId: "tab",
+        },
+      ],
+      activeWorkspaceId: "remote-w",
+    });
+
+    useWorkspaceStore.getState().applyAgentWorkspace("host-b", {
+      id: "remote-w",
+      revision: 2,
+      name: "Remote",
+      tabs: [
+        {
+          id: "tab",
+          name: "shell",
+          cwd: "/work",
+          root: {
+            type: "split",
+            id: "split",
+            direction: "row",
+            children: [leaf("a"), leaf("b")],
+            sizes: [50, 50],
+          },
+        },
+      ],
+    });
+    let root = useWorkspaceStore.getState().workspaces[0].tabs[0].root;
+    expect(root.type === "split" ? root.sizes : []).toEqual([25, 75]);
+
+    useWorkspaceStore.getState().applyAgentWorkspace("host-b", {
+      id: "remote-w",
+      revision: 3,
+      name: "Remote",
+      tabs: [
+        {
+          id: "tab",
+          name: "shell",
+          cwd: "/work",
+          root: {
+            type: "split",
+            id: "split",
+            direction: "row",
+            children: [leaf("a"), leaf("b"), leaf("c")],
+            sizes: [34, 33, 33],
+          },
+        },
+      ],
+    });
+    root = useWorkspaceStore.getState().workspaces[0].tabs[0].root;
+    expect(root.type === "split" ? root.sizes : []).toEqual([34, 33, 33]);
+  });
+});

@@ -25,7 +25,15 @@ type ViewerMenu =
  * as syntax-highlighted source. A "Raw" toggle drops back to plain monospace
  * text (useful for markdown, or when highlighting is unhelpful).
  */
-export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
+export function FileViewer({
+  tabId,
+  file,
+  workspaceId,
+}: {
+  tabId: string;
+  file: TabFile;
+  workspaceId?: string;
+}) {
   const { path, language, markdown } = file;
   const load = useViewerStore((s) => s.load);
   const setScrollTop = useViewerStore((s) => s.setScrollTop);
@@ -36,8 +44,8 @@ export function FileViewer({ tabId, file }: { tabId: string; file: TabFile }) {
 
   // Kick off (idempotent) the disk read for this tab/path.
   useEffect(() => {
-    void load(tabId, path);
-  }, [tabId, path, load]);
+    void load(tabId, path, workspaceId);
+  }, [tabId, path, workspaceId, load]);
 
   // "Raw" shows the unrendered/unhighlighted source. Reset to the default
   // (rendered) view whenever a different file is shown.

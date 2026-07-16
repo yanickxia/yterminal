@@ -27,6 +27,32 @@ drag-and-drop reordering.
   the sidebar.
 - **Instance caching** — terminals are cached, not destroyed, on tab/pane
   switch, so scrollback and shell state survive.
+- **SSH remote workspaces** — attach to every workspace, tab, split and live PTY
+  on another macOS/Linux machine through one persistent system OpenSSH channel.
+  Closing either GUI or losing the network does not stop the remote work.
+
+## Remote workspaces over SSH
+
+On every machine that should own remotely accessible work, open **Settings →
+Remote** and click **Enable Remote Workspaces**. This installs
+`~/.local/bin/yterminal-agent` plus a per-user systemd service (Linux) or
+LaunchAgent (macOS). No root permission and no listening TCP port are needed.
+
+On the client machine, add an SSH target in the same panel. The target is an
+alias or `user@host` accepted by your existing `ssh` command. Authentication,
+host-key verification, `ProxyJump`, agent forwarding and key selection remain
+entirely in `~/.ssh/config`/OpenSSH; yterminal stores no password or private key.
+
+Remote workspaces then appear under their device in the sidebar. One client
+controls a workspace at a time; other clients attach read-only and can use
+**Take Control**. **Disconnect** only detaches the GUI. **Terminate** is the
+explicit operation that ends a remote shell/workspace.
+
+The agent keeps the PTY, workspace document, output journal and renderer
+checkpoints under the remote OS user. Reconnect resumes from a byte sequence,
+so scrollback and full-screen TUIs continue without intentionally respawning a
+shell. Git status, cwd/process detection and the text file viewer execute on the
+workspace's owner host rather than accidentally reading the client machine.
 
 ## Keyboard shortcuts
 
@@ -92,29 +118,31 @@ manager.
 | Layer | Choice |
 |---|---|
 | Shell | Tauri 2 |
-| Backend | Rust (`tauri-plugin-pty` for PTY) |
+| Backend | Rust (`portable-pty` in a per-user `yterminal-agent`) |
 | Frontend | React 18 + TypeScript + Vite |
 | State | Zustand (persisted) |
-| Terminal | xterm.js + `tauri-pty` (+ `addon-fit`, `addon-serialize`) |
+| Terminal | xterm.js + agent CBOR protocol (+ `addon-fit`, `addon-serialize`) |
 
 ## Architecture
 
 ```
-Workspace (sidebar)                <- workspace-store.ts (Zustand, persisted)
+Host → Workspace (sidebar)         <- agent SQLite authority + client cache
   └── Tab[] (per workspace)        <- workspace-store.ts
         └── PaneTree (recursive)   <- pane-tree.ts (split / remove / resize)
-              └── PaneLeaf == live shell  <- terminal-manager.ts (xterm + pty)
+              └── PaneLeaf == agent session UUID <- xterm + local/SSH transport
 ```
 
 ### Source layout
 
 | Path | Responsibility |
 |---|---|
-| `src/stores/workspace-store.ts` | Workspace + tab + pane tree, all CRUD & reorder, persisted to `localStorage` |
+| `src/stores/workspace-store.ts` | Client projection/view state for agent-owned workspaces |
+| `src-tauri/src/agent/` | PTY ownership, workspace authority, journal/checkpoints and Unix-socket server |
+| `src/lib/host-transport.ts` | Shared local/SSH request, event, lease and reconnect transport |
 | `src/stores/settings-store.ts` | Appearance settings (theme / font / size), persisted separately |
 | `src/lib/terminal-manager.ts` | Owns live xterm.js + PTY instances; cache, attach/detach, fit, persist, live re-theme |
 | `src/lib/pane-tree.ts` | Pure split-tree transforms (split, remove, resize, collect leaves) |
-| `src/lib/scrollback.ts` | Per-pane buffer snapshots in `localStorage` (save / load / clear / prune) |
+| `src/lib/scrollback.ts` | Local SQLite checkpoint/cache compatibility layer |
 | `src/lib/themes.ts` | Built-in skins + font presets; palette → xterm theme + CSS vars |
 | `src/components/` | `WorkspaceSidebar`, `TabBar`, `PaneRenderer`, `PaneTerminal`, `SettingsPanel` |
 
@@ -227,4 +255,4 @@ works on most macOS versions.
       sidebar, via native HTML5 DnD
 - [x] CI — automated multi-platform release builds via GitHub Actions
 - [x] Scale scrollback to a Rust + SQLite store (unbounded history)
-- [ ] SSH sessions
+- [x] SSH remote workspace attach with daemon-owned persistent PTYs

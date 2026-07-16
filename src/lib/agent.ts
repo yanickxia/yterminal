@@ -7,9 +7,29 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentKind } from "./types";
 import type { ProcInfo } from "./agent-detect";
+import {
+  isRemoteWorkspace,
+  transportForWorkspace,
+} from "./workspace-sync";
 
 /** Descendant process tree of a pane's shell pid (excludes the shell itself). */
-export async function paneProcessTree(pid: number): Promise<ProcInfo[]> {
+export async function paneProcessTree(
+  pid: number,
+  workspaceId?: string,
+  sessionId?: string
+): Promise<ProcInfo[]> {
+  if (workspaceId && sessionId) {
+    try {
+      const response = await transportForWorkspace(workspaceId)?.request({
+        method: "process_tree",
+        params: { session_id: sessionId },
+      });
+      if (response?.kind === "processes") return response.data.processes;
+    } catch {
+      if (isRemoteWorkspace(workspaceId)) return [];
+    }
+  }
+  if (workspaceId && isRemoteWorkspace(workspaceId)) return [];
   try {
     return await invoke<ProcInfo[]>("pane_process_tree", { pid });
   } catch {
@@ -26,8 +46,24 @@ export async function paneProcessTree(pid: number): Promise<ProcInfo[]> {
 export async function agentSessionId(
   kind: AgentKind,
   cwd: string,
-  pid: number
+  pid: number,
+  workspaceId?: string
 ): Promise<string | null> {
+  if (workspaceId) {
+    try {
+      const response = await transportForWorkspace(workspaceId)?.request({
+        method: "resolve_agent_session",
+        params: { kind, cwd, pid },
+      });
+      if (response?.kind === "agent_session") {
+        const id = response.data.session_id;
+        return id && id.trim() ? id : null;
+      }
+    } catch {
+      if (isRemoteWorkspace(workspaceId)) return null;
+    }
+  }
+  if (workspaceId && isRemoteWorkspace(workspaceId)) return null;
   try {
     const id = await invoke<string | null>("agent_session_id", {
       kind,
@@ -46,7 +82,14 @@ export async function agentSessionId(
  * alias set on a coding-agent process, so we can replay it on resume without
  * knowing the alias name.
  */
-export async function processEnv(pid: number): Promise<Record<string, string>> {
+export async function processEnv(
+  pid: number,
+  workspaceId?: string
+): Promise<Record<string, string>> {
+  // Environment values may contain API tokens. They are intentionally never
+  // exposed by the SSH agent protocol; a remote client receives only the
+  // public agent kind/command/session summary stored in the workspace.
+  if (workspaceId && isRemoteWorkspace(workspaceId)) return {};
   try {
     const pairs = await invoke<Array<[string, string]>>("process_env", { pid });
     const env: Record<string, string> = {};

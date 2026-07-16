@@ -91,9 +91,10 @@ export function classify(
   active: Set<string>,
   everActive: Set<string>,
   focusedPaneId?: string,
-  hookState?: Map<string, AgentHookState>
+  hookState?: Map<string, AgentHookState>,
+  persistedHook?: AgentHookState
 ): AgentRunState {
-  const hook = hookState?.get(paneId);
+  const hook = hookState?.get(paneId) ?? persistedHook;
   // Blocked on the user: an explicit bell, or a hook permission prompt.
   if (waiting.has(paneId) || hook === "permission") return "attention";
   // Live output beats any (possibly stale) hook state.
@@ -137,7 +138,8 @@ export function workspaceAgentSummary(
         active,
         everActive,
         focusedPaneId,
-        hookState
+        hookState,
+        leaf.runtimeStatus
       );
       if (state === "attention") attention++;
       else if (state === "executing") executing++;
@@ -207,7 +209,8 @@ export function workspacesAgentStatus(
           active,
           everActive,
           focusedPaneId,
-          hookState
+          hookState,
+          leaf.runtimeStatus
         );
         if (AGENT_STATE_RANK[state] > AGENT_STATE_RANK[best]) best = state;
       }

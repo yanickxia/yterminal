@@ -144,6 +144,39 @@ body {
   padding: 6px;
 }
 
+.ws-host-group + .ws-host-group {
+  margin-top: 8px;
+  padding-top: 5px;
+  border-top: 1px solid var(--bg-light);
+}
+.ws-host-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 2px 8px 4px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.ws-host-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-host-state {
+  margin-left: auto;
+  opacity: 0.7;
+}
+.ws-host-add {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+}
+.ws-host-state + .ws-host-add { margin-left: 0; }
+
 .ws-item {
   position: relative;
   display: flex;
@@ -340,6 +373,21 @@ body {
   background: var(--bg-dark);
   min-height: 0;
   position: relative;
+}
+
+.pane-readonly-badge {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  z-index: 5;
+  padding: 3px 7px;
+  border: 1px solid #e3b341;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-dark) 88%, transparent);
+  color: #e3b341;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  pointer-events: none;
 }
 
 /* ---------- attention bar (tabs waiting for operator action) ---------- */
@@ -1806,6 +1854,73 @@ body {
   border-color: var(--accent, #6ab0f3);
   box-shadow: 0 0 0 1px var(--accent, #6ab0f3) inset;
 }
+
+/* ---------- Remote SSH settings ---------- */
+.ai-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ai-provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.ai-provider-card-head .remote-remove {
+  margin-left: auto;
+}
+.remote-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  flex: none;
+}
+.remote-status.online { background: #53c77a; }
+.remote-status.connecting { background: #e3b341; animation: attention-pulse 1.2s infinite; }
+.remote-status.error { background: #f06a6a; }
+.remote-error {
+  color: #f06a6a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.remote-agent-summary,
+.remote-agent-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.remote-ssh-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.remote-ssh-check code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-agent-summary { margin: 8px 0 4px; }
+.remote-agent-actions { margin-top: 8px; }
+.settings-action-btn {
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--bg-medium);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-action-btn:hover { border-color: var(--accent); }
+.settings-action-btn:disabled { cursor: default; opacity: 0.55; }
 
 .ai-provider-head {
   display: flex;

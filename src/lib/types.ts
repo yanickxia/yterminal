@@ -34,6 +34,8 @@ export interface PaneAgent {
 export interface PaneLeaf {
   type: "leaf";
   id: string;
+  /** Stable daemon session UUID; OS pid is never persisted as a handle. */
+  sessionId?: string;
   /** working directory the shell was spawned in */
   cwd: string;
   /**
@@ -42,6 +44,10 @@ export interface PaneLeaf {
    * resume flag. Cleared when no agent is running.
    */
   agent?: PaneAgent;
+  /** Last daemon-observed OSC 777 status, including while no GUI is attached. */
+  runtimeStatus?: "working" | "idle" | "permission";
+  /** Last OSC 0/2 title observed by the owner daemon for this specific pane. */
+  runtimeTitle?: string;
 }
 
 /** An internal node: splits its children along one axis. */
@@ -97,6 +103,8 @@ export interface Tab {
 
 export interface Workspace {
   id: string;
+  /** Client host-profile id. "local" owns workspaces on this machine. */
+  hostId?: string;
   name: string;
   /** optional emoji/icon shown before the name (and in the collapsed rail) */
   icon?: string;
