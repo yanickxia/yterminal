@@ -107,6 +107,31 @@ jobs:
             exit 1
           fi
 
+      # Tauri builds the GUI as a universal binary, but with multiple Cargo
+      # binaries it expects helper executables to already exist in the
+      # universal target directory when assembling the .app bundle.
+      - name: Build universal agent helper (macOS only)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path src-tauri/Cargo.toml \
+            --release \
+            --bin yterminal-agent \
+            --target aarch64-apple-darwin
+          cargo build \
+            --manifest-path src-tauri/Cargo.toml \
+            --release \
+            --bin yterminal-agent \
+            --target x86_64-apple-darwin
+          mkdir -p src-tauri/target/universal-apple-darwin/release
+          lipo -create \
+            src-tauri/target/aarch64-apple-darwin/release/yterminal-agent \
+            src-tauri/target/x86_64-apple-darwin/release/yterminal-agent \
+            -output src-tauri/target/universal-apple-darwin/release/yterminal-agent
+          lipo -info src-tauri/target/universal-apple-darwin/release/yterminal-agent
+
       - name: Build tauri bundle
         shell: bash
         env:
