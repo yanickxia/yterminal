@@ -58,6 +58,10 @@ Workspace[]                       <- src/stores/workspace-store.ts (Zustand, loc
 
 `src-tauri/tauri.conf.json` sets `app.windows[0].dragDropEnabled = false`. Tauri's default `true` makes wry/WKWebView capture OS-level drag events natively and **swallow the WebView's `drop` event** (symptom: drag feedback works but the list never reorders). Affects tab/workspace reorder in `TabBar.tsx` / `WorkspaceSidebar.tsx`. Don't re-enable without rewriting both reorder paths against Tauri's native drag events.
 
+### Cursor visibility recovery (stuck DECTCEM)
+
+A program hides the cursor with `\e[?25l` (DECTCEM) and restores it with `\e[?25h`. When a **remote** program dies abruptly — ssh killed by laptop sleep / network drop, mid-render of a cursor-hiding prompt theme or TUI — the restore byte never arrives, so the local xterm stays "cursor hidden" indefinitely, even after control returns to the local shell (input/output still work; only the cursor block is gone; `tput cnorm` recovers it manually). The OSC 7 handler in `getOrCreateSession` re-asserts `SHOW_CURSOR` on every prompt (OSC 7 comes from the shell's precmd, so we're definitionally at a prompt). `src/lib/cursor-visibility.ts` (`SHOW_CURSOR`, `shouldRestoreCursor(bufferType)`, unit-tested) guards it to the **normal buffer** — a full-screen TUI on the alternate buffer may hide the cursor on purpose and must be left alone. `\e[?25h` is idempotent, so re-emitting each prompt is a no-op in the normal case.
+
 ### PTY layer is in-tree, not `tauri-plugin-pty`
 
 `src-tauri/src/pty.rs` calls `portable-pty` directly, exposing `pty_spawn`/`pty_read`/`pty_write`/`pty_resize`/`pty_kill`/`pty_exitstatus` as top-level Tauri commands; frontend wraps them in `src/lib/pty.ts` (NOT the `tauri-pty` npm package). Rewritten because the upstream plugin returned an internal session counter as `pty.pid` instead of the real OS pid, breaking `process_cwd(pid)` (lsof on macOS / `/proc/<pid>/cwd` on Linux) — which powers "new tab inherits the active shell's cwd" and "restart in the directory I left off".
