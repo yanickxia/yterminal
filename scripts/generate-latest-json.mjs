@@ -32,6 +32,35 @@ function findAsset(release, predicate, label) {
   return matches[0];
 }
 
+const LINUX_ARCHES = ["x86_64", "aarch64"];
+
+function linuxArchFromAssetName(name) {
+  const normalized = name.toLowerCase().replaceAll("-", "_");
+  if (/(^|[._])(amd64|x86_64)([._]|$)/.test(normalized)) return "x86_64";
+  if (/(^|[._])(arm64|aarch64)([._]|$)/.test(normalized)) return "aarch64";
+  return null;
+}
+
+function findLinuxAsset(release, extension, arch, label) {
+  return findAsset(
+    release,
+    (a) => a.name.endsWith(extension) && linuxArchFromAssetName(a.name) === arch,
+    label
+  );
+}
+
+function maybeLinuxAsset(release, extension, arch, label) {
+  const matches = release.assets.filter(
+    (a) => a.name.endsWith(extension) && linuxArchFromAssetName(a.name) === arch
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `Multiple release assets matched ${label}: ${matches.map((m) => m.name).join(", ")}`
+    );
+  }
+  return matches[0] ?? null;
+}
+
 /**
  * Build the latest.json manifest. `fetchSig(asset)` resolves the asset's
  * `.sig` content as a string. Pure (no I/O of its own); delegates to
@@ -64,31 +93,42 @@ export async function buildManifest(release, fetchSig) {
   );
   const windowsSigContent = await fetchSig(windowsSig);
 
-  const linuxBundle = findAsset(
-    release,
-    (a) => a.name.endsWith(".AppImage"),
-    "linux .AppImage"
-  );
-  const linuxSig = findAsset(
-    release,
-    (a) => a.name === linuxBundle.name + ".sig",
-    "linux .sig"
-  );
-  const linuxSigContent = await fetchSig(linuxSig);
+  const linuxPlatforms = {};
+  for (const arch of LINUX_ARCHES) {
+    const linuxBundle = findLinuxAsset(
+      release,
+      ".AppImage",
+      arch,
+      `linux ${arch} .AppImage`
+    );
+    const linuxSig = findAsset(
+      release,
+      (a) => a.name === linuxBundle.name + ".sig",
+      `linux ${arch} .sig`
+    );
+    linuxPlatforms[`linux-${arch}`] = {
+      signature: await fetchSig(linuxSig),
+      url: linuxBundle.url,
+    };
+  }
 
   // The .deb has its own minisign signature (CI signs it explicitly — see
-  // release.yml). We expose it under a NON-standard top-level `linux-deb` key
-  // rather than inside `platforms`: the Tauri updater only understands the
-  // AppImage entry under `platforms["linux-x86_64"]`, and adding an unknown
-  // platform key there could trip its parser. Our own deb-updater path reads
-  // this field directly. Optional: absent on releases built before deb signing.
-  let debEntry = null;
-  const debBundle = release.assets.find((a) => a.name.endsWith(".deb"));
-  const debSig = debBundle
-    ? release.assets.find((a) => a.name === debBundle.name + ".sig")
-    : null;
-  if (debBundle && debSig) {
-    debEntry = { url: debBundle.url, signature: await fetchSig(debSig) };
+  // release.yml). We expose these under NON-standard top-level keys rather than
+  // inside `platforms`: the Tauri updater owns the AppImage flow, while our own
+  // deb-updater path reads these fields directly. `linux-deb` is kept as the
+  // legacy x86_64 alias for clients released before arch-specific keys existed.
+  const debEntries = {};
+  let legacyDebEntry = null;
+  for (const arch of LINUX_ARCHES) {
+    const debBundle = maybeLinuxAsset(release, ".deb", arch, `linux ${arch} .deb`);
+    const debSig = debBundle
+      ? release.assets.find((a) => a.name === debBundle.name + ".sig")
+      : null;
+    if (debBundle && debSig) {
+      const entry = { url: debBundle.url, signature: await fetchSig(debSig) };
+      debEntries[`linux-deb-${arch}`] = entry;
+      if (arch === "x86_64") legacyDebEntry = entry;
+    }
   }
 
   const darwinPlatform = {
@@ -108,12 +148,10 @@ export async function buildManifest(release, fetchSig) {
         signature: windowsSigContent,
         url: windowsBundle.url,
       },
-      "linux-x86_64": {
-        signature: linuxSigContent,
-        url: linuxBundle.url,
-      },
+      ...linuxPlatforms,
     },
-    ...(debEntry ? { "linux-deb": debEntry } : {}),
+    ...(legacyDebEntry ? { "linux-deb": legacyDebEntry } : {}),
+    ...debEntries,
   };
 }
 
@@ -179,9 +217,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const filename = platform.url.split("/").pop();
     platform.url = `${stableBaseUrl}/${filename}`;
   }
-  if (manifest["linux-deb"]) {
-    const filename = manifest["linux-deb"].url.split("/").pop();
-    manifest["linux-deb"].url = `${stableBaseUrl}/${filename}`;
+  for (const [key, entry] of Object.entries(manifest)) {
+    if (!key.startsWith("linux-deb")) continue;
+    const filename = entry.url.split("/").pop();
+    entry.url = `${stableBaseUrl}/${filename}`;
   }
 
   writeFileSync("latest.json", JSON.stringify(manifest, null, 2));

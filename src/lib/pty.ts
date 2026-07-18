@@ -303,6 +303,7 @@ class AgentPty implements IPty {
 
   resize(cols: number, rows: number) {
     if (this.disposed) return;
+    logger.info("term", `DEBUG local resize session=${this.sessionId} cols=${cols} rows=${rows}`);
     this.cols = cols;
     this.rows = rows;
     void this.ready
@@ -473,11 +474,27 @@ class AgentPty implements IPty {
       case "replay_end":
         this.nextSeq = event.data.next_seq;
         break;
-      case "size_changed":
-        this.cols = event.data.cols;
-        this.rows = event.data.rows;
+      case "size_changed": {
+        const { cols, rows } = event.data;
+        logger.info("term", `DEBUG size_changed session=${this.sessionId} cols=${cols} rows=${rows}`);
+        if (!this.readOnly) {
+          // The controller's xterm DOM is the size authority. Re-applying the
+          // agent's broadcast here can race a local fit() and bounce the terminal
+          // between the previous PTY size and the current container size.
+          if (cols !== this.cols || rows !== this.rows) {
+            logger.debug(
+              "pty",
+              `ignored controller size_changed session=${this.sessionId} remote=${cols}x${rows} local=${this.cols}x${this.rows}`
+            );
+            this.resize(this.cols, this.rows);
+          }
+          break;
+        }
+        this.cols = cols;
+        this.rows = rows;
         this.resizeEmitter.fire({ cols: this.cols, rows: this.rows });
         break;
+      }
       case "exited":
         this.exitCode = event.data.exit_code;
         this.exitEmitter.fire({ exitCode: event.data.exit_code });

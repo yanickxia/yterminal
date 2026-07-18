@@ -31,12 +31,28 @@ const fixtureRelease = {
       url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.AppImage.sig",
     },
     {
+      name: "yterminal_0.4.0_arm64.AppImage",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_arm64.AppImage",
+    },
+    {
+      name: "yterminal_0.4.0_arm64.AppImage.sig",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_arm64.AppImage.sig",
+    },
+    {
       name: "yterminal_0.4.0_amd64.deb",
       url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.deb",
     },
     {
       name: "yterminal_0.4.0_amd64.deb.sig",
       url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_amd64.deb.sig",
+    },
+    {
+      name: "yterminal_0.4.0_arm64.deb",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_arm64.deb",
+    },
+    {
+      name: "yterminal_0.4.0_arm64.deb.sig",
+      url: "https://github.com/yanickxia/yterminal/releases/download/v0.4.0/yterminal_0.4.0_arm64.deb.sig",
     },
   ],
 };
@@ -46,7 +62,9 @@ const fakeSigs = {
   "yterminal_universal.app.tar.gz.sig": "DARWIN_SIG",
   "yterminal_0.4.0_x64-setup.exe.sig": "WINDOWS_SIG",
   "yterminal_0.4.0_amd64.AppImage.sig": "LINUX_SIG",
+  "yterminal_0.4.0_arm64.AppImage.sig": "LINUX_ARM_SIG",
   "yterminal_0.4.0_amd64.deb.sig": "DEB_SIG",
+  "yterminal_0.4.0_arm64.deb.sig": "DEB_ARM_SIG",
 };
 
 const fetchSig = async (asset) => fakeSigs[asset.name];
@@ -61,16 +79,23 @@ describe("buildManifest", () => {
     expect(manifest.platforms["darwin-x86_64"].signature).toBe("DARWIN_SIG");
     expect(manifest.platforms["darwin-aarch64"].signature).toBe("DARWIN_SIG");
     expect(manifest.platforms["windows-x86_64"].url).toMatch(/x64-setup\.exe$/);
-    expect(manifest.platforms["linux-x86_64"].url).toMatch(/\.AppImage$/);
+    expect(manifest.platforms["linux-x86_64"].signature).toBe("LINUX_SIG");
+    expect(manifest.platforms["linux-x86_64"].url).toMatch(/amd64\.AppImage$/);
+    expect(manifest.platforms["linux-aarch64"].signature).toBe("LINUX_ARM_SIG");
+    expect(manifest.platforms["linux-aarch64"].url).toMatch(/arm64\.AppImage$/);
   });
 
-  it("includes a linux-deb entry with its own signature when the .deb is signed", async () => {
+  it("includes arch-specific linux-deb entries with their own signatures", async () => {
     const manifest = await buildManifest(fixtureRelease, fetchSig);
+    expect(manifest["linux-deb"]).toBe(manifest["linux-deb-x86_64"]);
     expect(manifest["linux-deb"].signature).toBe("DEB_SIG");
-    expect(manifest["linux-deb"].url).toMatch(/\.deb$/);
+    expect(manifest["linux-deb"].url).toMatch(/amd64\.deb$/);
+    expect(manifest["linux-deb-x86_64"].signature).toBe("DEB_SIG");
+    expect(manifest["linux-deb-aarch64"].signature).toBe("DEB_ARM_SIG");
+    expect(manifest["linux-deb-aarch64"].url).toMatch(/arm64\.deb$/);
   });
 
-  it("omits linux-deb when the .deb has no sibling .sig", async () => {
+  it("omits an arch-specific linux-deb entry when the .deb has no sibling .sig", async () => {
     const noDebSig = {
       ...fixtureRelease,
       assets: fixtureRelease.assets.filter(
@@ -79,6 +104,8 @@ describe("buildManifest", () => {
     };
     const manifest = await buildManifest(noDebSig, fetchSig);
     expect(manifest["linux-deb"]).toBeUndefined();
+    expect(manifest["linux-deb-x86_64"]).toBeUndefined();
+    expect(manifest["linux-deb-aarch64"].signature).toBe("DEB_ARM_SIG");
   });
 
   it("throws when a platform asset is missing", async () => {

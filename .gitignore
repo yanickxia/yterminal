@@ -7,6 +7,7 @@ latest.json
 # rust / tauri
 src-tauri/target
 src-tauri/target-dev
+/target-dev
 src-tauri/gen
 # misc
 .DS_Store

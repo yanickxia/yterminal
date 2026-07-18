@@ -7,6 +7,9 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: vi.fn(),
 }));
+vi.mock("@tauri-apps/plugin-os", () => ({
+  arch: vi.fn().mockReturnValue("x86_64"),
+}));
 vi.mock("../lib/updater-deb", () => ({
   installKind: vi.fn().mockResolvedValue("other"),
   installDebUpdate: vi.fn(),
@@ -14,6 +17,7 @@ vi.mock("../lib/updater-deb", () => ({
 }));
 
 import { check } from "@tauri-apps/plugin-updater";
+import { arch } from "@tauri-apps/plugin-os";
 import {
   installKind,
   installDebUpdate,
@@ -23,6 +27,7 @@ import { useUpdaterStore, __resetUpdaterForTests } from "./updater-store";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  (arch as any).mockReturnValue("x86_64");
   (installKind as any).mockResolvedValue("other");
   // reset both store state AND the module-scope pendingUpdate handle
   __resetUpdaterForTests();
@@ -98,7 +103,7 @@ describe("updater-store", () => {
 
     (fetchLatestJson as any).mockResolvedValue(
       JSON.stringify({
-        "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
+        "linux-deb-x86_64": { url: "https://x/y-amd64.deb", signature: "SIG" },
       })
     );
     (installDebUpdate as any).mockResolvedValue({
@@ -108,7 +113,7 @@ describe("updater-store", () => {
 
     await useUpdaterStore.getState().startDownload();
     expect(installDebUpdate).toHaveBeenCalledWith(
-      "https://x/y.deb",
+      "https://x/y-amd64.deb",
       "SIG",
       expect.any(Function)
     );
@@ -128,7 +133,7 @@ describe("updater-store", () => {
 
     (fetchLatestJson as any).mockResolvedValue(
       JSON.stringify({
-        "linux-deb": { url: "https://x/y.deb", signature: "SIG" },
+        "linux-deb-x86_64": { url: "https://x/y-amd64.deb", signature: "SIG" },
       })
     );
     (installDebUpdate as any).mockResolvedValue({
@@ -139,6 +144,37 @@ describe("updater-store", () => {
     await useUpdaterStore.getState().startDownload();
     expect(useUpdaterStore.getState().state).toBe("ready");
     expect(useUpdaterStore.getState().debManualPath).toBe("/tmp/y.deb");
+  });
+
+  it("deb startDownload: selects the aarch64 .deb on Linux ARM", async () => {
+    (arch as any).mockReturnValue("aarch64");
+    (installKind as any).mockResolvedValue("deb");
+    (check as any).mockResolvedValue({
+      version: "0.4.0",
+      body: "notes",
+      date: null,
+      downloadAndInstall: vi.fn(),
+    });
+    await useUpdaterStore.getState().check();
+
+    (fetchLatestJson as any).mockResolvedValue(
+      JSON.stringify({
+        "linux-deb": { url: "https://x/y-amd64.deb", signature: "SIG_X64" },
+        "linux-deb-aarch64": { url: "https://x/y-arm64.deb", signature: "SIG_ARM" },
+      })
+    );
+    (installDebUpdate as any).mockResolvedValue({
+      installed: true,
+      downloadedPath: "/tmp/y.deb",
+    });
+
+    await useUpdaterStore.getState().startDownload();
+    expect(installDebUpdate).toHaveBeenCalledWith(
+      "https://x/y-arm64.deb",
+      "SIG_ARM",
+      expect.any(Function)
+    );
+    expect(useUpdaterStore.getState().state).toBe("ready");
   });
 
   it("deb startDownload: manifest without linux-deb → error", async () => {
