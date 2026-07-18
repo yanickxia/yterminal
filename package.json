@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "cross-env CARGO_TARGET_DIR=target-dev tauri dev",
     "tauri:build": "tauri build",
+    "agent:build": "cargo build --manifest-path agent-cli/Cargo.toml --bin yterminal-agent",
+    "agent:remote": "scripts/dev-agent-remote.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },

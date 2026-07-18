@@ -2,7 +2,12 @@
 // the Tauri GUI, owns the OS PTY so closing/reopening the window can attach to
 // the same shell. Local and SSH hosts share the HostTransport protocol.
 
-import { localHost, type AgentEvent, type HostTransport } from "./host-transport";
+import {
+  HostRequestError,
+  localHost,
+  type AgentEvent,
+  type HostTransport,
+} from "./host-transport";
 import { logger } from "./logger";
 import {
   flushWorkspaceOperations,
@@ -160,10 +165,17 @@ class AgentPty implements IPty {
         if (hostId === "local") throw error;
         this.readOnly = true;
         this.readOnlyEmitter.fire(true);
-        logger.warn(
-          "pty",
-          `remote workspace opened read-only workspace=${workspaceId}: ${String(error)}`
-        );
+        if (error instanceof HostRequestError && error.code === "control_held") {
+          logger.info(
+            "pty",
+            `remote workspace attached read-only workspace=${workspaceId}: ${error.message}`
+          );
+        } else {
+          logger.warn(
+            "pty",
+            `remote workspace opened read-only workspace=${workspaceId}: ${String(error)}`
+          );
+        }
       }
       if (this.disposed) return;
 
@@ -349,6 +361,10 @@ class AgentPty implements IPty {
     this.leaseEpoch = nextEpoch;
     this.readOnly = false;
     this.readOnlyEmitter.fire(false);
+    logger.info(
+      "pty",
+      `take control acquired workspace=${this.workspaceId} lease=${nextEpoch}`
+    );
     return nextEpoch;
   }
 

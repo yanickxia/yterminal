@@ -6,7 +6,10 @@ dist
 latest.json
 # rust / tauri
 src-tauri/target
+src-tauri/target-*
 src-tauri/target-dev
+agent-cli/target
+agent-cli/target-*
 /target-dev
 src-tauri/gen
 # misc

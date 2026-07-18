@@ -99,7 +99,9 @@ jobs:
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: |
+            ./src-tauri -> target
+            ./agent-cli -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -122,13 +124,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build \
-            --manifest-path src-tauri/Cargo.toml \
+          CARGO_TARGET_DIR="$PWD/src-tauri/target" cargo build \
+            --manifest-path agent-cli/Cargo.toml \
             --release \
             --bin yterminal-agent \
             --target aarch64-apple-darwin
-          cargo build \
-            --manifest-path src-tauri/Cargo.toml \
+          CARGO_TARGET_DIR="$PWD/src-tauri/target" cargo build \
+            --manifest-path agent-cli/Cargo.toml \
             --release \
             --bin yterminal-agent \
             --target x86_64-apple-darwin
