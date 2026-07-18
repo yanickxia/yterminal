@@ -66,6 +66,7 @@ import { getVerbose, logger } from "./logger";
 import type { AgentKind, PaneAgent } from "./types";
 import { paneProcessTree, agentSessionId, processEnv } from "./agent";
 import {
+  disconnectAllWorkspaceHosts,
   isRemoteWorkspace,
   transportForWorkspace,
 } from "./workspace-sync";
@@ -1339,21 +1340,61 @@ export async function takeControlOfWorkspace(workspaceId: string): Promise<void>
   const workspace = store.workspaces.find((item) => item.id === workspaceId);
   if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
 
-  const paneIds = workspace.tabs
+  const activeTab =
+    workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ??
+    workspace.tabs.find((tab) => !tab.file);
+  const activeTabPaneIds =
+    activeTab && !activeTab.file
+      ? new Set(collectLeafIds(activeTab.root))
+      : new Set<string>();
+  const activePaneId = activeTab && !activeTab.file ? activeTab.activePaneId : undefined;
+  const live = workspace.tabs
     .filter((tab) => !tab.file)
-    .flatMap((tab) => collectLeafIds(tab.root));
-  const live = paneIds
-    .map((paneId) => sessions.get(paneId))
-    .filter((session): session is Session => !!session && !session.disposed);
+    .flatMap((tab) => collectLeafIds(tab.root).map((paneId) => ({ paneId })))
+    .map(({ paneId }) => ({ paneId, session: sessions.get(paneId) }))
+    .filter(
+      (item): item is { paneId: string; session: Session } =>
+        !!item.session && !item.session.disposed
+    )
+    .sort(
+      (a, b) =>
+        paneControlPriority(a.paneId, activePaneId, activeTabPaneIds) -
+        paneControlPriority(b.paneId, activePaneId, activeTabPaneIds)
+    );
 
   if (live.length > 0) {
-    await Promise.all(live.map((session) => session.pty.takeControl()));
-    return;
+    const attemptedConnections = new Set<string>();
+    const errors: string[] = [];
+    for (const { paneId, session } of live) {
+      const key = session.pty.controlConnectionId ?? `pane:${paneId}`;
+      if (attemptedConnections.has(key)) continue;
+      attemptedConnections.add(key);
+      try {
+        await session.pty.takeControl();
+        if (!session.pty.readOnly) return;
+        errors.push(`${paneId}: still read-only`);
+      } catch (error) {
+        const message = `${paneId}: ${String(error)}`;
+        errors.push(message);
+        logger.warn("pty", `take control failed ${message}`);
+      }
+    }
+    throw new Error(errors.join("; ") || "unable to take control");
   }
 
   const transport = transportForWorkspace(workspaceId);
   if (!transport) throw new Error("workspace host is offline");
   await transport.ensureControl(workspaceId, true);
+}
+
+function paneControlPriority(
+  paneId: string,
+  activePaneId: string | undefined,
+  activeTabPaneIds: Set<string>
+): number {
+  if (paneId === activePaneId) return 0;
+  if (activeTabPaneIds.has(paneId)) return 1;
+  return 2;
 }
 
 /** Drop cached xterms whose authoritative workspace/pane was removed elsewhere. */
@@ -2012,6 +2053,7 @@ if (typeof window !== "undefined") {
     // catch the recent state in practice.
     void snapshotAllCwds();
     void snapshotAllAgents();
+    void disconnectAllWorkspaceHosts();
   });
 
   // Tauri's close event is async-capable. Intercept it once so we can flush the

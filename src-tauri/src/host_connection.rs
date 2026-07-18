@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use tauri::ipc::Channel;
 use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -17,7 +18,7 @@ struct HostConnection {
 
 #[derive(Default)]
 pub struct HostConnectionState {
-    connections: RwLock<HashMap<String, HostConnection>>,
+    connections: Arc<RwLock<HashMap<String, HostConnection>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +69,7 @@ pub async fn host_connect(
     };
     let connection_id = Uuid::new_v4().to_string();
     let hello = client.hello.clone();
+    let connections = state.connections.clone();
     state.connections.write().await.insert(
         connection_id.clone(),
         HostConnection {
@@ -75,7 +77,9 @@ pub async fn host_connect(
             ssh_child: Mutex::new(ssh_child),
         },
     );
+    let cleanup_connection_id = connection_id.clone();
     tokio::spawn(async move {
+        let mut channel_closed = false;
         while let Some(event) = event_rx.recv().await {
             let event = match event {
                 AgentClientEvent::Message(body) => HostEvent::Agent(body),
@@ -83,7 +87,13 @@ pub async fn host_connect(
                 AgentClientEvent::Disconnected(message) => HostEvent::Disconnected { message },
             };
             if on_event.send(event).is_err() {
+                channel_closed = true;
                 break;
+            }
+        }
+        if channel_closed {
+            if let Some(connection) = connections.write().await.remove(&cleanup_connection_id) {
+                close_connection(connection).await;
             }
         }
     });
@@ -131,12 +141,16 @@ pub async fn host_disconnect(
     state: tauri::State<'_, HostConnectionState>,
 ) -> Result<(), String> {
     if let Some(connection) = state.connections.write().await.remove(&connection_id) {
-        if let Some(mut child) = connection.ssh_child.lock().await.take() {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
-        }
+        close_connection(connection).await;
     }
     Ok(())
+}
+
+async fn close_connection(connection: HostConnection) {
+    if let Some(mut child) = connection.ssh_child.lock().await.take() {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+    }
 }
 
 async fn ensure_local_agent() -> Result<(), String> {

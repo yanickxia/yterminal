@@ -31,9 +31,10 @@ export interface IPty {
   cols: number;
   rows: number;
   readonly readOnly: boolean;
+  readonly controlConnectionId: string | undefined;
   write(data: string): void;
   resize(cols: number, rows: number): void;
-  takeControl(): Promise<void>;
+  takeControl(): Promise<number>;
   kill(): void;
   detach(): void;
   checkpoint(data: string): void;
@@ -292,6 +293,10 @@ class AgentPty implements IPty {
     });
   }
 
+  get controlConnectionId(): string | undefined {
+    return this.host?.connectionId;
+  }
+
   write(data: string) {
     if (this.disposed) return;
     void this.ready.then(async () => {
@@ -336,14 +341,15 @@ class AgentPty implements IPty {
       .catch((error) => logger.error("pty", `agent resize failed: ${String(error)}`));
   }
 
-  async takeControl(): Promise<void> {
+  async takeControl(): Promise<number> {
     await this.ready;
-    if (this.disposed || !this.host) return;
+    if (this.disposed || !this.host) return this.leaseEpoch;
     const nextEpoch = await this.host.ensureControl(this.workspaceId, true);
-    if (this.disposed) return;
+    if (this.disposed) return nextEpoch;
     this.leaseEpoch = nextEpoch;
     this.readOnly = false;
     this.readOnlyEmitter.fire(false);
+    return nextEpoch;
   }
 
   kill() {

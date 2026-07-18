@@ -68,4 +68,37 @@ describe("HostTransport control leases", () => {
 
     await transport.disconnect();
   });
+
+  it("times out a stuck control request", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = await HostTransport.connect({ kind: "local" });
+      mocks.invoke.mockImplementation(async (method: string, args: any) => {
+        if (method === "host_request" && args.request.method === "acquire_control") {
+          return new Promise(() => {});
+        }
+        if (
+          method === "host_request" &&
+          args.request.method === "control_heartbeat"
+        ) {
+          return { kind: "ack" };
+        }
+        if (method === "host_disconnect") return undefined;
+        throw new Error(`unexpected invoke ${method}`);
+      });
+
+      const pending = expect(
+        transport.ensureControl("w", true)
+      ).rejects.toMatchObject({
+        code: "request_timeout",
+        retryable: true,
+      });
+      await vi.advanceTimersByTimeAsync(8_000);
+      await pending;
+
+      await transport.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

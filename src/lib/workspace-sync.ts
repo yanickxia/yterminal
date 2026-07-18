@@ -317,6 +317,15 @@ export async function disconnectRemoteWorkspaceHost(hostId: string): Promise<voi
   await connection.disconnect();
 }
 
+export async function disconnectAllWorkspaceHosts(): Promise<void> {
+  const entries = Array.from(hosts.entries());
+  hosts.clear();
+  deviceHosts.clear();
+  for (const [hostId] of entries) publishHostTransport(hostId, undefined);
+  resetLocalHost();
+  await Promise.all(entries.map(([, connection]) => connection.disconnect().catch(() => {})));
+}
+
 export async function forgetRemoteWorkspaceHost(hostId: string): Promise<void> {
   await disconnectRemoteWorkspaceHost(hostId);
   const workspaceIds = Array.from(owners.entries())

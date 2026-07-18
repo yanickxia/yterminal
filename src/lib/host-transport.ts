@@ -280,6 +280,7 @@ type SessionListener = (event: AgentEvent) => void;
 type StatusListener = (online: boolean, message?: string) => void;
 type WorkspaceListener = (event: AgentEvent) => void;
 type ControlListener = (leaseEpoch: number | null) => void;
+const CONTROL_REQUEST_TIMEOUT_MS = 8_000;
 
 export class HostTransport {
   readonly connectionId: string;
@@ -373,10 +374,14 @@ export class HostTransport {
   async ensureControl(workspaceId: string, force = false): Promise<number> {
     const current = this.leases.get(workspaceId);
     if (current !== undefined && !force) return current;
-    const response = await this.request({
-      method: "acquire_control",
-      params: { workspace_id: workspaceId, force },
-    });
+    const response = await withTimeout(
+      this.request({
+        method: "acquire_control",
+        params: { workspace_id: workspaceId, force },
+      }),
+      CONTROL_REQUEST_TIMEOUT_MS,
+      `acquire control timed out for workspace ${workspaceId}`
+    );
     if (response.kind !== "control_acquired") {
       throw new Error(`unexpected control response: ${response.kind}`);
     }
@@ -489,6 +494,28 @@ export class HostTransport {
       listener(null);
     }
   }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new HostRequestError("request_timeout", message, true));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function normalizeHostError(error: unknown): HostRequestError {
