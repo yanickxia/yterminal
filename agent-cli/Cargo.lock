@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "yterminal"
-version = "0.18.0-7"
+version = "0.18.0-8"
 dependencies = [
  "ciborium",
  "portable-pty",
