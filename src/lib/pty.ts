@@ -34,6 +34,7 @@ export interface IPty {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(): void;
+  detach(): void;
   checkpoint(data: string): void;
   flushCheckpoint(): Promise<void>;
   waitForParserIdle(timeoutMs?: number): Promise<void>;
@@ -96,6 +97,7 @@ class AgentPty implements IPty {
   private unsubscribeTransport: (() => void) | undefined;
   private checkpointQueue: Promise<void> = Promise.resolve();
   private disposed = false;
+  private disposeAction: "none" | "detach" | "kill" = "none";
   private freshSpawned = false;
 
   constructor(file: string, args: string[], opt: SpawnOptions) {
@@ -212,15 +214,24 @@ class AgentPty implements IPty {
       this.sessionId = response.data.session_id;
       this.pid = response.data.pid ?? undefined;
       if (this.disposed) {
-        await host
-          .request({
-            method: "kill_session",
-            params: {
-              session_id: this.sessionId,
-              lease_epoch: this.leaseEpoch,
-            },
-          })
-          .catch(() => {});
+        if (this.disposeAction === "kill") {
+          await host
+            .request({
+              method: "kill_session",
+              params: {
+                session_id: this.sessionId,
+                lease_epoch: this.leaseEpoch,
+              },
+            })
+            .catch(() => {});
+        } else if (this.disposeAction === "detach") {
+          await host
+            .request({
+              method: "detach_session",
+              params: { session_id: this.sessionId },
+            })
+            .catch(() => {});
+        }
         return;
       }
       // A replacement session owns a fresh sequence space even though we keep
@@ -324,6 +335,7 @@ class AgentPty implements IPty {
 
   kill() {
     if (this.disposed) return;
+    this.disposeAction = "kill";
     this.disposed = true;
     this.clearSubscriptions();
     void this.ready
@@ -338,6 +350,22 @@ class AgentPty implements IPty {
         });
       })
       .catch((error) => logger.error("pty", `agent kill failed: ${String(error)}`));
+  }
+
+  detach() {
+    if (this.disposed) return;
+    this.disposeAction = "detach";
+    this.disposed = true;
+    this.clearSubscriptions();
+    void this.ready
+      .then(async () => {
+        if (!this.host || !this.sessionId) return;
+        await this.host.request({
+          method: "detach_session",
+          params: { session_id: this.sessionId },
+        });
+      })
+      .catch((error) => logger.debug("pty", `agent detach failed: ${String(error)}`));
   }
 
   checkpoint(data: string): void {
@@ -540,6 +568,7 @@ class AgentPty implements IPty {
     rows: number,
     afterSeq: number | null = null
   ): Promise<void> {
+    if (this.disposed) return;
     this.sessionId = sessionId;
     this.unsubscribe = host.subscribeSession(sessionId, (event) =>
       this.handleEvent(event)
@@ -553,6 +582,7 @@ class AgentPty implements IPty {
         rows,
       },
     });
+    if (this.disposed) this.clearSessionSubscription();
   }
 
   private async refreshSessionPid(

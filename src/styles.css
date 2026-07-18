@@ -269,13 +269,20 @@ body {
 }
 
 .ws-close,
+.tab-unload,
 .tab-close {
   opacity: 0;
 }
 
 .ws-item:hover .ws-close,
+.tab:hover .tab-unload,
 .tab:hover .tab-close {
   opacity: 0.6;
+}
+
+.tab-unload:disabled {
+  cursor: default;
+  opacity: 0.25;
 }
 
 .ws-rename,

@@ -372,7 +372,7 @@ export class HostTransport {
 
   async ensureControl(workspaceId: string, force = false): Promise<number> {
     const current = this.leases.get(workspaceId);
-    if (current !== undefined) return current;
+    if (current !== undefined && !force) return current;
     const response = await this.request({
       method: "acquire_control",
       params: { workspace_id: workspaceId, force },

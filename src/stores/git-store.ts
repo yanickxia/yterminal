@@ -9,6 +9,7 @@ import { gitStatus, type GitStatus } from "../lib/git";
 import { getSessionCwd } from "../lib/terminal-manager";
 import { useWorkspaceStore } from "./workspace-store";
 import { logger } from "../lib/logger";
+import { findLeaf } from "../lib/pane-tree";
 
 const OPEN_KEY = "yterminal.git.open";
 
@@ -29,12 +30,23 @@ function saveOpen(on: boolean): void {
 }
 
 /** Resolve the active tab's active pane id, or null (no shell to inspect). */
-function activePaneContext(): { paneId: string; workspaceId: string } | null {
+function activePaneContext(): {
+  paneId: string;
+  workspaceId: string;
+  fallbackCwd: string | null;
+} | null {
   const s = useWorkspaceStore.getState();
   const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
   const tab = ws?.tabs.find((t) => t.id === ws.activeTabId);
   if (!ws || !tab || tab.file || !tab.activePaneId) return null;
-  return { paneId: tab.activePaneId, workspaceId: ws.id };
+  const leaf = findLeaf(tab.root, tab.activePaneId);
+  const fallbackCwd =
+    leaf?.cwd && leaf.cwd !== "~"
+      ? leaf.cwd
+      : tab.cwd && tab.cwd !== "~"
+        ? tab.cwd
+        : null;
+  return { paneId: tab.activePaneId, workspaceId: ws.id, fallbackCwd };
 }
 
 const EMPTY: GitStatus = { isRepo: false, branch: "", root: "", files: [] };
@@ -91,9 +103,9 @@ export const useGitStore = create<GitState>((set, get) => ({
         set({ status: EMPTY, cwd: null, workspaceId: null, loading: false });
       return;
     }
-    const { paneId, workspaceId } = context;
+    const { paneId, workspaceId, fallbackCwd } = context;
     set({ loading: true });
-    const cwd = await getSessionCwd(paneId);
+    const cwd = (await getSessionCwd(paneId)) ?? fallbackCwd;
     if (seq !== refreshSeq) return; // superseded by a newer refresh
     logger.debug("git", `refresh #${seq}: pane=${paneId} resolved cwd=${JSON.stringify(cwd)}`);
     if (!cwd) {

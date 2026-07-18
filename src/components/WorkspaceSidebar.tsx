@@ -347,7 +347,6 @@ export function WorkspaceSidebar({
               onClick={() => setActive(w.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
-                setActive(w.id);
                 setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
               }}
             >
@@ -566,7 +565,6 @@ export function WorkspaceSidebar({
             onDoubleClick={() => beginEdit(w.id, w.name)}
             onContextMenu={(e) => {
               e.preventDefault();
-              setActive(w.id);
               setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
             }}
           >
@@ -618,26 +616,19 @@ export function WorkspaceSidebar({
                   />
                 )}
                 <span className="ws-count">{w.tabs.length}</span>
-                <button
-                  className="icon-btn ws-close"
-                  title={
-                    (w.hostId ?? "local") === "local"
-                      ? "Terminate workspace"
-                      : "Disconnect host (remote processes keep running)"
-                  }
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const hostId = w.hostId ?? "local";
-                    if (hostId === "local") {
+                {(w.hostId ?? "local") === "local" && (
+                  <button
+                    className="icon-btn ws-close"
+                    title="Terminate workspace"
+                    onClick={(e) => {
+                      e.stopPropagation();
                       disposeWorkspaces([w]);
                       removeWorkspace(w.id);
-                    } else {
-                      void pauseRemoteHost(hostId);
-                    }
-                  }}
-                >
-                  {(w.hostId ?? "local") === "local" ? "×" : "⏏"}
-                </button>
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
                 {iconPicker?.id === w.id && (
                   <EmojiPicker
                     anchor={iconPicker.anchor}

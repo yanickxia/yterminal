@@ -1290,6 +1290,43 @@ export function disposeSession(tabId: string) {
   clearScrollback(tabId);
 }
 
+/**
+ * Drop this client's cached xterm + agent subscription without killing the
+ * underlying PTY. Used for remote tabs the user wants to unload locally while
+ * leaving the shell running on the owner host. Re-activating the tab will lazy
+ * reattach from the pane's persisted session id.
+ */
+export function unloadSession(tabId: string) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  logger.info("term", `unload pane=${tabId} pid=${s.pty.pid ?? "?"}`);
+  try {
+    saveScrollback(tabId, s.serialize.serialize());
+  } catch {
+    /* best-effort local snapshot; the agent journal remains authoritative */
+  }
+  s.disposed = true;
+  sessions.delete(tabId);
+  clearActivity(tabId);
+  controlListeners.delete(tabId);
+  clearHookState(tabId);
+  s.compositionGuardCleanup?.();
+  s.pasteDedupeCleanup?.();
+  s.linkClickBridgeCleanup?.();
+  try {
+    s.pty.detach();
+  } catch {
+    /* already detached */
+  }
+  try {
+    s.webgl?.dispose();
+  } catch {
+    /* already disposed */
+  }
+  s.term.dispose();
+  s.el.remove();
+}
+
 /** Drop cached xterms whose authoritative workspace/pane was removed elsewhere. */
 export function pruneSessionsToWorkspaceProjection(): void {
   const live = new Set<string>();
@@ -1441,7 +1478,7 @@ export interface RunCommandResult {
  * Safety is enforced by the caller (the sidebar shows an approval gate before
  * this is ever invoked); this function does not decide whether to run.
  */
-export function runCommandInPane(
+export async function runCommandInPane(
   tabId: string,
   command: string,
   timeoutMs = 30000
@@ -1449,6 +1486,40 @@ export function runCommandInPane(
   const s = sessions.get(tabId);
   if (!s || s.disposed || s.exited) {
     return Promise.resolve({ output: "", exitCode: null, timedOut: false });
+  }
+  if (s.pty.readOnly) {
+    const located = locatePane(tabId);
+    if (!located) {
+      return {
+        output: "Pane is read-only and no workspace owner was found.",
+        exitCode: null,
+        timedOut: false,
+      };
+    }
+    try {
+      const transport = transportForWorkspace(located.workspaceId);
+      if (!transport) {
+        return {
+          output: "Remote host is offline; cannot take control.",
+          exitCode: null,
+          timedOut: false,
+        };
+      }
+      await transport.ensureControl(located.workspaceId, true);
+    } catch (error) {
+      return {
+        output: `Unable to take control of the remote workspace: ${String(error)}`,
+        exitCode: null,
+        timedOut: false,
+      };
+    }
+    if (s.pty.readOnly) {
+      return {
+        output: "Remote workspace is still read-only after taking control.",
+        exitCode: null,
+        timedOut: false,
+      };
+    }
   }
   const sentinel = makeSentinel();
   const decoder = new TextDecoder();
