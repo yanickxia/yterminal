@@ -12,7 +12,11 @@ import { SettingsPanel } from "./SettingsPanel";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { Workspace } from "../lib/types";
-import { disposeSession, scrollSessionToBottom } from "../lib/terminal-manager";
+import {
+  disposeSession,
+  scrollSessionToBottom,
+  takeControlOfWorkspace,
+} from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { useFocusedPaneId } from "../lib/use-focused-pane";
 import { useHostStore } from "../stores/host-store";
@@ -20,7 +24,6 @@ import {
   pauseRemoteHost,
   reconnectRemoteHost,
 } from "../lib/remote-host-manager";
-import { takeWorkspaceControl } from "../lib/workspace-sync";
 
 /** Glyph shown in the collapsed rail: the emoji icon, else the first letter. */
 function railGlyph(name: string, icon?: string): string {
@@ -243,7 +246,9 @@ export function WorkspaceSidebar({
         {
           label: "Take Control",
           onClick: () => {
-            void takeWorkspaceControl(w.id);
+            void takeControlOfWorkspace(w.id).catch((error) => {
+              console.warn("take control failed", error);
+            });
           },
         },
         {

@@ -33,6 +33,7 @@ export interface IPty {
   readonly readOnly: boolean;
   write(data: string): void;
   resize(cols: number, rows: number): void;
+  takeControl(): Promise<void>;
   kill(): void;
   detach(): void;
   checkpoint(data: string): void;
@@ -99,11 +100,13 @@ class AgentPty implements IPty {
   private disposed = false;
   private disposeAction: "none" | "detach" | "kill" = "none";
   private freshSpawned = false;
+  private readonly workspaceId: string;
 
   constructor(file: string, args: string[], opt: SpawnOptions) {
     const initialCols = opt.cols ?? 80;
     const initialRows = opt.rows ?? 24;
     const workspaceId = opt.workspaceId ?? "local-default";
+    this.workspaceId = workspaceId;
     const paneId = opt.paneId ?? newPaneId();
     const hostId = opt.hostId ?? "local";
     this.readOnly = hostId !== "local";
@@ -331,6 +334,16 @@ class AgentPty implements IPty {
         });
       })
       .catch((error) => logger.error("pty", `agent resize failed: ${String(error)}`));
+  }
+
+  async takeControl(): Promise<void> {
+    await this.ready;
+    if (this.disposed || !this.host) return;
+    const nextEpoch = await this.host.ensureControl(this.workspaceId, true);
+    if (this.disposed) return;
+    this.leaseEpoch = nextEpoch;
+    this.readOnly = false;
+    this.readOnlyEmitter.fire(false);
   }
 
   kill() {

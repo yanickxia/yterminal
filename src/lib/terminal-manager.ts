@@ -1327,6 +1327,35 @@ export function unloadSession(tabId: string) {
   s.el.remove();
 }
 
+/**
+ * Acquire write control for a workspace using the live pane transports when
+ * available. This is stronger than only asking the workspace projection owner:
+ * a mounted remote pane already knows the exact HostTransport it is attached
+ * through, so it can update its own readOnly state immediately after the lease
+ * is acquired.
+ */
+export async function takeControlOfWorkspace(workspaceId: string): Promise<void> {
+  const store = useWorkspaceStore.getState();
+  const workspace = store.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+
+  const paneIds = workspace.tabs
+    .filter((tab) => !tab.file)
+    .flatMap((tab) => collectLeafIds(tab.root));
+  const live = paneIds
+    .map((paneId) => sessions.get(paneId))
+    .filter((session): session is Session => !!session && !session.disposed);
+
+  if (live.length > 0) {
+    await Promise.all(live.map((session) => session.pty.takeControl()));
+    return;
+  }
+
+  const transport = transportForWorkspace(workspaceId);
+  if (!transport) throw new Error("workspace host is offline");
+  await transport.ensureControl(workspaceId, true);
+}
+
 /** Drop cached xterms whose authoritative workspace/pane was removed elsewhere. */
 export function pruneSessionsToWorkspaceProjection(): void {
   const live = new Set<string>();
@@ -1488,24 +1517,8 @@ export async function runCommandInPane(
     return Promise.resolve({ output: "", exitCode: null, timedOut: false });
   }
   if (s.pty.readOnly) {
-    const located = locatePane(tabId);
-    if (!located) {
-      return {
-        output: "Pane is read-only and no workspace owner was found.",
-        exitCode: null,
-        timedOut: false,
-      };
-    }
     try {
-      const transport = transportForWorkspace(located.workspaceId);
-      if (!transport) {
-        return {
-          output: "Remote host is offline; cannot take control.",
-          exitCode: null,
-          timedOut: false,
-        };
-      }
-      await transport.ensureControl(located.workspaceId, true);
+      await s.pty.takeControl();
     } catch (error) {
       return {
         output: `Unable to take control of the remote workspace: ${String(error)}`,
