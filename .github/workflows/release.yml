@@ -141,6 +141,57 @@ jobs:
             -output src-tauri/target/universal-apple-darwin/release/yterminal-agent
           lipo -info src-tauri/target/universal-apple-darwin/release/yterminal-agent
 
+      - name: Build standalone agent CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            test -x src-tauri/target/universal-apple-darwin/release/yterminal-agent
+          else
+            cargo build \
+              --manifest-path agent-cli/Cargo.toml \
+              --release \
+              --bin yterminal-agent
+          fi
+
+      - name: Package standalone agent CLI
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p agent-cli/dist
+          case "${{ matrix.os }}" in
+            macos)
+              src="src-tauri/target/universal-apple-darwin/release/yterminal-agent"
+              asset="agent-cli/dist/yterminal-agent_${version}_macos_universal.tar.gz"
+              tar -C "$(dirname "$src")" -czf "$asset" "$(basename "$src")"
+              ;;
+            linux)
+              arch="$(uname -m)"
+              case "$arch" in
+                x86_64|amd64) arch="x86_64" ;;
+                aarch64|arm64) arch="aarch64" ;;
+                *) echo "::error::Unsupported Linux agent architecture: $arch"; exit 1 ;;
+              esac
+              src="agent-cli/target/release/yterminal-agent"
+              asset="agent-cli/dist/yterminal-agent_${version}_linux_${arch}.tar.gz"
+              tar -C "$(dirname "$src")" -czf "$asset" "$(basename "$src")"
+              ;;
+            windows)
+              src="agent-cli/target/release/yterminal-agent.exe"
+              asset="agent-cli/dist/yterminal-agent_${version}_windows_x86_64.exe"
+              cp "$src" "$asset"
+              ;;
+            *)
+              echo "::error::Unsupported agent CLI platform: ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+          test -s "$asset" || { echo "::error::Standalone agent asset is empty: $asset"; exit 1; }
+          echo "Packaged $asset"
+
       - name: Build tauri bundle
         shell: bash
         env:
@@ -176,7 +227,7 @@ jobs:
           npx @tauri-apps/cli signer sign "$deb"
           test -f "$deb.sig" || { echo "::error::signer produced no $deb.sig"; exit 1; }
 
-      - name: Upload bundle artifacts to release
+      - name: Upload bundle and agent artifacts to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,28 +236,37 @@ jobs:
           set -euo pipefail
           count=0
           sig_count=0
+          agent_count=0
           while IFS= read -r -d '' file; do
             echo "Uploading $file"
             gh release upload "$TAG" "$file" --clobber
             count=$((count + 1))
             case "$file" in *.sig) sig_count=$((sig_count + 1));; esac
-          done < <(find src-tauri/target -type f \( \
-            -name "*.dmg" -o \
-            -name "*.app.tar.gz" -o \
-            -name "*.app.tar.gz.sig" -o \
-            -name "*.msi" -o \
-            -name "*.msi.sig" -o \
-            -name "*-setup.exe" -o \
-            -name "*-setup.exe.sig" -o \
-            -name "*.AppImage" -o \
-            -name "*.AppImage.sig" -o \
-            -name "*.deb" -o \
-            -name "*.deb.sig" -o \
-            -name "*.rpm" \
-            \) -print0)
-          echo "Uploaded $count artifacts ($sig_count .sig files)"
+            case "$file" in agent-cli/dist/yterminal-agent_*) agent_count=$((agent_count + 1));; esac
+          done < <(
+            find src-tauri/target -type f \( \
+              -name "*.dmg" -o \
+              -name "*.app.tar.gz" -o \
+              -name "*.app.tar.gz.sig" -o \
+              -name "*.msi" -o \
+              -name "*.msi.sig" -o \
+              -name "*-setup.exe" -o \
+              -name "*-setup.exe.sig" -o \
+              -name "*.AppImage" -o \
+              -name "*.AppImage.sig" -o \
+              -name "*.deb" -o \
+              -name "*.deb.sig" -o \
+              -name "*.rpm" \
+              \) -print0
+            find agent-cli/dist -type f -name "yterminal-agent_*" -print0
+          )
+          echo "Uploaded $count artifacts ($sig_count .sig files, $agent_count standalone agent files)"
           if [ "$count" -eq 0 ]; then
             echo "::error::No bundle artifacts found under src-tauri/target"
+            exit 1
+          fi
+          if [ "$agent_count" -eq 0 ]; then
+            echo "::error::No standalone agent CLI artifact was uploaded"
             exit 1
           fi
           if [ "$sig_count" -eq 0 ]; then
