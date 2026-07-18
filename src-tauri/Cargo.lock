@@ -6097,7 +6097,7 @@ dependencies = [
 
 [[package]]
 name = "yterminal"
-version = "0.18.0-4"
+version = "0.18.0-5"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
