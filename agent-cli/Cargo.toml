@@ -1,6 +1,6 @@
 [package]
 name = "yterminal"
-version = "0.18.0-6"
+version = "0.18.0-7"
 edition = "2021"
 
 [[bin]]
