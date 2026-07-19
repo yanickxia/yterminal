@@ -702,20 +702,21 @@ function RemoteHostsTab() {
 
   async function restartAgent() {
     setMaintenanceError("");
-    setMaintenance("Restarting agent…");
     try {
-      const host = await localHost();
-      const status = await host.request({ method: "agent_status" });
-      if (status.kind !== "agent_status") throw new Error("Unexpected agent status");
-      if (status.data.running_sessions > 0) {
-        throw new Error(
-          `Close the ${status.data.running_sessions} running terminal session(s) before restart.`
-        );
-      }
-      await host.request({ method: "set_draining", params: { draining: true } });
-      await host.request({ method: "shutdown_agent" });
-      await invoke("start_agent_service");
-      window.location.reload();
+      // hot-restart tolerates live sessions: shells restart but each pane
+      // inherits its checkpointed scrollback, and the frontend reconnects on
+      // its own (no page reload, no drain, no zero-session gate). This is the
+      // upgrade path — it lets `running` catch up to an already-installed
+      // binary without closing workspaces.
+      const live = agent?.runningSessions ?? 0;
+      setMaintenance(
+        live > 0
+          ? `Restarting agent… ${live} session(s) will reconnect with their scrollback.`
+          : "Restarting agent…"
+      );
+      await invoke("hot_restart_agent_service");
+      setMaintenance("Agent restarted. Sessions reconnect automatically.");
+      await refreshAgentStatus();
     } catch (error) {
       setMaintenanceError(String(error));
       setMaintenance("");
@@ -761,9 +762,9 @@ function RemoteHostsTab() {
           </button>
           <button
             className="settings-action-btn"
-            disabled={!service?.managed || !agent?.draining || (agent?.runningSessions ?? 1) > 0}
+            disabled={!service?.managed}
             onClick={() => void restartAgent()}
-            title="Restart is enabled only after drain mode is on and all terminal sessions are closed"
+            title="Restart the agent in place. Live sessions restart but reconnect automatically with their scrollback preserved — use this to finish an update."
           >
             Restart agent
           </button>

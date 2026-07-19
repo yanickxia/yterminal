@@ -2918,6 +2918,8 @@ fn main() {
             agent_service::install_agent_service,
             #[cfg(unix)]
             agent_service::start_agent_service,
+            #[cfg(unix)]
+            agent_service::hot_restart_agent_service,
             open_devtools
         ])
         .run(tauri::generate_context!())
