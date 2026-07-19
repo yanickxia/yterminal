@@ -133,15 +133,15 @@ class AgentPty implements IPty {
       this.host = host;
       this.unsubscribeControl = host.subscribeControl(workspaceId, (epoch) => {
         if (epoch === null) {
-          this.readOnly = hostId !== "local";
+          // `hostId === "local"` only means this GUI reaches the agent through
+          // its local socket; it does NOT mean this GUI must remain the
+          // controller. A remote GUI may have deliberately forced a takeover.
+          // Automatically forcing another acquire here made the host GUI steal
+          // the lease straight back, so takeover only worked while that GUI
+          // was closed. Stay read-only until this user explicitly takes control
+          // (or a fresh GUI connection performs its initial acquire below).
+          this.readOnly = true;
           this.readOnlyEmitter.fire(this.readOnly);
-          if (hostId === "local") {
-            void host.ensureControl(workspaceId, true).then((nextEpoch) => {
-              this.leaseEpoch = nextEpoch;
-            }).catch((error) => {
-              logger.warn("pty", `local control reacquire failed: ${String(error)}`);
-            });
-          }
           return;
         }
         this.leaseEpoch = epoch;

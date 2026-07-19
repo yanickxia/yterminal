@@ -241,16 +241,17 @@ export function WorkspaceSidebar({
     const closableAfter = sameHost.filter(
       (x, i) => i > idx && !x.pinned
     );
+    const takeControl: MenuItem = {
+      label: "Take Control",
+      onClick: () => {
+        void takeControlOfWorkspace(w.id).catch((error) => {
+          console.warn("take control failed", error);
+        });
+      },
+    };
     if (hostId !== "local") {
       return [
-        {
-          label: "Take Control",
-          onClick: () => {
-            void takeControlOfWorkspace(w.id).catch((error) => {
-              console.warn("take control failed", error);
-            });
-          },
-        },
+        takeControl,
         {
           label: "Reconnect Host",
           onClick: () => {
@@ -275,6 +276,8 @@ export function WorkspaceSidebar({
       ];
     }
     return [
+      takeControl,
+      { separator: true },
       {
         label: w.pinned ? "Unpin" : "Pin",
         onClick: () => toggleWorkspacePin(w.id),

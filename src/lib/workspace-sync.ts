@@ -106,7 +106,7 @@ export function queueCreateWorkspace(workspace: Workspace): void {
         throw new Error(`unexpected create response: ${response.kind}`);
       }
       if (remember(hostId, response.data.workspace)) {
-        sink?.upsert(hostId, response.data.workspace);
+        projectOrDefer(hostId, response.data.workspace);
       }
     } catch (error) {
       owners.delete(workspace.id);
@@ -247,7 +247,7 @@ async function refreshWorkspace(
     throw new Error(`unexpected get response: ${response.kind}`);
   }
   if (remember(hostId, response.data.workspace)) {
-    sink?.upsert(hostId, response.data.workspace);
+    projectOrDefer(hostId, response.data.workspace);
   }
   return response.data.workspace.revision;
 }
@@ -259,9 +259,15 @@ function acceptWorkspaceResponse(
   if (response.kind !== "workspace") {
     throw new Error(`unexpected mutation response: ${response.kind}`);
   }
-  if (remember(hostId, response.data.workspace)) {
-    sink?.upsert(hostId, response.data.workspace);
-  }
+  if (!remember(hostId, response.data.workspace)) return;
+  // The response for an earlier operation can arrive while later optimistic
+  // operations are already queued. Projecting that intermediate document
+  // would temporarily delete the optimistic additions. In particular,
+  // new-tab cwd inheritance queues update_cwd followed by add_tab: the cwd
+  // response removed the new tab, and the final add_tab response then kept the
+  // old tab active. Keep the newest authoritative document in `documents` and
+  // project it only after the whole per-workspace queue drains.
+  projectOrDefer(hostId, response.data.workspace);
 }
 
 export async function connectRemoteWorkspaceHost(
@@ -465,6 +471,14 @@ function remember(hostId: string, workspace: WorkspaceDocument): boolean {
   revisions.set(key, workspace.revision);
   documents.set(key, workspace);
   return true;
+}
+
+function projectOrDefer(hostId: string, workspace: WorkspaceDocument): void {
+  if (queues.has(workspace.id)) {
+    deferredProjectionHosts.set(workspace.id, hostId);
+    return;
+  }
+  sink?.upsert(hostId, workspace);
 }
 
 function rollbackWorkspace(hostId: string, workspaceId: string): void {

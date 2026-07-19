@@ -543,11 +543,14 @@ function xtermCore(s: Session): XtermCoreInternals | undefined {
   return (s.term as unknown as { _core?: XtermCoreInternals })._core;
 }
 
-function resumeXtermRenderer(s: Session) {
+function resumeXtermRenderer(s: Session): boolean {
   try {
     const core = xtermCore(s);
     const renderService = core?._renderService;
-    if (!renderService) return;
+    if (!renderService) return false;
+    const needsRefresh = Boolean(
+      renderService._isPaused || renderService._needsFullRefresh
+    );
     // These terminals are intentionally cached and re-parented between tabs.
     // xterm's IntersectionObserver pause can therefore get stuck in WKWebView;
     // disable that observer and explicitly resume before fitting/refreshing.
@@ -557,10 +560,24 @@ function resumeXtermRenderer(s: Session) {
       core?._charSizeService?.measure?.();
     }
     renderService._pausedResizeTask?.flush?.();
-    renderService._needsFullRefresh = false;
+    return needsRefresh;
   } catch {
     /* xterm internals changed; normal refresh below is still best effort */
+    return false;
   }
+}
+
+function refreshResumedXterm(s: Session): void {
+  if (!resumeXtermRenderer(s) || !s.el.parentElement) return;
+  // An IntersectionObserver callback already queued before `disconnect()` can
+  // still pause the renderer after attachSession's animation frame. Detect it
+  // again after each parsed output batch and repaint only when a pause/full
+  // refresh was actually pending. This keeps ordinary output on xterm's fast
+  // incremental path while ensuring Enter/new prompt output becomes visible
+  // immediately instead of waiting for selection or another UI interaction.
+  s.term.refresh(0, s.term.rows - 1);
+  const renderService = xtermCore(s)?._renderService;
+  if (renderService) renderService._needsFullRefresh = false;
 }
 
 function syncXtermViewport(
@@ -978,7 +995,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (summary) logger.debug("perf", formatLatencySummary(summary));
   });
   term.onWriteParsed(() => {
-    if (s) syncXtermViewport(s);
+    if (s) {
+      refreshResumedXterm(s);
+      syncXtermViewport(s);
+    }
   });
   // term.onData fires for every keystroke/paste leaving xterm toward the pty.
   term.onData((data: string) => {
@@ -1214,6 +1234,8 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       resumeXtermRenderer(s);
       syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       s.term.refresh(0, s.term.rows - 1);
+      const renderService = xtermCore(s)?._renderService;
+      if (renderService) renderService._needsFullRefresh = false;
       // Restore the underlying viewport scrollTop. We do this rather than
       // calling `scrollToLine` because scrollTop is the source of truth for
       // xterm's scroll listener; writing it directly fires that listener
