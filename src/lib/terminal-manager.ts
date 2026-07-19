@@ -60,6 +60,7 @@ import { markAttention } from "../stores/attention-store";
 import { markActivity, clearActivity } from "../stores/activity-store";
 import { setHookState, clearHookState } from "../stores/hook-state-store";
 import { parseAgentHookOsc } from "./agent-hook-osc";
+import { SHOW_CURSOR, shouldRestoreCursor } from "./cursor-visibility";
 import { playAlertSound } from "./alert-sound";
 import { collectLeafIds, findLeaf } from "./pane-tree";
 import { getVerbose, logger } from "./logger";
@@ -870,6 +871,18 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     // moment the working tree may have changed. Nudge the git sidebar to
     // re-read (debounced; no-ops when nothing is listening / panel closed).
     scheduleCommandSettled();
+    // Re-assert cursor visibility. A remote program (a prompt theme, a TUI)
+    // hides the cursor with `\e[?25l` and restores it with `\e[?25h`; if the
+    // connection dies mid-render (ssh killed by sleep / network drop) the
+    // restore never arrives and xterm stays "cursor hidden" forever — even
+    // back at the local prompt (the vanished-cursor bug). OSC 7 comes from the
+    // shell's precmd, so we're definitionally at a prompt where the cursor must
+    // be visible. `\e[?25h` is idempotent, so re-emitting each prompt is a
+    // no-op in the normal case; guard to the normal buffer so a full-screen TUI
+    // that hides its cursor on purpose (alternate buffer) is left alone.
+    if (shouldRestoreCursor(term.buffer.active.type)) {
+      term.write(SHOW_CURSOR);
+    }
     // The first prompt is the earliest moment the shell is ready to run a
     // command, so this is where we inject a queued agent-resume command.
     if (s) maybeInjectResume(s);

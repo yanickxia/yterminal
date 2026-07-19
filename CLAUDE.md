@@ -58,6 +58,10 @@ Workspace[]                       <- agent authority; Zustand projection/offline
 
 `src-tauri/tauri.conf.json` sets `app.windows[0].dragDropEnabled = false`. Tauri's default `true` makes wry/WKWebView capture OS-level drag events natively and **swallow the WebView's `drop` event** (symptom: drag feedback works but the list never reorders). Affects tab/workspace reorder in `TabBar.tsx` / `WorkspaceSidebar.tsx`. Don't re-enable without rewriting both reorder paths against Tauri's native drag events.
 
+### Cursor visibility recovery (stuck DECTCEM)
+
+A program hides the cursor with `\e[?25l` (DECTCEM) and restores it with `\e[?25h`. When a **remote** program dies abruptly — ssh killed by laptop sleep / network drop, mid-render of a cursor-hiding prompt theme or TUI — the restore byte never arrives, so the local xterm stays "cursor hidden" indefinitely, even after control returns to the local shell (input/output still work; only the cursor block is gone; `tput cnorm` recovers it manually). The OSC 7 handler in `getOrCreateSession` re-asserts `SHOW_CURSOR` on every prompt (OSC 7 comes from the shell's precmd, so we're definitionally at a prompt). `src/lib/cursor-visibility.ts` (`SHOW_CURSOR`, `shouldRestoreCursor(bufferType)`, unit-tested) guards it to the **normal buffer** — a full-screen TUI on the alternate buffer may hide the cursor on purpose and must be left alone. `\e[?25h` is idempotent, so re-emitting each prompt is a no-op in the normal case.
+
 ### PTY layer is owned by the per-user agent
 
 `src-tauri/src/agent/session_manager.rs` calls `portable-pty` and owns every live PTY independently of the GUI. The Tauri process no longer registers the legacy `pty_*` commands. `src/lib/pty.ts` exposes `AgentPty`, backed by the same length-prefixed CBOR protocol for a local Unix socket or one persistent system-OpenSSH stdio channel. Session UUIDs—not OS pids—are the durable handles. Closing/restarting a GUI or losing SSH detaches the client without killing the shell; explicit pane/workspace termination is the only kill path.
