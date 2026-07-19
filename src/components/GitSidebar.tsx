@@ -17,6 +17,7 @@ import {
   type GitFile,
   type EditorInfo,
 } from "../lib/git";
+import { isRemoteWorkspace } from "../lib/workspace-sync";
 
 /** Short single-letter badge for a file's change kind. */
 function badge(f: GitFile): { char: string; kind: string } {
@@ -296,6 +297,7 @@ export function GitSidebar() {
   const status = useGitStore((s) => s.status);
   const loading = useGitStore((s) => s.loading);
   const cwd = useGitStore((s) => s.cwd);
+  const workspaceId = useGitStore((s) => s.workspaceId);
   const setOpen = useGitStore((s) => s.setOpen);
   const gitWidth = useLayoutStore((s) => s.gitWidth);
 
@@ -333,7 +335,7 @@ export function GitSidebar() {
     setDiffText("");
     if (!cwd) return;
     setDiffLoading(true);
-    const text = await gitDiff(cwd, path);
+    const text = await gitDiff(cwd, path, workspaceId ?? undefined);
     if (seq !== diffSeq.current) return; // superseded by a newer click
     setDiffText(text);
     setDiffLoading(false);
@@ -344,7 +346,11 @@ export function GitSidebar() {
       <div className="git-sidebar-head">
         <span className="git-sidebar-title">Source Control</span>
         <div className="git-sidebar-head-actions">
-          {status.isRepo && status.root && <OpenWithMenu dir={status.root} />}
+          {status.isRepo &&
+            status.root &&
+            (!workspaceId || !isRemoteWorkspace(workspaceId)) && (
+              <OpenWithMenu dir={status.root} />
+            )}
           <button
             className="icon-btn"
             onClick={() => setOpen(false)}

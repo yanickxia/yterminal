@@ -6,6 +6,8 @@ import {
   fitSession,
   onSessionExit,
   offSessionExit,
+  onSessionControl,
+  offSessionControl,
   copySelection,
   pasteInto,
   hasSelection,
@@ -49,15 +51,18 @@ export function PaneTerminal({
   cwdRef.current = pane.cwd;
 
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     // close this pane when its shell process exits (e.g. user types `exit`)
     onSessionExit(pane.id, (id) => onExitRef.current(id));
+    onSessionControl(pane.id, setReadOnly);
     attachSession(pane.id, container, cwdRef.current);
     return () => {
       offSessionExit(pane.id);
+      offSessionControl(pane.id);
       detachSession(pane.id);
     };
   }, [pane.id]);
@@ -96,6 +101,11 @@ export function PaneTerminal({
       }}
     >
       <div className="pane-host" ref={containerRef} />
+      {readOnly && (
+        <div className="pane-readonly-badge" title="Use the workspace menu to take control">
+          REMOTE · READ ONLY
+        </div>
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -112,6 +122,7 @@ export function PaneTerminal({
               },
               {
                 label: "Paste",
+                disabled: readOnly,
                 onClick: () => {
                   void pasteInto(pane.id);
                 },

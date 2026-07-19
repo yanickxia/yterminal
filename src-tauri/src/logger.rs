@@ -1,11 +1,9 @@
 //! Lightweight, dependency-free debug logging for yterminal.
 //!
-//! Why this exists: the app intermittently "hangs and won't accept input"
-//! while everything else looks fine. The prime suspect is the PTY data plane —
-//! `pty_read` is an async command that performs a *blocking* `reader.read()`,
-//! which can starve Tauri's async runtime so that `pty_write` (your keystrokes)
-//! never gets scheduled. To diagnose that we need a log that survives even when
-//! the async runtime is wedged.
+//! Why this exists: terminal/transport failures need a timeline that survives
+//! a WebView restart and remains usable while async work is unhealthy. PTY
+//! blocking IO now lives on dedicated yterminal-agent threads, but SSH, IPC,
+//! renderer and agent lifecycle diagnostics still need one durable log.
 //!
 //! Design choices that matter:
 //!   * Every command here is a **synchronous** `#[tauri::command]`. Tauri runs
@@ -62,9 +60,7 @@ fn log_dir() -> PathBuf {
     #[cfg(not(windows))]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("yterminal").join("logs")
 }
@@ -84,7 +80,11 @@ fn state() -> &'static Mutex<LogState> {
                 let _ = std::fs::remove_file(&path);
             }
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path).ok();
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
         Mutex::new(LogState {
             ring: VecDeque::with_capacity(RING_CAPACITY),
             file,
@@ -140,7 +140,13 @@ pub fn log(level: &str, source: &str, message: &str) {
     if !verbose && (lvl == "DEBUG" || lvl == "TRACE") {
         return;
     }
-    let line = format!("{} [{}] [{}] {}", fmt_utc(now_millis()), lvl, source, message);
+    let line = format!(
+        "{} [{}] [{}] {}",
+        fmt_utc(now_millis()),
+        lvl,
+        source,
+        message
+    );
     if let Ok(mut st) = state().lock() {
         if st.ring.len() >= RING_CAPACITY {
             st.ring.pop_front();
@@ -184,7 +190,11 @@ pub fn log_event(level: String, source: String, message: String) {
 #[tauri::command]
 pub fn set_log_verbose(verbose: bool) {
     VERBOSE.store(verbose, Ordering::Relaxed);
-    log("INFO", "logger", &format!("verbose logging set to {verbose}"));
+    log(
+        "INFO",
+        "logger",
+        &format!("verbose logging set to {verbose}"),
+    );
 }
 
 /// Read the current verbose flag (so the UI can reflect the real backend state).
@@ -208,7 +218,11 @@ pub fn clear_logs() -> Result<(), String> {
         // reopen the file truncated
         let path = active_log_path();
         let _ = std::fs::remove_file(&path);
-        st.file = OpenOptions::new().create(true).append(true).open(&path).ok();
+        st.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok();
     }
     log("INFO", "logger", "logs cleared");
     Ok(())

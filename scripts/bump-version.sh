@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# bump-version.sh — set the app version in all three manifests at once and,
+# bump-version.sh — set the app version in all manifests at once and,
 # optionally, commit + tag + push to trigger the release workflow.
 #
 # Usage:
@@ -59,12 +59,18 @@ if $DO_TAG && [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-# ---- rewrite the three manifests with Python (safe JSON + scoped TOML edit) ----
-VERSION="$VERSION" python3 - "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML" <<'PY'
+# ---- rewrite the manifests with Python (safe JSON + scoped TOML edit) ----
+AGENT_CARGO_TOML="agent-cli/Cargo.toml"
+
+for f in "$AGENT_CARGO_TOML"; do
+  [[ -f "$f" ]] || { echo "Error: missing $f" >&2; exit 1; }
+done
+
+VERSION="$VERSION" python3 - "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML" "$AGENT_CARGO_TOML" <<'PY'
 import json, os, re, sys
 
 version = os.environ["VERSION"]
-pkg_json, tauri_conf, cargo_toml = sys.argv[1:4]
+pkg_json, tauri_conf, cargo_toml, agent_cargo_toml = sys.argv[1:5]
 
 def set_json_version(path):
     with open(path, encoding="utf-8") as f:
@@ -104,11 +110,15 @@ print("Updating versions:")
 set_json_version(pkg_json)
 set_json_version(tauri_conf)
 set_cargo_version(cargo_toml)
+set_cargo_version(agent_cargo_toml)
 PY
 
 # keep Cargo.lock's own package entry in sync (best effort, non-fatal)
 if [[ -f src-tauri/Cargo.lock ]] && command -v cargo >/dev/null 2>&1; then
   ( cd src-tauri && cargo update -p yterminal --precise "$VERSION" >/dev/null 2>&1 ) || true
+fi
+if [[ -f agent-cli/Cargo.lock ]] && command -v cargo >/dev/null 2>&1; then
+  ( cd agent-cli && cargo update -p yterminal --precise "$VERSION" >/dev/null 2>&1 ) || true
 fi
 
 echo "Done. Manifests now at $VERSION."
@@ -125,8 +135,8 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-git add "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML" src-tauri/Cargo.lock 2>/dev/null || \
-  git add "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML"
+git add "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML" "$AGENT_CARGO_TOML" src-tauri/Cargo.lock agent-cli/Cargo.lock 2>/dev/null || \
+  git add "$PKG_JSON" "$TAURI_CONF" "$CARGO_TOML" "$AGENT_CARGO_TOML"
 git commit -m "chore: release $TAG"
 git tag -a "$TAG" -m "yterminal $TAG"
 echo "Created commit + tag $TAG."

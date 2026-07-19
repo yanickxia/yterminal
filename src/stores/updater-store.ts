@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { arch as osArch } from "@tauri-apps/plugin-os";
 import {
   installKind,
   installDebUpdate,
@@ -23,6 +24,15 @@ import { logger } from "../lib/logger";
  *  WebView's CORS check blocks GitHub's cross-origin 302 redirect. */
 const LATEST_JSON_URL =
   "https://github.com/yanickxia/yterminal/releases/latest/download/latest.json";
+
+function debEntryForHost(manifest: any): { url?: string; signature?: string } | null {
+  const arch = osArch();
+  if (arch === "aarch64") return manifest?.["linux-deb-aarch64"] ?? null;
+  if (arch === "x86_64") {
+    return manifest?.["linux-deb-x86_64"] ?? manifest?.["linux-deb"] ?? null;
+  }
+  return manifest?.[`linux-deb-${arch}`] ?? null;
+}
 
 export type UpdaterState =
   | "idle"
@@ -118,10 +128,10 @@ export const useUpdaterStore = create<UpdaterStore>()(
           try {
             const body = await fetchLatestJson(LATEST_JSON_URL);
             const manifest = JSON.parse(body);
-            const deb = manifest?.["linux-deb"];
+            const deb = debEntryForHost(manifest);
             if (!deb?.url || !deb?.signature) {
               throw new Error(
-                "This release has no signed .deb for in-app update. Install the new .deb from the Releases page."
+                "This release has no signed .deb for this architecture. Install the new .deb from the Releases page."
               );
             }
             // Stream download progress so the dialog shows a real bar instead

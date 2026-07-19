@@ -52,10 +52,16 @@ jobs:
         include:
           # Apple Silicon + Intel in one universal bundle
           - platform: macos-latest
+            os: macos
             args: "--target universal-apple-darwin"
           - platform: ubuntu-22.04
+            os: linux
+            args: ""
+          - platform: ubuntu-22.04-arm
+            os: linux
             args: ""
           - platform: windows-latest
+            os: windows
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -65,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -74,6 +80,7 @@ jobs:
             curl \
             wget \
             file \
+            xdg-utils \
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
@@ -87,12 +94,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.os == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache cargo
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: |
+            ./src-tauri -> target
+            ./agent-cli -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -106,6 +115,82 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set. Generate a key with 'npx @tauri-apps/cli signer generate' and add it as a repo secret. See docs/superpowers/specs/2026-06-29-auto-update-design.md."
             exit 1
           fi
+
+      # Tauri builds the GUI as a universal binary, but with multiple Cargo
+      # binaries it expects helper executables to already exist in the
+      # universal target directory when assembling the .app bundle.
+      - name: Build universal agent helper (macOS only)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_TARGET_DIR="$PWD/src-tauri/target" cargo build \
+            --manifest-path agent-cli/Cargo.toml \
+            --release \
+            --bin yterminal-agent \
+            --target aarch64-apple-darwin
+          CARGO_TARGET_DIR="$PWD/src-tauri/target" cargo build \
+            --manifest-path agent-cli/Cargo.toml \
+            --release \
+            --bin yterminal-agent \
+            --target x86_64-apple-darwin
+          mkdir -p src-tauri/target/universal-apple-darwin/release
+          lipo -create \
+            src-tauri/target/aarch64-apple-darwin/release/yterminal-agent \
+            src-tauri/target/x86_64-apple-darwin/release/yterminal-agent \
+            -output src-tauri/target/universal-apple-darwin/release/yterminal-agent
+          lipo -info src-tauri/target/universal-apple-darwin/release/yterminal-agent
+
+      - name: Build standalone agent CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            test -x src-tauri/target/universal-apple-darwin/release/yterminal-agent
+          else
+            cargo build \
+              --manifest-path agent-cli/Cargo.toml \
+              --release \
+              --bin yterminal-agent
+          fi
+
+      - name: Package standalone agent CLI
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p agent-cli/dist
+          case "${{ matrix.os }}" in
+            macos)
+              src="src-tauri/target/universal-apple-darwin/release/yterminal-agent"
+              asset="agent-cli/dist/yterminal-agent_${version}_macos_universal.tar.gz"
+              tar -C "$(dirname "$src")" -czf "$asset" "$(basename "$src")"
+              ;;
+            linux)
+              arch="$(uname -m)"
+              case "$arch" in
+                x86_64|amd64) arch="x86_64" ;;
+                aarch64|arm64) arch="aarch64" ;;
+                *) echo "::error::Unsupported Linux agent architecture: $arch"; exit 1 ;;
+              esac
+              src="agent-cli/target/release/yterminal-agent"
+              asset="agent-cli/dist/yterminal-agent_${version}_linux_${arch}.tar.gz"
+              tar -C "$(dirname "$src")" -czf "$asset" "$(basename "$src")"
+              ;;
+            windows)
+              src="agent-cli/target/release/yterminal-agent.exe"
+              asset="agent-cli/dist/yterminal-agent_${version}_windows_x86_64.exe"
+              cp "$src" "$asset"
+              ;;
+            *)
+              echo "::error::Unsupported agent CLI platform: ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+          test -s "$asset" || { echo "::error::Standalone agent asset is empty: $asset"; exit 1; }
+          echo "Packaged $asset"
 
       - name: Build tauri bundle
         shell: bash
@@ -121,7 +206,7 @@ jobs:
         run: npm run tauri:build -- ${{ matrix.args }}
 
       - name: Sign the .deb for in-app updates (Linux only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.os == 'linux'
         shell: bash
         # tauri build only signs the *updater* artifact formats (AppImage on
         # Linux), so the .deb has no .sig. Our in-app deb updater downloads the
@@ -142,7 +227,7 @@ jobs:
           npx @tauri-apps/cli signer sign "$deb"
           test -f "$deb.sig" || { echo "::error::signer produced no $deb.sig"; exit 1; }
 
-      - name: Upload bundle artifacts to release
+      - name: Upload bundle and agent artifacts to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -151,28 +236,37 @@ jobs:
           set -euo pipefail
           count=0
           sig_count=0
+          agent_count=0
           while IFS= read -r -d '' file; do
             echo "Uploading $file"
             gh release upload "$TAG" "$file" --clobber
             count=$((count + 1))
             case "$file" in *.sig) sig_count=$((sig_count + 1));; esac
-          done < <(find src-tauri/target -type f \( \
-            -name "*.dmg" -o \
-            -name "*.app.tar.gz" -o \
-            -name "*.app.tar.gz.sig" -o \
-            -name "*.msi" -o \
-            -name "*.msi.sig" -o \
-            -name "*-setup.exe" -o \
-            -name "*-setup.exe.sig" -o \
-            -name "*.AppImage" -o \
-            -name "*.AppImage.sig" -o \
-            -name "*.deb" -o \
-            -name "*.deb.sig" -o \
-            -name "*.rpm" \
-            \) -print0)
-          echo "Uploaded $count artifacts ($sig_count .sig files)"
+            case "$file" in agent-cli/dist/yterminal-agent_*) agent_count=$((agent_count + 1));; esac
+          done < <(
+            find src-tauri/target -type f \( \
+              -name "*.dmg" -o \
+              -name "*.app.tar.gz" -o \
+              -name "*.app.tar.gz.sig" -o \
+              -name "*.msi" -o \
+              -name "*.msi.sig" -o \
+              -name "*-setup.exe" -o \
+              -name "*-setup.exe.sig" -o \
+              -name "*.AppImage" -o \
+              -name "*.AppImage.sig" -o \
+              -name "*.deb" -o \
+              -name "*.deb.sig" -o \
+              -name "*.rpm" \
+              \) -print0
+            find agent-cli/dist -type f -name "yterminal-agent_*" -print0
+          )
+          echo "Uploaded $count artifacts ($sig_count .sig files, $agent_count standalone agent files)"
           if [ "$count" -eq 0 ]; then
             echo "::error::No bundle artifacts found under src-tauri/target"
+            exit 1
+          fi
+          if [ "$agent_count" -eq 0 ]; then
+            echo "::error::No standalone agent CLI artifact was uploaded"
             exit 1
           fi
           if [ "$sig_count" -eq 0 ]; then

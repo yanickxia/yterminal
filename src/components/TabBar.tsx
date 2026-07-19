@@ -1,7 +1,12 @@
 import { useState, useRef, type MouseEvent } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Tab, Workspace } from "../lib/types";
-import { addTabInheritingCwd, disposeSession, reapplyPaneTitle } from "../lib/terminal-manager";
+import {
+  addTabInheritingCwd,
+  disposeSession,
+  reapplyPaneTitle,
+  unloadSession,
+} from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { useViewerStore } from "../stores/viewer-store";
 import { EmojiPicker } from "./EmojiPicker";
@@ -47,6 +52,7 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
     x: number;
     y: number;
   } | null>(null);
+  const isRemoteWorkspace = (workspace.hostId ?? "local") !== "local";
 
   function toggleIconPicker(tabId: string, e: MouseEvent) {
     e.stopPropagation();
@@ -106,6 +112,14 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
     removeTab(workspace.id, tabId);
   }
 
+  function unloadTab(tab: Tab) {
+    if (tab.file) {
+      useViewerStore.getState().drop(tab.id);
+      return;
+    }
+    for (const paneId of collectLeafIds(tab.root)) unloadSession(paneId);
+  }
+
   /** Dispose all sessions in a set of tabs (used by bulk-close menu items). */
   function disposeTabs(tabs: Tab[]) {
     for (const t of tabs) {
@@ -137,6 +151,15 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
         label: "Rename",
         onClick: () => beginEdit(tab.id, tab.name),
       },
+      ...(isRemoteWorkspace && !tab.file
+        ? [
+            {
+              label: "Unload From This Device",
+              disabled: tab.id === workspace.activeTabId,
+              onClick: () => unloadTab(tab),
+            },
+          ]
+        : []),
       // Only meaningful for a manually-renamed terminal tab: dropping customName
       // hands the name back to the shell/agent title stream (OSC 0/2), so e.g.
       // Claude can drive it again. File tabs have no title stream.
@@ -258,7 +281,6 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
           onDoubleClick={() => beginEdit(t.id, t.name)}
           onContextMenu={(e) => {
             e.preventDefault();
-            setActiveTab(workspace.id, t.id);
             setCtxMenu({ tabId: t.id, x: e.clientX, y: e.clientY });
           }}
         >
@@ -306,6 +328,23 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
                 </button>
               )}
               <span className="tab-name">{t.name}</span>
+              {isRemoteWorkspace && !t.file && (
+                <button
+                  className="icon-btn tab-unload"
+                  title={
+                    t.id === workspace.activeTabId
+                      ? "Switch away before unloading this remote tab"
+                      : "Unload this remote tab from this device"
+                  }
+                  disabled={t.id === workspace.activeTabId}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    unloadTab(t);
+                  }}
+                >
+                  ⏏
+                </button>
+              )}
               <button
                 className="icon-btn tab-close"
                 title="Close tab"

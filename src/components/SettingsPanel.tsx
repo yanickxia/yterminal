@@ -28,12 +28,39 @@ import {
   logDirPath,
   setVerbose,
 } from "../lib/logger";
+import { useHostStore } from "../stores/host-store";
+import {
+  reconnectRemoteHost,
+  removeRemoteHost,
+} from "../lib/remote-host-manager";
+import { localHost } from "../lib/host-transport";
+import { clipboardWrite } from "../lib/clipboard";
 
-type TabId = "appearance" | "terminal" | "ai" | "debug" | "update";
+interface AgentServiceStatus {
+  installed: boolean;
+  running: boolean;
+  managed: boolean;
+  version: string | null;
+  binaryPath: string;
+  servicePath: string;
+}
+
+interface AgentRuntimeStatus {
+  version: string;
+  draining: boolean;
+  runningSessions: number;
+  databaseBytes: number;
+  journalBytes: number;
+  checkpointBytes: number;
+  droppedJournalChunks: number;
+}
+
+type TabId = "appearance" | "terminal" | "remote" | "ai" | "debug" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "remote", label: "Remote" },
   { id: "ai", label: "AI" },
   { id: "debug", label: "Debug" },
   { id: "update", label: "Update" },
@@ -585,6 +612,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
           {tab === "ai" && <AiTab />}
 
+          {tab === "remote" && <RemoteHostsTab />}
+
           {tab === "update" && (
             <UpdateTab />
           )}
@@ -602,6 +631,254 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+function RemoteHostsTab() {
+  const profiles = useHostStore((state) => state.profiles);
+  const runtime = useHostStore((state) => state.runtime);
+  const addHost = useHostStore((state) => state.addHost);
+  const updateHost = useHostStore((state) => state.updateHost);
+  const [service, setService] = useState<AgentServiceStatus | null>(null);
+  const [agent, setAgent] = useState<AgentRuntimeStatus | null>(null);
+  const [maintenance, setMaintenance] = useState("");
+  const [maintenanceError, setMaintenanceError] = useState("");
+
+  async function refreshAgentStatus() {
+    try {
+      const host = await localHost();
+      const [nextService, response] = await Promise.all([
+        invoke<AgentServiceStatus>("agent_service_status"),
+        host.request({ method: "agent_status" }),
+      ]);
+      setService(nextService);
+      if (response.kind === "agent_status") {
+        setAgent({
+          version: host.hello.agentVersion,
+          draining: response.data.draining,
+          runningSessions: response.data.running_sessions,
+          databaseBytes: response.data.database_bytes,
+          journalBytes: response.data.journal_bytes,
+          checkpointBytes: response.data.checkpoint_bytes,
+          droppedJournalChunks: response.data.dropped_journal_chunks,
+        });
+      }
+    } catch (error) {
+      setMaintenanceError(String(error));
+    }
+  }
+
+  useEffect(() => {
+    void refreshAgentStatus();
+  }, []);
+
+  async function installService() {
+    setMaintenance("Installing…");
+    setMaintenanceError("");
+    try {
+      setService(await invoke<AgentServiceStatus>("install_agent_service"));
+      setMaintenance("Installed. This device can now accept SSH attaches.");
+      await refreshAgentStatus();
+    } catch (error) {
+      setMaintenanceError(String(error));
+      setMaintenance("");
+    }
+  }
+
+  async function setDraining(draining: boolean) {
+    setMaintenanceError("");
+    try {
+      const host = await localHost();
+      await host.request({ method: "set_draining", params: { draining } });
+      setMaintenance(
+        draining
+          ? "Drain enabled: existing sessions continue; new sessions are blocked."
+          : "Drain cancelled."
+      );
+      await refreshAgentStatus();
+    } catch (error) {
+      setMaintenanceError(String(error));
+    }
+  }
+
+  async function restartAgent() {
+    setMaintenanceError("");
+    try {
+      // hot-restart tolerates live sessions: shells restart but each pane
+      // inherits its checkpointed scrollback, and the frontend reconnects on
+      // its own (no page reload, no drain, no zero-session gate). This is the
+      // upgrade path — it lets `running` catch up to an already-installed
+      // binary without closing workspaces.
+      const live = agent?.runningSessions ?? 0;
+      setMaintenance(
+        live > 0
+          ? `Restarting agent… ${live} session(s) will reconnect with their scrollback.`
+          : "Restarting agent…"
+      );
+      await invoke("hot_restart_agent_service");
+      setMaintenance("Agent restarted. Sessions reconnect automatically.");
+      await refreshAgentStatus();
+    } catch (error) {
+      setMaintenanceError(String(error));
+      setMaintenance("");
+    }
+  }
+
+  return (
+    <>
+      <div className="field">
+        <label className="field-label">This device</label>
+        <p className="field-hint">
+          Install the per-user agent so other yterminal machines can attach over
+          SSH even while this GUI is closed. No TCP port or cloud relay is used.
+        </p>
+        <div className="remote-agent-summary">
+          <span className={`remote-status ${service?.running ? "online" : "offline"}`} />
+          <span>
+            {service?.installed ? service.version || "Agent installed" : "Not installed"}
+            {service?.managed ? " · service enabled" : ""}
+            {agent ? ` · running ${agent.version}` : ""}
+            {agent ? ` · ${agent.runningSessions} live session(s)` : ""}
+            {agent?.draining ? " · draining" : ""}
+          </span>
+        </div>
+        {agent && (
+          <p className="field-hint">
+            DB {formatBytes(agent.databaseBytes)} · journal {formatBytes(agent.journalBytes)} ·
+            checkpoints {formatBytes(agent.checkpointBytes)}
+            {agent.droppedJournalChunks > 0
+              ? ` · ${agent.droppedJournalChunks} dropped journal chunk(s)`
+              : ""}
+          </p>
+        )}
+        <div className="remote-agent-actions">
+          <button className="settings-action-btn" onClick={() => void installService()}>
+            {service?.installed ? "Install update" : "Enable Remote Workspaces"}
+          </button>
+          <button
+            className="settings-action-btn"
+            onClick={() => void setDraining(!agent?.draining)}
+          >
+            {agent?.draining ? "Cancel drain" : "Drain"}
+          </button>
+          <button
+            className="settings-action-btn"
+            disabled={!service?.managed}
+            onClick={() => void restartAgent()}
+            title="Restart the agent in place. Live sessions restart but reconnect automatically with their scrollback preserved — use this to finish an update."
+          >
+            Restart agent
+          </button>
+          <button className="link-btn" onClick={() => void refreshAgentStatus()}>
+            Refresh
+          </button>
+        </div>
+        {maintenance && <p className="field-hint">{maintenance}</p>}
+        {maintenanceError && (
+          <p className="field-hint remote-error">{maintenanceError}</p>
+        )}
+      </div>
+
+      <div className="field">
+        <label className="field-label">SSH workspace hosts</label>
+        <p className="field-hint">
+          Targets use your existing <code>~/.ssh/config</code>, ssh-agent,
+          ProxyJump and known_hosts. yterminal never stores a password or private
+          key. The remote machine must have <code>~/.local/bin/yterminal-agent</code>.
+        </p>
+      </div>
+
+      <div className="ai-provider-list">
+        {profiles.map((profile) => {
+          const state = runtime[profile.id] ?? { status: "offline" as const };
+          return (
+            <div className="ai-provider-card" key={profile.id}>
+              <div className="ai-provider-card-head">
+                <span className={`remote-status ${state.status}`} />
+                <strong>{profile.name || "Remote"}</strong>
+                <span className="field-hint" style={{ marginLeft: 6 }}>
+                  {state.status}
+                  {state.hostname ? ` · ${state.hostname}` : ""}
+                  {state.agentVersion ? ` · agent ${state.agentVersion}` : ""}
+                </span>
+                <button
+                  type="button"
+                  className="link-btn remote-remove"
+                  onClick={() => void removeRemoteHost(profile.id)}
+                >
+                  Remove
+                </button>
+              </div>
+              <label className="field-label">Name</label>
+              <input
+                className="select"
+                value={profile.name}
+                onChange={(event) =>
+                  updateHost(profile.id, { name: event.target.value })
+                }
+              />
+              <label className="field-label" style={{ marginTop: 8 }}>
+                SSH target
+              </label>
+              <input
+                className="select"
+                value={profile.sshTarget}
+                placeholder="office-linux"
+                spellCheck={false}
+                onChange={(event) =>
+                  updateHost(profile.id, { sshTarget: event.target.value })
+                }
+              />
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="settings-action-btn"
+                  disabled={state.status === "connecting"}
+                  onClick={() => void reconnectRemoteHost(profile.id)}
+                >
+                  {state.status === "connecting" ? "Connecting…" : "Connect / Test"}
+                </button>
+              </div>
+              {state.message && (
+                <>
+                  <p className="field-hint remote-error">{state.message}</p>
+                  {profile.sshTarget.trim() && (
+                    <div className="remote-ssh-check">
+                      <code>ssh {profile.sshTarget.trim()}</code>
+                      <button
+                        type="button"
+                        className="link-btn"
+                        onClick={() =>
+                          void clipboardWrite(
+                            `ssh ${profile.sshTarget.trim()}`
+                          )
+                        }
+                      >
+                        Copy check command
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        className="settings-action-btn"
+        onClick={() => addHost(`Remote ${profiles.length + 1}`, "")}
+      >
+        + Add SSH host
+      </button>
+    </>
+  );
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function AiTab() {

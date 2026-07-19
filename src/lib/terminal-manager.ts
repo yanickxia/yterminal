@@ -62,10 +62,15 @@ import { setHookState, clearHookState } from "../stores/hook-state-store";
 import { parseAgentHookOsc } from "./agent-hook-osc";
 import { SHOW_CURSOR, shouldRestoreCursor } from "./cursor-visibility";
 import { playAlertSound } from "./alert-sound";
-import { findLeaf } from "./pane-tree";
+import { collectLeafIds, findLeaf } from "./pane-tree";
 import { getVerbose, logger } from "./logger";
 import type { AgentKind, PaneAgent } from "./types";
 import { paneProcessTree, agentSessionId, processEnv } from "./agent";
+import {
+  disconnectAllWorkspaceHosts,
+  isRemoteWorkspace,
+  transportForWorkspace,
+} from "./workspace-sync";
 import {
   detectAgent,
   classifyCommandToken,
@@ -390,6 +395,7 @@ interface XtermCoreInternals {
  * the dead pane. Registered by PaneTerminal; keyed by pane/tab id.
  */
 const exitListeners = new Map<string, (tabId: string) => void>();
+const controlListeners = new Map<string, (readOnly: boolean) => void>();
 
 /** Register a callback invoked when the given pane's shell process exits. */
 export function onSessionExit(tabId: string, cb: (tabId: string) => void) {
@@ -401,11 +407,30 @@ export function offSessionExit(tabId: string) {
   exitListeners.delete(tabId);
 }
 
-/** Persist a session's current buffer to storage (best effort). */
-function persist(id: string, s: Session) {
+export function onSessionControl(
+  tabId: string,
+  cb: (readOnly: boolean) => void
+) {
+  controlListeners.set(tabId, cb);
+  const session = sessions.get(tabId);
+  if (session) cb(session.pty.readOnly);
+}
+
+export function offSessionControl(tabId: string) {
+  controlListeners.delete(tabId);
+}
+
+/** Persist a session's fully parsed current buffer to storage (best effort). */
+async function persist(id: string, s: Session): Promise<void> {
   if (s.disposed) return;
   try {
-    saveScrollback(id, s.serialize.serialize());
+    await s.pty.waitForParserIdle(2_000);
+    if (s.disposed || !s.pty.isParserIdle()) return;
+    const snapshot = s.serialize.serialize();
+    saveScrollback(id, snapshot);
+    // The daemon keeps the authoritative reconnect checkpoint. The local
+    // SQLite copy remains as a migration/offline fallback during rollout.
+    s.pty.checkpoint(snapshot);
   } catch {
     /* serialize can throw on an empty/closed buffer */
   }
@@ -414,6 +439,7 @@ function persist(id: string, s: Session) {
 const sessions = new Map<string, Session>();
 
 function recordPaneCwd(paneId: string, cwd: string) {
+  if (sessions.get(paneId)?.pty.readOnly) return;
   const normalized = cwd.trim();
   if (!normalized) return;
   const store = useWorkspaceStore.getState();
@@ -436,7 +462,14 @@ function locatePane(paneId: string) {
   for (const w of store.workspaces) {
     for (const t of w.tabs) {
       const leaf = findLeaf(t.root, paneId);
-      if (leaf) return { store, workspaceId: w.id, tabId: t.id, leaf };
+      if (leaf)
+        return {
+          store,
+          workspaceId: w.id,
+          hostId: w.hostId ?? "local",
+          tabId: t.id,
+          leaf,
+        };
     }
   }
   return null;
@@ -451,6 +484,7 @@ function locatePane(paneId: string) {
  */
 function applyPaneTitle(paneId: string, rawTitle: string) {
   if (!useSettingsStore.getState().autoTabTitle) return;
+  if (sessions.get(paneId)?.pty.readOnly) return;
   const located = locatePane(paneId);
   if (!located) return;
   const { store, workspaceId, tabId } = located;
@@ -510,11 +544,14 @@ function xtermCore(s: Session): XtermCoreInternals | undefined {
   return (s.term as unknown as { _core?: XtermCoreInternals })._core;
 }
 
-function resumeXtermRenderer(s: Session) {
+function resumeXtermRenderer(s: Session): boolean {
   try {
     const core = xtermCore(s);
     const renderService = core?._renderService;
-    if (!renderService) return;
+    if (!renderService) return false;
+    const needsRefresh = Boolean(
+      renderService._isPaused || renderService._needsFullRefresh
+    );
     // These terminals are intentionally cached and re-parented between tabs.
     // xterm's IntersectionObserver pause can therefore get stuck in WKWebView;
     // disable that observer and explicitly resume before fitting/refreshing.
@@ -524,10 +561,24 @@ function resumeXtermRenderer(s: Session) {
       core?._charSizeService?.measure?.();
     }
     renderService._pausedResizeTask?.flush?.();
-    renderService._needsFullRefresh = false;
+    return needsRefresh;
   } catch {
     /* xterm internals changed; normal refresh below is still best effort */
+    return false;
   }
+}
+
+function refreshResumedXterm(s: Session): void {
+  if (!resumeXtermRenderer(s) || !s.el.parentElement) return;
+  // An IntersectionObserver callback already queued before `disconnect()` can
+  // still pause the renderer after attachSession's animation frame. Detect it
+  // again after each parsed output batch and repaint only when a pause/full
+  // refresh was actually pending. This keeps ordinary output on xterm's fast
+  // incremental path while ensuring Enter/new prompt output becomes visible
+  // immediately instead of waiting for selection or another UI interaction.
+  s.term.refresh(0, s.term.rows - 1);
+  const renderService = xtermCore(s)?._renderService;
+  if (renderService) renderService._needsFullRefresh = false;
 }
 
 function syncXtermViewport(
@@ -715,9 +766,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
               return;
             const cur = sessions.get(tabId);
             const cwd = cur?.shellCwd ?? "";
-            void handleClickedToken(token, cwd, homeDirCache).catch((err) =>
-              console.warn("file link open failed", token, err)
-            );
+            void handleClickedToken(
+              token,
+              cwd,
+              homeDirCache,
+              locatePane(tabId)?.workspaceId
+            ).catch((err) => console.warn("file link open failed", token, err));
           },
         }))
       );
@@ -744,11 +798,16 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // the directory shown in the restored scrollback.
   const trimmedCwd = cwd.trim();
   const resolvedCwd = trimmedCwd && trimmedCwd !== "~" ? trimmedCwd : undefined;
+  const owner = locatePane(tabId);
 
   const pty = spawn(cmd, args, {
     cols: term.cols || 80,
     rows: term.rows || 24,
     cwd: resolvedCwd,
+    workspaceId: owner?.workspaceId ?? "local-default",
+    paneId: tabId,
+    hostId: owner?.hostId,
+    sessionId: owner?.leaf.sessionId,
     // TERM_PROGRAM=Apple_Terminal makes /etc/zshrc (which on macOS ends with
     // `. /etc/zshrc_$TERM_PROGRAM`) install `update_terminal_cwd` as a precmd
     // hook. That hook emits OSC 7 on every prompt, which the OSC handler
@@ -761,6 +820,34 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       TERM: "xterm-256color",
       TERM_PROGRAM: "Apple_Terminal",
     },
+  });
+
+  // A fresh remote attach may require replacing a stale local xterm with the
+  // agent checkpoint. Register this before the async attach can replay data.
+  pty.onReset(() => {
+    try {
+      term.reset();
+    } catch {
+      /* renderer may not be opened yet; the empty terminal is already clean */
+    }
+  });
+  pty.onRemoteResize(({ cols, rows }) => {
+    if (term.cols === cols && term.rows === rows) return;
+    try {
+      term.resize(cols, rows);
+    } catch {
+      /* terminal may not be open yet */
+    }
+  });
+  pty.onReadOnlyChange((readOnly) => {
+    controlListeners.get(tabId)?.(readOnly);
+    // Watchers must render with the controller's canonical character grid;
+    // fitting to this client's container would reflow output differently.
+    // Once control is acquired, fit exactly once so this client establishes
+    // the new canonical size through the normal xterm onResize path.
+    if (!readOnly) {
+      requestAnimationFrame(() => fitSession(tabId));
+    }
   });
 
   // Capture OSC 7 (`\e]7;file://host/percent-encoded-path\a`) emitted by the
@@ -906,12 +993,14 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // right now" (executing) is distinguishable from "idle at a prompt".
   pty.onData((data: Uint8Array) => {
     markActivity(tabId);
-    if (getVerbose()) {
+    const verbose = getVerbose();
+    if (verbose) {
       inputLatency.markOutput(performance.now());
-      term.write(data, () => inputLatency.markParsed(performance.now()));
-    } else {
-      term.write(data);
     }
+    term.write(data, () => {
+      pty.acknowledgeData(data);
+      if (verbose) inputLatency.markParsed(performance.now());
+    });
   });
   term.onRender(() => {
     if (!getVerbose()) return;
@@ -919,7 +1008,10 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (summary) logger.debug("perf", formatLatencySummary(summary));
   });
   term.onWriteParsed(() => {
-    if (s) syncXtermViewport(s);
+    if (s) {
+      refreshResumedXterm(s);
+      syncXtermViewport(s);
+    }
   });
   // term.onData fires for every keystroke/paste leaving xterm toward the pty.
   term.onData((data: string) => {
@@ -986,22 +1078,22 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   };
   sessions.set(tabId, s);
 
-  // If this pane was restored from persistence with a remembered agent, queue
-  // a resume command. It is injected once the shell signals readiness (first
-  // OSC 7 prompt) or after a short timeout fallback for bare shells that never
-  // emit OSC 7. We only do this for a freshly created session that owns a
-  // persisted agent — never on tab switches (the session is cached) — so a
-  // long-lived pane is never re-resumed.
-  const located = locatePane(tabId);
-  if (located?.leaf.agent) {
+  // Resume metadata reconstructs a dead agent session. Creating a new xterm
+  // does not imply the PTY died: the daemon may have attached it to the still
+  // running Claude/Codex TUI. Arm resume only when AgentPty confirms that it
+  // had to spawn a replacement shell.
+  pty.onFreshSpawn(() => {
+    const located = locatePane(tabId);
+    if (!located?.leaf.agent || !s || s.disposed) return;
+    s.resumeInjected = false;
     s.pendingResume = buildResumeCommand(located.leaf.agent);
-    // Fallback: if no OSC 7 prompt arrives within this window, inject anyway so
-    // bare shells (no cwd hook) still resume the agent.
+    // OSC 7 at the first shell prompt is the preferred trigger. Bare shells
+    // without a cwd hook still need a bounded fallback.
     const captured = s;
     window.setTimeout(() => {
       if (!captured.disposed) maybeInjectResume(captured);
     }, 1500);
-  }
+  });
 
   logger.info("term", `session created pane=${tabId} live_sessions=${sessions.size}`);
   return s;
@@ -1132,7 +1224,12 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       e.preventDefault();
       e.stopImmediatePropagation();
       const cwd = sessions.get(tabId)?.shellCwd ?? "";
-      void handleClickedToken(span.token, cwd, homeDirCache).catch((err) =>
+      void handleClickedToken(
+        span.token,
+        cwd,
+        homeDirCache,
+        locatePane(tabId)?.workspaceId
+      ).catch((err) =>
         console.warn("file link open failed (mouse-mode)", span.token, err)
       );
     };
@@ -1146,10 +1243,12 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     if (s.disposed || s.el.parentElement !== container) return;
     try {
       resumeXtermRenderer(s);
-      s.fit.fit();
+      if (!s.pty.readOnly) s.fit.fit();
       resumeXtermRenderer(s);
       syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       s.term.refresh(0, s.term.rows - 1);
+      const renderService = xtermCore(s)?._renderService;
+      if (renderService) renderService._needsFullRefresh = false;
       // Restore the underlying viewport scrollTop. We do this rather than
       // calling `scrollToLine` because scrollTop is the source of truth for
       // xterm's scroll listener; writing it directly fires that listener
@@ -1184,7 +1283,7 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
 export function detachSession(tabId: string) {
   const s = sessions.get(tabId);
   if (s && s.el.parentElement) {
-    persist(tabId, s);
+    void persist(tabId, s);
     try {
       const buf = s.term.buffer.active;
       s.savedAtBottom = buf.viewportY === buf.baseY;
@@ -1205,6 +1304,7 @@ export function disposeSession(tabId: string) {
   s.disposed = true;
   sessions.delete(tabId);
   clearActivity(tabId);
+  controlListeners.delete(tabId);
   clearHookState(tabId);
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
@@ -1226,6 +1326,126 @@ export function disposeSession(tabId: string) {
   clearScrollback(tabId);
 }
 
+/**
+ * Drop this client's cached xterm + agent subscription without killing the
+ * underlying PTY. Used for remote tabs the user wants to unload locally while
+ * leaving the shell running on the owner host. Re-activating the tab will lazy
+ * reattach from the pane's persisted session id.
+ */
+export function unloadSession(tabId: string) {
+  const s = sessions.get(tabId);
+  if (!s) return;
+  logger.info("term", `unload pane=${tabId} pid=${s.pty.pid ?? "?"}`);
+  try {
+    saveScrollback(tabId, s.serialize.serialize());
+  } catch {
+    /* best-effort local snapshot; the agent journal remains authoritative */
+  }
+  s.disposed = true;
+  sessions.delete(tabId);
+  clearActivity(tabId);
+  controlListeners.delete(tabId);
+  clearHookState(tabId);
+  s.compositionGuardCleanup?.();
+  s.pasteDedupeCleanup?.();
+  s.linkClickBridgeCleanup?.();
+  try {
+    s.pty.detach();
+  } catch {
+    /* already detached */
+  }
+  try {
+    s.webgl?.dispose();
+  } catch {
+    /* already disposed */
+  }
+  s.term.dispose();
+  s.el.remove();
+}
+
+/**
+ * Acquire write control for a workspace using the live pane transports when
+ * available. This is stronger than only asking the workspace projection owner:
+ * a mounted remote pane already knows the exact HostTransport it is attached
+ * through, so it can update its own readOnly state immediately after the lease
+ * is acquired.
+ */
+export async function takeControlOfWorkspace(workspaceId: string): Promise<void> {
+  const store = useWorkspaceStore.getState();
+  const workspace = store.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+
+  const activeTab =
+    workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ??
+    workspace.tabs.find((tab) => !tab.file);
+  const activeTabPaneIds =
+    activeTab && !activeTab.file
+      ? new Set(collectLeafIds(activeTab.root))
+      : new Set<string>();
+  const activePaneId = activeTab && !activeTab.file ? activeTab.activePaneId : undefined;
+  const live = workspace.tabs
+    .filter((tab) => !tab.file)
+    .flatMap((tab) => collectLeafIds(tab.root).map((paneId) => ({ paneId })))
+    .map(({ paneId }) => ({ paneId, session: sessions.get(paneId) }))
+    .filter(
+      (item): item is { paneId: string; session: Session } =>
+        !!item.session && !item.session.disposed
+    )
+    .sort(
+      (a, b) =>
+        paneControlPriority(a.paneId, activePaneId, activeTabPaneIds) -
+        paneControlPriority(b.paneId, activePaneId, activeTabPaneIds)
+    );
+
+  if (live.length > 0) {
+    const attemptedConnections = new Set<string>();
+    const errors: string[] = [];
+    for (const { paneId, session } of live) {
+      const key = session.pty.controlConnectionId ?? `pane:${paneId}`;
+      if (attemptedConnections.has(key)) continue;
+      attemptedConnections.add(key);
+      try {
+        await session.pty.takeControl();
+        if (!session.pty.readOnly) return;
+        errors.push(`${paneId}: still read-only`);
+      } catch (error) {
+        const message = `${paneId}: ${String(error)}`;
+        errors.push(message);
+        logger.warn("pty", `take control failed ${message}`);
+      }
+    }
+    throw new Error(errors.join("; ") || "unable to take control");
+  }
+
+  const transport = transportForWorkspace(workspaceId);
+  if (!transport) throw new Error("workspace host is offline");
+  await transport.ensureControl(workspaceId, true);
+}
+
+function paneControlPriority(
+  paneId: string,
+  activePaneId: string | undefined,
+  activeTabPaneIds: Set<string>
+): number {
+  if (paneId === activePaneId) return 0;
+  if (activeTabPaneIds.has(paneId)) return 1;
+  return 2;
+}
+
+/** Drop cached xterms whose authoritative workspace/pane was removed elsewhere. */
+export function pruneSessionsToWorkspaceProjection(): void {
+  const live = new Set<string>();
+  for (const workspace of useWorkspaceStore.getState().workspaces) {
+    for (const tab of workspace.tabs) {
+      if (tab.file) continue;
+      for (const paneId of collectLeafIds(tab.root)) live.add(paneId);
+    }
+  }
+  for (const paneId of Array.from(sessions.keys())) {
+    if (!live.has(paneId)) disposeSession(paneId);
+  }
+}
+
 /** Re-fit the currently mounted terminal (call on window resize). */
 export function fitSession(tabId: string) {
   const s = sessions.get(tabId);
@@ -1233,7 +1453,7 @@ export function fitSession(tabId: string) {
     try {
       // Only resize when the proposed geometry actually differs, so we don't
       // emit redundant PTY resizes (SIGWINCH) that make TUIs repaint.
-      const dims = s.fit.proposeDimensions();
+      const dims = s.pty.readOnly ? undefined : s.fit.proposeDimensions();
       if (
         dims &&
         Number.isFinite(dims.cols) &&
@@ -1363,7 +1583,7 @@ export interface RunCommandResult {
  * Safety is enforced by the caller (the sidebar shows an approval gate before
  * this is ever invoked); this function does not decide whether to run.
  */
-export function runCommandInPane(
+export async function runCommandInPane(
   tabId: string,
   command: string,
   timeoutMs = 30000
@@ -1371,6 +1591,24 @@ export function runCommandInPane(
   const s = sessions.get(tabId);
   if (!s || s.disposed || s.exited) {
     return Promise.resolve({ output: "", exitCode: null, timedOut: false });
+  }
+  if (s.pty.readOnly) {
+    try {
+      await s.pty.takeControl();
+    } catch (error) {
+      return {
+        output: `Unable to take control of the remote workspace: ${String(error)}`,
+        exitCode: null,
+        timedOut: false,
+      };
+    }
+    if (s.pty.readOnly) {
+      return {
+        output: "Remote workspace is still read-only after taking control.",
+        exitCode: null,
+        timedOut: false,
+      };
+    }
   }
   const sentinel = makeSentinel();
   const decoder = new TextDecoder();
@@ -1471,8 +1709,13 @@ export function focusSession(tabId: string) {
 }
 
 /** Snapshot every live session to storage. */
-export function persistAllSessions() {
-  for (const [id, s] of sessions) persist(id, s);
+export async function persistAllSessions(): Promise<void> {
+  await Promise.all(
+    Array.from(sessions, ([id, session]) => persist(id, session))
+  );
+  await Promise.all(
+    Array.from(sessions.values(), (session) => session.pty.flushCheckpoint())
+  );
 }
 
 /**
@@ -1486,6 +1729,30 @@ export function persistAllSessions() {
 export async function getSessionCwd(paneId: string): Promise<string | null> {
   const s = sessions.get(paneId);
   if (!s || s.disposed) return null;
+  // OSC 7 describes the interactive shell/TUI's own cwd (including inside
+  // tmux) and is therefore more precise than probing the outer PTY child pid.
+  if (s.shellCwd?.trim()) return s.shellCwd;
+  const located = locatePane(paneId);
+  if (located?.leaf.cwd && located.leaf.cwd !== "~") {
+    return located.leaf.cwd;
+  }
+  const agentSessionId = s.pty.sessionId;
+  if (located && agentSessionId) {
+    try {
+      const response = await transportForWorkspace(located.workspaceId)?.request({
+        method: "get_cwd",
+        params: { session_id: agentSessionId },
+      });
+      if (response?.kind === "cwd" && response.data.cwd?.trim()) {
+        return response.data.cwd;
+      }
+    } catch {
+      if (isRemoteWorkspace(located.workspaceId)) return s.shellCwd ?? null;
+    }
+  }
+  if (located && isRemoteWorkspace(located.workspaceId)) {
+    return s.shellCwd ?? null;
+  }
   const pid = s.pty.pid;
   if (typeof pid === "number" && pid > 0) {
     try {
@@ -1619,14 +1886,18 @@ export async function snapshotAllAgents() {
     const entries = Array.from(sessions.entries());
     await Promise.all(
       entries.map(async ([paneId, s]) => {
-        if (s.disposed || s.exited) return;
-        const pid = s.pty.pid;
-        if (typeof pid !== "number" || pid <= 0) return;
+        if (s.disposed || s.exited || s.pty.readOnly) return;
+        const pid = s.pty.pid ?? 0;
+        if (pid <= 0 && !s.pty.sessionId) return;
 
         const located = locatePane(paneId);
         if (!located) return;
 
-        const tree = await paneProcessTree(pid);
+        const tree = await paneProcessTree(
+          pid,
+          located.workspaceId,
+          s.pty.sessionId
+        );
         const detected = detectAgent(tree);
         if (!detected) {
           // No agent running now — clear any stale remembered agent.
@@ -1647,7 +1918,12 @@ export async function snapshotAllAgents() {
         // Pass the detected agent pid so the backend pins the exact session
         // file THIS process holds open — several agents sharing one cwd each
         // resolve to their own id, instead of all racing to the newest file.
-        const sessionId = await agentSessionId(detected.kind, cwd, detected.pid);
+        const sessionId = await agentSessionId(
+          detected.kind,
+          cwd,
+          detected.pid,
+          located.workspaceId
+        );
         if (!sessionId) return;
 
         // Prefer the literal token the user typed (so an alias survives).
@@ -1676,7 +1952,7 @@ export async function snapshotAllAgents() {
         // AUTH_TOKEN, custom headers) replays correctly on resume even when we
         // never recovered the alias name. Skipping prefixes we don't care about
         // keeps the captured map small and avoids persisting unrelated env.
-        const rawEnv = await processEnv(detected.pid);
+        const rawEnv = await processEnv(detected.pid, located.workspaceId);
         const env = filterAgentEnv(rawEnv);
 
         const agent: PaneAgent = {
@@ -1758,7 +2034,7 @@ export function applyAppearance() {
       s.term.options.fontSize = fontSize;
       s.term.options.scrollback = scrollback;
       try {
-        s.fit.fit();
+        if (!s.pty.readOnly) s.fit.fit();
       } catch {
         /* not measurable while detached */
       }
@@ -1775,6 +2051,26 @@ export function applyAppearance() {
       }
     }
   });
+}
+
+/**
+ * Invalidate every live terminal's WebGL glyph atlas so the next frame
+ * re-rasterizes glyphs from scratch. xterm bakes glyphs into a GPU texture
+ * atlas that it clears-and-rebuilds when it fills up (by design); on the
+ * device-pixel-ratio changes below the cached atlas is addressed at the old
+ * scale, so stale/misaligned glyphs render until something forces a full
+ * redraw. Clearing the atlas here is that forced redraw. No-op on panes whose
+ * WebGL addon was disposed after a context loss (they use the DOM renderer).
+ */
+function clearAllTextureAtlases() {
+  for (const [, s] of sessions) {
+    if (s.disposed) continue;
+    try {
+      s.webgl?.clearTextureAtlas();
+    } catch {
+      /* addon disposed after context loss → DOM renderer, nothing to clear */
+    }
+  }
 }
 
 /** Push divider width/color from settings onto CSS variables. */
@@ -1802,17 +2098,39 @@ function applyUiFontVar() {
 // the user actually `cd`'d to, not the one the shell was originally spawned in.
 if (typeof window !== "undefined") {
   window.setInterval(() => {
-    persistAllSessions();
+    void persistAllSessions();
     void snapshotAllCwds();
     void snapshotAllAgents();
   }, 15_000);
   window.addEventListener("beforeunload", () => {
-    persistAllSessions();
+    void persistAllSessions();
     // beforeunload can't await — fire-and-forget; we rely on the 15s tick to
     // catch the recent state in practice.
     void snapshotAllCwds();
     void snapshotAllAgents();
+    void disconnectAllWorkspaceHosts();
   });
+
+  // Invalidate the WebGL glyph atlas whenever the device pixel ratio changes
+  // (window dragged between a Retina and non-Retina display, or an OS display-
+  // scale change). xterm's atlas is rasterized at the DPR that was live when a
+  // glyph was first cached; without this the GPU renderer keeps drawing those
+  // stale bitmaps at the wrong scale and glyphs render corrupted until an
+  // unrelated redraw heals them. `matchMedia('(resolution: Ndppx)')` fires only
+  // for the exact ratio it was created with, so re-arm after every change.
+  const watchDevicePixelRatio = () => {
+    const query = window.matchMedia(
+      `(resolution: ${window.devicePixelRatio}dppx)`
+    );
+    const onChange = () => {
+      clearAllTextureAtlases();
+      watchDevicePixelRatio();
+    };
+    // `once` so the stale query is discarded after it fires; a fresh one bound
+    // to the new ratio is created in onChange.
+    query.addEventListener("change", onChange, { once: true });
+  };
+  watchDevicePixelRatio();
 
   // Tauri's close event is async-capable. Intercept it once so we can flush the
   // current process cwd before the webview disappears; this closes the gap where
@@ -1827,7 +2145,7 @@ if (typeof window !== "undefined") {
         event.preventDefault();
         try {
           await Promise.all([snapshotAllCwds(), snapshotAllAgents()]);
-          persistAllSessions();
+          await persistAllSessions();
         } finally {
           await appWindow.destroy();
         }

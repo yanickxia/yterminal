@@ -4,6 +4,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { logger } from "./logger";
+import {
+  isRemoteWorkspace,
+  transportForWorkspace,
+} from "./workspace-sync";
 
 /** One changed file in a repo's working tree, as returned by `git_status`. */
 export interface GitFile {
@@ -31,7 +35,25 @@ const EMPTY: GitStatus = { isRepo: false, branch: "", root: "", files: [] };
  * non-repo status so the sidebar can render "not a repo" without try/catch at
  * the call site.
  */
-export async function gitStatus(dir: string): Promise<GitStatus> {
+export async function gitStatus(
+  dir: string,
+  workspaceId?: string
+): Promise<GitStatus> {
+  if (workspaceId) {
+    try {
+      const response = await transportForWorkspace(workspaceId)?.request({
+        method: "git_status",
+        params: { dir },
+      });
+      if (response?.kind === "git_status") return response.data.status;
+    } catch (e) {
+      if (isRemoteWorkspace(workspaceId)) {
+        logger.error("git", `remote git_status failed: ${String(e)}`);
+        return EMPTY;
+      }
+    }
+  }
+  if (workspaceId && isRemoteWorkspace(workspaceId)) return EMPTY;
   try {
     return await invoke<GitStatus>("git_status", { dir });
   } catch (e) {
@@ -45,7 +67,26 @@ export async function gitStatus(dir: string): Promise<GitStatus> {
  * repo-relative path from `gitStatus`. Never throws — resolves to an empty
  * string on error so the sidebar can render "No diff" without try/catch.
  */
-export async function gitDiff(dir: string, path: string): Promise<string> {
+export async function gitDiff(
+  dir: string,
+  path: string,
+  workspaceId?: string
+): Promise<string> {
+  if (workspaceId) {
+    try {
+      const response = await transportForWorkspace(workspaceId)?.request({
+        method: "git_diff",
+        params: { dir, path },
+      });
+      if (response?.kind === "text") return response.data.text;
+    } catch (e) {
+      if (isRemoteWorkspace(workspaceId)) {
+        logger.error("git", `remote git_diff failed: ${String(e)}`);
+        return "";
+      }
+    }
+  }
+  if (workspaceId && isRemoteWorkspace(workspaceId)) return "";
   try {
     return await invoke<string>("git_diff", { dir, path });
   } catch (e) {

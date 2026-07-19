@@ -49,8 +49,9 @@ export function splitPane(
   targetId: string,
   direction: "row" | "column",
   cwd: string
-): { tree: PaneTree; newLeafId: string } {
+): { tree: PaneTree; newLeafId: string; newSplitId: string } {
   const newLeaf = makeLeaf(cwd);
+  const newSplitId = uid("split");
 
   function recur(node: PaneTree, parent: SplitNode | null): PaneTree {
     if (node.type === "leaf") {
@@ -63,7 +64,7 @@ export function splitPane(
       }
       const split: SplitNode = {
         type: "split",
-        id: uid("split"),
+        id: newSplitId,
         direction,
         children: [node, newLeaf],
         sizes: [50, 50],
@@ -96,7 +97,7 @@ export function splitPane(
   }
 
   const tree = recur(root, null);
-  return { tree, newLeafId: newLeaf.id };
+  return { tree, newLeafId: newLeaf.id, newSplitId };
 }
 
 /**

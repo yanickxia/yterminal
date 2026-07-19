@@ -30,3 +30,27 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+  agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./agent-cli -> target"
+
+      - name: Build agent CLI
+        run: cargo build --manifest-path agent-cli/Cargo.toml --bin yterminal-agent
+
+      - name: Test agent CLI crate
+        run: cargo test --manifest-path agent-cli/Cargo.toml

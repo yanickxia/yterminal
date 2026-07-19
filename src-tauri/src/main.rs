@@ -1,15 +1,20 @@
-// yterminal Tauri backend.
-// PTY (shell spawn / IO) lives in `pty.rs`. We invoke `portable-pty` directly
-// instead of going through `tauri-plugin-pty`, which exposed an internal
-// session counter as `pty.pid` and broke `process_cwd` lookups.
+// yterminal Tauri backend. Live PTYs and shared workspace state are owned by
+// the per-user yterminal-agent; this binary hosts the GUI IPC proxy and can
+// also enter the agent's daemon/connect modes for packaged installations.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
+#[cfg(unix)]
+#[path = "bin/yterminal-agent.rs"]
+mod agent_cli_entry;
+#[cfg(unix)]
+mod agent_service;
+#[cfg(unix)]
+mod host_connection;
 mod logger;
-mod pty;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -93,8 +98,7 @@ fn write_config(contents: String) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     }
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+    std::fs::write(&path, contents).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 /// Absolute path to Claude Code's user settings file (`~/.claude/settings.json`).
@@ -107,11 +111,11 @@ fn claude_settings_path() -> Option<std::path::PathBuf> {
 const YT_HOOK_MARKER: &str = "yt-agent";
 
 /// The command string for a hook that reports `state`. Env-guarded on
-/// `YTERMINAL` (set by pty_spawn) so it emits nothing in any other terminal,
+/// `YTERMINAL` (set by the yterminal-agent session manager) so it emits nothing in any other terminal,
 /// and prints a Claude Code `terminalSequence` JSON whose value is an OSC 777
 /// notification carrying `notify;yt-agent;<state>`. Claude Code writes that
-/// sequence through its own PTY; yterminal parses it per-pane (see the OSC 777
-/// handler in terminal-manager.ts). No `jq` dependency — the state is literal.
+/// sequence through its own PTY; the agent and xterm both parse it per-pane.
+/// No `jq` dependency — the state is literal.
 fn yt_hook_command(state: &str) -> String {
     format!(
         "[ -n \"$YTERMINAL\" ] && printf '%s' '{{\"terminalSequence\":\"\\u001b]777;notify;yt-agent;{state}\\u0007\"}}'"
@@ -178,9 +182,7 @@ fn install_claude_hooks(enable: bool) -> Result<(), String> {
     ];
 
     let obj = root.as_object_mut().unwrap();
-    let hooks = obj
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
+    let hooks = obj.entry("hooks").or_insert_with(|| serde_json::json!({}));
     if !hooks.is_object() {
         *hooks = serde_json::json!({});
     }
@@ -213,8 +215,7 @@ fn install_claude_hooks(enable: bool) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(&root)
         .map_err(|e| format!("failed to serialize settings: {e}"))?;
-    std::fs::write(&path, pretty)
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+    std::fs::write(&path, pretty).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 /// Enumerate the monospace font families installed on this machine.
@@ -310,10 +311,9 @@ fn refresh_fonts() -> Vec<String> {
 ///
 /// Used by the frontend so a new tab can inherit the *actual* cwd of the
 /// active shell (not just the cwd it was spawned in), and so a restarted
-/// session can reopen in the directory where the user left off. Our `pty_spawn`
-/// returns the real OS child pid to the frontend, so this command always
-/// receives a queryable pid (the upstream `tauri-plugin-pty` returned an
-/// internal session counter and made this command effectively dead code).
+/// session can reopen in the directory where the user left off. Agent-owned
+/// panes use the owner-host `GetCwd(sessionId)` request; this Tauri command is
+/// retained as a local compatibility fallback for non-agent callers.
 ///
 /// macOS: shell out to `lsof -a -p PID -d cwd -F n`. `-F n` formats output as
 ///   `pPID\nfcwd\nn<path>` — we grab the `n`-prefixed line. `lsof` is
@@ -758,12 +758,9 @@ fn claude_session_file_for_pid(dir: &std::path::Path, pid: u32) -> Option<std::p
     if pid == 0 {
         return None;
     }
-    for open in process_open_files(pid) {
-        if open.starts_with(dir) && open.extension().map(|e| e == "jsonl").unwrap_or(false) {
-            return Some(open);
-        }
-    }
-    None
+    process_open_files(pid).into_iter().find(|open| {
+        open.starts_with(dir) && open.extension().map(|e| e == "jsonl").unwrap_or(false)
+    })
 }
 
 /// The absolute paths of regular files a process currently has open.
@@ -837,8 +834,9 @@ fn codex_session_id() -> Option<String> {
         .map(std::path::PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".codex")))?;
     let dir = base.join("sessions");
-    let (_, path) =
-        newest_file_recursive(&dir, &|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))?;
+    let (_, path) = newest_file_recursive(&dir, &|n| {
+        n.starts_with("rollout-") && n.ends_with(".jsonl")
+    })?;
     let stem = path.file_stem()?.to_string_lossy().into_owned();
     // trailing 36-char UUID after the last "rollout-<timestamp>-" boundary.
     extract_trailing_uuid(&stem)
@@ -923,16 +921,12 @@ fn db() -> Result<&'static Mutex<rusqlite::Connection>, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     }
-    let conn = rusqlite::Connection::open(&path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let conn =
+        rusqlite::Connection::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
     // WAL mode lets readers and writers proceed without blocking each other,
     // important if we later run background reads on the UI thread.
-    let _: Result<String, _> = conn.pragma_update_and_check(
-        None,
-        "journal_mode",
-        &"WAL",
-        |row| row.get::<_, String>(0),
-    );
+    let _: Result<String, _> =
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
     conn.execute(
         "CREATE TABLE IF NOT EXISTS scrollback (
             pane_id    TEXT PRIMARY KEY,
@@ -1011,10 +1005,7 @@ fn scrollback_prune(live_pane_ids: Vec<String>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
-    let placeholders = std::iter::repeat("?")
-        .take(live_pane_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = vec!["?"; live_pane_ids.len()].join(",");
     let sql = format!(
         "DELETE FROM scrollback WHERE pane_id NOT IN ({})",
         placeholders
@@ -1577,8 +1568,7 @@ fn anthropic_from_openai_messages(
                 });
                 if let Some(last) = out.last_mut() {
                     if last.get("role").and_then(|r| r.as_str()) == Some("user") {
-                        if let Some(blocks) =
-                            last.get_mut("content").and_then(|c| c.as_array_mut())
+                        if let Some(blocks) = last.get_mut("content").and_then(|c| c.as_array_mut())
                         {
                             blocks.push(block);
                             continue;
@@ -1951,7 +1941,10 @@ async fn ai_chat_stream(
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
     } else {
-        client.post(&url).bearer_auth(req.api_key.trim()).json(&body)
+        client
+            .post(&url)
+            .bearer_auth(req.api_key.trim())
+            .json(&body)
     };
     let resp = match request.send().await {
         Ok(r) => r,
@@ -2254,10 +2247,10 @@ fn verify_minisign(data: &[u8], sig_b64: &str) -> Result<(), String> {
 /// can exercise the decode/verify/tamper logic with a throwaway keypair (we
 /// don't hold the release private key that matches `UPDATER_PUBKEY_B64`).
 fn verify_minisign_with(data: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<(), String> {
-    let pk_pem = String::from_utf8(decode_b64(pubkey_b64)?)
-        .map_err(|e| format!("pubkey utf8: {e}"))?;
-    let sig_pem = String::from_utf8(decode_b64(sig_b64)?)
-        .map_err(|e| format!("signature utf8: {e}"))?;
+    let pk_pem =
+        String::from_utf8(decode_b64(pubkey_b64)?).map_err(|e| format!("pubkey utf8: {e}"))?;
+    let sig_pem =
+        String::from_utf8(decode_b64(sig_b64)?).map_err(|e| format!("signature utf8: {e}"))?;
     let pk = minisign_verify::PublicKey::decode(pk_pem.trim())
         .map_err(|e| format!("decode public key: {e}"))?;
     let sig = minisign_verify::Signature::decode(sig_pem.trim())
@@ -2348,7 +2341,10 @@ async fn install_deb_update(
     // absent, leave the verified file for a manual `sudo dpkg -i`.
     let pkexec = which_bin("pkexec");
     let Some(pkexec) = pkexec else {
-        logger::warn("updater", "pkexec not found; leaving verified deb for manual install");
+        logger::warn(
+            "updater",
+            "pkexec not found; leaving verified deb for manual install",
+        );
         return Ok(DebUpdateResult {
             installed: false,
             downloaded_path: path_str,
@@ -2459,8 +2455,8 @@ fn ensure_ime_env() {
         return; // no IME in play — leave a pure-ASCII setup untouched
     };
 
-    let cache_text = std::env::var_os("GTK_IM_MODULE_FILE")
-        .and_then(|p| std::fs::read_to_string(p).ok());
+    let cache_text =
+        std::env::var_os("GTK_IM_MODULE_FILE").and_then(|p| std::fs::read_to_string(p).ok());
 
     match plan_ime_module(detected, cache_text.as_deref()) {
         ImePlan::LeaveAlone => {
@@ -2613,13 +2609,22 @@ mod ime_tests {
     #[test]
     fn bundled_cache_routes_fcitx_via_xim() {
         // The AppImage case: native module absent, but xim is available.
-        assert_eq!(plan_ime_module("fcitx", Some(BUNDLED_CACHE)), ImePlan::UseXim);
-        assert_eq!(plan_ime_module("ibus", Some(BUNDLED_CACHE)), ImePlan::UseXim);
+        assert_eq!(
+            plan_ime_module("fcitx", Some(BUNDLED_CACHE)),
+            ImePlan::UseXim
+        );
+        assert_eq!(
+            plan_ime_module("ibus", Some(BUNDLED_CACHE)),
+            ImePlan::UseXim
+        );
     }
 
     #[test]
     fn native_cache_is_left_alone() {
-        assert_eq!(plan_ime_module("fcitx", Some(HOST_CACHE)), ImePlan::LeaveAlone);
+        assert_eq!(
+            plan_ime_module("fcitx", Some(HOST_CACHE)),
+            ImePlan::LeaveAlone
+        );
     }
 
     #[test]
@@ -2824,14 +2829,41 @@ mod deb_verify_tests {
 }
 
 fn main() {
+    #[cfg(unix)]
+    {
+        let command = std::env::args().nth(1);
+        if command.as_deref() == Some("--agent-daemon") {
+            let runtime = tokio::runtime::Runtime::new().expect("create yterminal-agent runtime");
+            let result = runtime.block_on(yterminal::agent::run_daemon(None, None));
+            if let Err(error) = result {
+                eprintln!("yterminal-agent: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        if command
+            .as_deref()
+            .is_some_and(agent_cli_entry::handles_command)
+        {
+            let runtime =
+                tokio::runtime::Runtime::new().expect("create yterminal-agent CLI runtime");
+            if let Err(error) = runtime.block_on(agent_cli_entry::run()) {
+                eprintln!("yterminal-agent: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     logger::info(
         "main",
         &format!("yterminal {} starting", env!("CARGO_PKG_VERSION")),
     );
     #[cfg(target_os = "linux")]
     ensure_ime_env();
-    tauri::Builder::default()
-        .manage(pty::PtyState::default())
+    let builder = tauri::Builder::default();
+    #[cfg(unix)]
+    let builder = builder.manage(host_connection::HostConnectionState::default());
+    builder
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -2872,12 +2904,22 @@ fn main() {
             logger::log_dir_path,
             logger::clear_logs,
             logger::export_logs,
-            pty::pty_spawn,
-            pty::pty_read,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_kill,
-            pty::pty_exitstatus,
+            #[cfg(unix)]
+            host_connection::host_connect,
+            #[cfg(unix)]
+            host_connection::host_request,
+            #[cfg(unix)]
+            host_connection::host_notify,
+            #[cfg(unix)]
+            host_connection::host_disconnect,
+            #[cfg(unix)]
+            agent_service::agent_service_status,
+            #[cfg(unix)]
+            agent_service::install_agent_service,
+            #[cfg(unix)]
+            agent_service::start_agent_service,
+            #[cfg(unix)]
+            agent_service::hot_restart_agent_service,
             open_devtools
         ])
         .run(tauri::generate_context!())
