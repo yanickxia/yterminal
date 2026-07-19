@@ -54,6 +54,36 @@ so scrollback and full-screen TUIs continue without intentionally respawning a
 shell. Git status, cwd/process detection and the text file viewer execute on the
 workspace's owner host rather than accidentally reading the client machine.
 
+### Agent CLI diagnostics
+
+The installed agent also exposes health and end-to-end checks:
+
+```bash
+yterminal-agent doctor
+yterminal-agent smoke --json
+yterminal-agent verify --json
+yterminal-agent control-hold WORKSPACE_ID --force --timeout 30000
+yterminal-agent hot-restart --json
+```
+
+`verify` uses isolated temporary workspaces to exercise controller takeover,
+all typed workspace mutations, PTY attach/input/resize/kill, checkpoint and
+incremental replay, per-pane scrollback inheritance across a restart, plus
+cwd/process/Git/file services. It cleans its temporary workspaces and sessions
+even when a check fails. Pass `--socket PATH` to test an isolated daemon.
+`control-hold` keeps one client-scoped lease alive with heartbeats; the shorter
+`control` command only probes acquisition and releases the lease when the
+command exits. Run `yterminal-agent help verify` for details.
+
+`hot-restart` upgrades the agent **without closing your workspaces**. It
+restarts the managed daemon even while shells are live (unlike `shutdown`, which
+is gated on zero sessions). The shell processes do restart, but every pane
+inherits its predecessor's checkpointed scrollback, so a reconnecting client
+replays the prior screen; the GUI reconnects and re-spawns automatically and
+coding agents resume. Run it on the daemon's machine (or over SSH for a remote
+host); it manages the installed service, so it cannot target a custom `--socket`
+daemon.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |

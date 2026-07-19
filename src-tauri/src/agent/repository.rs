@@ -1,5 +1,5 @@
 use crate::workspace::{WorkspaceDocument, WorkspaceOperation};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -54,6 +54,12 @@ enum JournalOp {
         session_id: String,
         reply: oneshot::Sender<Result<Vec<PersistedOutputChunk>, String>>,
     },
+    LoadPaneInheritance {
+        workspace_id: String,
+        pane_id: String,
+        exclude_session_id: String,
+        reply: oneshot::Sender<Result<Option<PaneInheritance>, String>>,
+    },
     PurgeSessions {
         session_ids: Vec<String>,
         reply: oneshot::Sender<Result<(), String>>,
@@ -73,6 +79,16 @@ enum JournalOp {
 pub struct PersistedOutputChunk {
     pub start_seq: u64,
     pub data: Vec<u8>,
+}
+
+/// The scrollback a freshly respawned pane inherits from its predecessor after a
+/// hot-restart: the previous session's checkpoint ANSI and the sequence it
+/// covered through. Seeding a new session with this makes an `after_seq=None`
+/// attach replay the prior screen before live output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneInheritance {
+    pub through_seq: u64,
+    pub ansi: Vec<u8>,
 }
 
 pub struct AgentRepository {
@@ -244,6 +260,29 @@ impl AgentRepository {
             .map_err(|_| "journal replay reader stopped".to_string())?
     }
 
+    /// The most recent checkpoint for `(workspace_id, pane_id)` belonging to any
+    /// session other than `exclude_session_id`. Used at spawn time so a pane
+    /// respawned after a hot-restart inherits its predecessor's scrollback.
+    pub async fn load_pane_inheritance(
+        &self,
+        workspace_id: String,
+        pane_id: String,
+        exclude_session_id: String,
+    ) -> Result<Option<PaneInheritance>, String> {
+        let (reply, wait) = oneshot::channel();
+        self.journal_tx
+            .send(JournalOp::LoadPaneInheritance {
+                workspace_id,
+                pane_id,
+                exclude_session_id,
+                reply,
+            })
+            .await
+            .map_err(|_| "journal writer stopped".to_string())?;
+        wait.await
+            .map_err(|_| "journal inheritance reader stopped".to_string())?
+    }
+
     pub async fn purge_sessions(&self, session_ids: Vec<String>) -> Result<(), String> {
         if session_ids.is_empty() {
             return Ok(());
@@ -376,7 +415,7 @@ impl AgentRepository {
             .lock()
             .map_err(|e| WorkspaceRepoError::Database(e.to_string()))?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| WorkspaceRepoError::Database(e.to_string()))?;
         for workspace in &mut workspaces {
             workspace.validate().map_err(WorkspaceRepoError::Invalid)?;
@@ -454,8 +493,16 @@ impl AgentRepository {
             .conn
             .lock()
             .map_err(|e| WorkspaceRepoError::Database(e.to_string()))?;
+        // BEGIN IMMEDIATE, not the default DEFERRED. This is a read-modify-write
+        // (load_workspace then UPDATE). A deferred transaction takes the write
+        // lock only at the UPDATE, and in WAL mode a read→write upgrade that
+        // collides with the journal writer's connection returns SQLITE_BUSY
+        // *without* honoring busy_timeout — surfacing as "database is locked"
+        // and (historically) a silently dropped BindSession on a busy daemon.
+        // Acquiring the write lock up front lets busy_timeout wait out the
+        // journal writer's short transaction instead.
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| WorkspaceRepoError::Database(e.to_string()))?;
         let mut workspace = load_workspace(&tx, workspace_id)?;
         if let Some(expected) = base_revision {
@@ -656,6 +703,73 @@ fn journal_writer(path: PathBuf, mut rx: mpsc::Receiver<JournalOp>) {
                         chunks.push(row.map_err(|e| e.to_string())?);
                     }
                     Ok(chunks)
+                })();
+                let _ = reply.send(result);
+            }
+            JournalOp::LoadPaneInheritance {
+                workspace_id,
+                pane_id,
+                exclude_session_id,
+                reply,
+            } => {
+                let result = (|| -> Result<Option<PaneInheritance>, String> {
+                    // Newest prior session for this pane, excluding the one being
+                    // spawned. `updated_at DESC` picks the last-active predecessor.
+                    let predecessor: Option<(String, u64)> = conn
+                        .query_row(
+                            "SELECT id, head_seq FROM sessions
+                             WHERE workspace_id=?1 AND pane_id=?2 AND id<>?3
+                             ORDER BY updated_at DESC LIMIT 1",
+                            params![workspace_id, pane_id, exclude_session_id],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    let Some((session_id, head_seq)) = predecessor else {
+                        return Ok(None);
+                    };
+                    // The predecessor's full screen = its checkpoint (a serialized
+                    // screen at `through_seq`) with every output byte after that
+                    // replayed on top. Concatenating the raw journal tail onto the
+                    // checkpoint ANSI reproduces the exact scrollback up to the
+                    // restart moment — not just the last 15s checkpoint.
+                    let checkpoint: Option<(u64, Vec<u8>)> = conn
+                        .query_row(
+                            "SELECT through_seq, ansi FROM checkpoints WHERE session_id=?1",
+                            params![session_id],
+                            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Vec<u8>>(1)?)),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    let checkpoint_seq = checkpoint.as_ref().map(|(seq, _)| *seq).unwrap_or(0);
+                    let mut ansi = checkpoint.map(|(_, ansi)| ansi).unwrap_or_default();
+                    let mut statement = conn
+                        .prepare(
+                            "SELECT start_seq, data FROM output_chunks
+                             WHERE session_id=?1 AND end_seq > ?2 ORDER BY start_seq",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let rows = statement
+                        .query_map(params![session_id, checkpoint_seq as i64], |row| {
+                            Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Vec<u8>>(1)?))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    for row in rows {
+                        let (start_seq, data) = row.map_err(|e| e.to_string())?;
+                        // A chunk may straddle the checkpoint boundary; keep only
+                        // the bytes after it so the checkpoint isn't double-counted.
+                        let skip = checkpoint_seq.saturating_sub(start_seq) as usize;
+                        if skip < data.len() {
+                            ansi.extend_from_slice(&data[skip..]);
+                        }
+                    }
+                    if ansi.is_empty() {
+                        return Ok(None);
+                    }
+                    Ok(Some(PaneInheritance {
+                        through_seq: head_seq,
+                        ansi,
+                    }))
                 })();
                 let _ = reply.send(result);
             }
@@ -972,6 +1086,77 @@ mod tests {
                 actual: 2
             })
         ));
+        drop(repo);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[tokio::test]
+    async fn pane_inheritance_picks_newest_prior_checkpoint_excluding_current() {
+        let path = temp_db();
+        let repo = AgentRepository::open(&path).unwrap();
+        // Two prior sessions on the same pane; the newer one (by updated_at)
+        // must win. A third session on a different pane must be ignored.
+        repo.record_session_spawn("old", "w", "p", Some(1), Some("/tmp"), 80, 24)
+            .unwrap();
+        repo.enqueue_output("old".into(), 0, b"OLD-BODY".to_vec())
+            .unwrap();
+        repo.save_checkpoint("old".into(), 8, b"OLD-SCREEN".to_vec())
+            .await
+            .unwrap();
+        repo.record_session_spawn("new", "w", "p", Some(2), Some("/tmp"), 80, 24)
+            .unwrap();
+        // NEW: checkpoint through seq 9, then 6 more live bytes journalled after
+        // it. Inheritance must return checkpoint ++ tail and head_seq = 15.
+        repo.save_checkpoint("new".into(), 9, b"NEW-SCREEN".to_vec())
+            .await
+            .unwrap();
+        repo.enqueue_output("new".into(), 9, b" AFTER!".to_vec())
+            .unwrap();
+        // Force the async append (and its own head_seq/updated_at UPDATE) to be
+        // flushed before the external UPDATE below, so our updated_at bump wins.
+        repo.load_output_chunks("new".into()).await.unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "UPDATE sessions SET updated_at = updated_at + 1000, head_seq = 16 WHERE id='new'",
+                [],
+            )
+            .unwrap();
+        }
+        repo.record_session_spawn("other-pane", "w", "q", Some(3), Some("/tmp"), 80, 24)
+            .unwrap();
+        repo.save_checkpoint("other-pane".into(), 3, b"OTHER".to_vec())
+            .await
+            .unwrap();
+
+        // A brand-new session on pane p, excluding itself, inherits NEW's full
+        // screen: checkpoint ANSI followed by the post-checkpoint journal tail.
+        let inherited = repo
+            .load_pane_inheritance("w".into(), "p".into(), "fresh".into())
+            .await
+            .unwrap()
+            .expect("pane p should inherit");
+        assert_eq!(inherited.through_seq, 16);
+        assert_eq!(inherited.ansi, b"NEW-SCREEN AFTER!".to_vec());
+
+        // Excluding the newest leaves the older predecessor (checkpoint only;
+        // its journal tail was pruned by its own checkpoint).
+        let inherited_old = repo
+            .load_pane_inheritance("w".into(), "p".into(), "new".into())
+            .await
+            .unwrap()
+            .expect("pane p should fall back to old");
+        assert_eq!(inherited_old.ansi, b"OLD-SCREEN".to_vec());
+
+        // A pane with no prior session returns None.
+        let none = repo
+            .load_pane_inheritance("w".into(), "absent".into(), "fresh".into())
+            .await
+            .unwrap();
+        assert_eq!(none, None);
+
         drop(repo);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));

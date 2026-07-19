@@ -8,6 +8,9 @@
 )]
 
 #[cfg(unix)]
+#[path = "bin/yterminal-agent.rs"]
+mod agent_cli_entry;
+#[cfg(unix)]
 mod agent_service;
 #[cfg(unix)]
 mod host_connection;
@@ -2829,24 +2832,25 @@ fn main() {
     #[cfg(unix)]
     {
         let command = std::env::args().nth(1);
-        if matches!(
-            command.as_deref(),
-            Some("--agent-daemon" | "daemon" | "connect")
-        ) {
+        if command.as_deref() == Some("--agent-daemon") {
             let runtime = tokio::runtime::Runtime::new().expect("create yterminal-agent runtime");
-            let result = if command.as_deref() == Some("connect") {
-                runtime.block_on(yterminal::agent::connect_stdio(None))
-            } else {
-                runtime.block_on(yterminal::agent::run_daemon(None, None))
-            };
+            let result = runtime.block_on(yterminal::agent::run_daemon(None, None));
             if let Err(error) = result {
                 eprintln!("yterminal-agent: {error}");
                 std::process::exit(1);
             }
             return;
         }
-        if matches!(command.as_deref(), Some("version" | "--version" | "-V")) {
-            println!("yterminal-agent {}", env!("CARGO_PKG_VERSION"));
+        if command
+            .as_deref()
+            .is_some_and(agent_cli_entry::handles_command)
+        {
+            let runtime =
+                tokio::runtime::Runtime::new().expect("create yterminal-agent CLI runtime");
+            if let Err(error) = runtime.block_on(agent_cli_entry::run()) {
+                eprintln!("yterminal-agent: {error}");
+                std::process::exit(1);
+            }
             return;
         }
     }

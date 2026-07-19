@@ -72,6 +72,8 @@ ssh "$target" "'$remote_bin' status"
 ssh "$target" "'$remote_bin' ping"
 ssh "$target" "'$remote_bin' sessions --json"
 ssh "$target" "'$remote_bin' smoke --json"
+ssh "$target" "'$remote_bin' verify --json --timeout 15000"
+ssh "$target" "'$remote_bin' hot-restart --json --timeout 30000"
 ssh "$target" "'$remote_bin' status"
 ssh "$target" "'$remote_bin' sessions --json"
 

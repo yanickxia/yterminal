@@ -391,6 +391,53 @@ impl SessionManager {
                 req.rows,
             )
             .map_err(|e| RemoteError::new("database_failed", e))?;
+
+        // Hot-restart inheritance: a pane respawned after the daemon restarted
+        // gets a brand-new session id with an empty journal, so a fresh attach
+        // (reopened GUI, remote reconnect, CLI) would see no scrollback. Seed
+        // this session with the predecessor's persisted checkpoint so an
+        // `after_seq=None` replay renders the prior screen, then sequences live
+        // output after it. Best-effort: a read failure just yields empty
+        // scrollback rather than blocking the spawn. Runs before the output
+        // consumer task starts, so head_seq cannot have advanced yet.
+        match self
+            .inner
+            .repository
+            .load_pane_inheritance(req.workspace_id.clone(), req.pane_id.clone(), id.clone())
+            .await
+        {
+            Ok(Some(inherited)) if !inherited.ansi.is_empty() => {
+                let mut data = session.data.lock().await;
+                if data.head_seq == 0 && data.journal.is_empty() {
+                    data.head_seq = inherited.through_seq;
+                    // Persist a checkpoint for THIS session at the inherited
+                    // base so a second restart before any new checkpoint still
+                    // inherits the same screen.
+                    if let Err(error) = self
+                        .inner
+                        .repository
+                        .save_checkpoint(id.clone(), inherited.through_seq, inherited.ansi.clone())
+                        .await
+                    {
+                        eprintln!(
+                            "yterminal-agent inherit checkpoint persist failed session={id}: {error}"
+                        );
+                    }
+                    data.checkpoint = Some(Checkpoint {
+                        through_seq: inherited.through_seq,
+                        ansi: inherited.ansi,
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "yterminal-agent inherit checkpoint read failed pane={}: {error}",
+                    req.pane_id
+                );
+            }
+        }
+
         self.inner
             .sessions
             .write()

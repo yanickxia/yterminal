@@ -151,6 +151,26 @@ impl AgentState {
         Ok(())
     }
 
+    /// Return whether `client_id` currently owns a live lease for a workspace.
+    /// AttachSession intentionally carries no lease epoch because read-only
+    /// watchers are allowed to attach. When the attaching client is the owner,
+    /// however, its requested grid can safely become the canonical PTY size;
+    /// watchers must never resize it.
+    async fn refresh_control_if_owner(&self, client_id: &str, workspace_id: &str) -> bool {
+        let mut controls = self.controls.lock().await;
+        let now = Instant::now();
+        let Some(lease) = controls.get_mut(workspace_id) else {
+            return false;
+        };
+        if lease.controller_client_id != client_id
+            || now.duration_since(lease.heartbeat_at) >= CONTROL_TTL
+        {
+            return false;
+        }
+        lease.heartbeat_at = now;
+        true
+    }
+
     async fn release_control(
         &self,
         client_id: &str,
@@ -765,26 +785,49 @@ async fn handle_request(
                     env,
                 })
                 .await?;
-            if let Ok(workspace) = state.repository.apply_workspace_operation_internal(
+            // BindSession must not be silently dropped: a spawned-but-unbound
+            // session leaves the workspace tree without its session id, so
+            // clients (and verify's spawn-session-bind check) see no session on
+            // the pane. The repository now uses BEGIN IMMEDIATE so a busy
+            // journal writer no longer forces a SQLITE_BUSY here; if binding
+            // still fails, surface it rather than returning a broken session.
+            match state.repository.apply_workspace_operation_internal(
                 &workspace_id,
                 WorkspaceOperation::BindSession {
-                    pane_id,
+                    pane_id: pane_id.clone(),
                     session_id: session_id.clone(),
                 },
             ) {
-                state
-                    .broadcast(WireMessage::Event(EventFrame {
-                        body: EventBody::WorkspaceChanged { workspace },
-                    }))
-                    .await;
+                Ok(workspace) => {
+                    state
+                        .broadcast(WireMessage::Event(EventFrame {
+                            body: EventBody::WorkspaceChanged { workspace },
+                        }))
+                        .await;
+                }
+                Err(error) => {
+                    let _ = state.sessions.kill(&session_id).await;
+                    return Err(RemoteError::new(
+                        "bind_session_failed",
+                        format!("spawned session could not bind to pane {pane_id}: {error}"),
+                    ));
+                }
             }
             Ok(ResponseBody::SessionSpawned { session_id, pid })
         }
         RequestBody::AttachSession {
             session_id,
             after_seq,
-            ..
+            cols,
+            rows,
         } => {
+            let workspace_id = state.sessions.workspace_id(&session_id).await?;
+            if state
+                .refresh_control_if_owner(client_id, &workspace_id)
+                .await
+            {
+                state.sessions.resize(&session_id, cols, rows).await?;
+            }
             state
                 .sessions
                 .attach(client_id, &session_id, after_seq, outgoing.clone())
@@ -1349,6 +1392,16 @@ mod tests {
             .acquire_control("controller-a", "workspace-test", false)
             .await
             .unwrap();
+        assert!(
+            state
+                .refresh_control_if_owner("controller-a", "workspace-test")
+                .await
+        );
+        assert!(
+            !state
+                .refresh_control_if_owner("watcher-b", "workspace-test")
+                .await
+        );
         let held = state
             .acquire_control("watcher-b", "workspace-test", false)
             .await
