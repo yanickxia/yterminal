@@ -2040,6 +2040,26 @@ export function applyAppearance() {
   });
 }
 
+/**
+ * Invalidate every live terminal's WebGL glyph atlas so the next frame
+ * re-rasterizes glyphs from scratch. xterm bakes glyphs into a GPU texture
+ * atlas that it clears-and-rebuilds when it fills up (by design); on the
+ * device-pixel-ratio changes below the cached atlas is addressed at the old
+ * scale, so stale/misaligned glyphs render until something forces a full
+ * redraw. Clearing the atlas here is that forced redraw. No-op on panes whose
+ * WebGL addon was disposed after a context loss (they use the DOM renderer).
+ */
+function clearAllTextureAtlases() {
+  for (const [, s] of sessions) {
+    if (s.disposed) continue;
+    try {
+      s.webgl?.clearTextureAtlas();
+    } catch {
+      /* addon disposed after context loss → DOM renderer, nothing to clear */
+    }
+  }
+}
+
 /** Push divider width/color from settings onto CSS variables. */
 function applyDividerVars() {
   if (typeof document === "undefined") return;
@@ -2077,6 +2097,27 @@ if (typeof window !== "undefined") {
     void snapshotAllAgents();
     void disconnectAllWorkspaceHosts();
   });
+
+  // Invalidate the WebGL glyph atlas whenever the device pixel ratio changes
+  // (window dragged between a Retina and non-Retina display, or an OS display-
+  // scale change). xterm's atlas is rasterized at the DPR that was live when a
+  // glyph was first cached; without this the GPU renderer keeps drawing those
+  // stale bitmaps at the wrong scale and glyphs render corrupted until an
+  // unrelated redraw heals them. `matchMedia('(resolution: Ndppx)')` fires only
+  // for the exact ratio it was created with, so re-arm after every change.
+  const watchDevicePixelRatio = () => {
+    const query = window.matchMedia(
+      `(resolution: ${window.devicePixelRatio}dppx)`
+    );
+    const onChange = () => {
+      clearAllTextureAtlases();
+      watchDevicePixelRatio();
+    };
+    // `once` so the stale query is discarded after it fires; a fresh one bound
+    // to the new ratio is created in onChange.
+    query.addEventListener("change", onChange, { once: true });
+  };
+  watchDevicePixelRatio();
 
   // Tauri's close event is async-capable. Intercept it once so we can flush the
   // current process cwd before the webview disappears; this closes the gap where
