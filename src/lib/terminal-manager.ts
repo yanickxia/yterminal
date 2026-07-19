@@ -1131,6 +1131,24 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       });
       s.term.loadAddon(webgl);
       s.webgl = webgl;
+      // xterm rasterizes glyphs into the WebGL atlas at open() time. On macOS
+      // WKWebView the configured terminal font is loaded asynchronously by
+      // CoreText, so if it isn't in the FontFaceSet yet the atlas gets baked
+      // with the fallback font — text then renders in the wrong glyphs until an
+      // unrelated repaint (e.g. selecting it) heals it. Mirror applyAppearance:
+      // once the real font is loaded, invalidate the atlas so it re-rasterizes.
+      // Guarded to this addon instance so a dispose/context-loss in between is a
+      // no-op. Linux webkit2gtk resolves fonts eagerly, so this is a near no-op
+      // there; it fixes the macOS-only "weird font, fixed by selecting" bug.
+      const { font, fontSize } = currentAppearance();
+      void ensureTerminalFontLoaded(font.stack, fontSize).then(() => {
+        if (s.disposed || s.webgl !== webgl) return;
+        try {
+          webgl.clearTextureAtlas();
+        } catch {
+          /* addon disposed after context loss → DOM renderer, nothing to clear */
+        }
+      });
     } catch (e) {
       logger.warn("term", `webgl unavailable pane=${tabId}: ${String(e)}`);
     }

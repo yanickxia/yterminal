@@ -93,9 +93,17 @@ export function queueCreateWorkspace(workspace: Workspace): void {
   // Startup migration imports the complete local snapshot after seeding; any
   // mutation before start is already represented in that snapshot.
   if (!startPromise) return;
+  const hostId = workspace.hostId ?? LOCAL_HOST_ID;
+  // Claim ownership SYNCHRONOUSLY, before the async create round-trips. The
+  // new workspace's first pane constructs its AgentPty the moment the tab
+  // renders (same tick) and immediately resolves its transport via
+  // `transportForWorkspace` → `owners.get(id)`. If ownership were only set
+  // inside the enqueued callback below (next tick), that lookup would miss and
+  // fall back to LOCAL — binding a remote pane to the local daemon, so its
+  // first take-control hit the wrong agent (`workspace_not_found`) until a
+  // restart rebuilt the session with ownership already in place.
+  owners.set(workspace.id, hostId);
   enqueue(workspace.id, async () => {
-    const hostId = workspace.hostId ?? LOCAL_HOST_ID;
-    owners.set(workspace.id, hostId);
     try {
       const connection = await requireHost(hostId);
       const response = await connection.request({

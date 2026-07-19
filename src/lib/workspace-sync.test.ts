@@ -81,6 +81,8 @@ vi.mock("./host-transport", () => {
 import {
   configureWorkspaceProjection,
   flushWorkspaceOperations,
+  hostIdForWorkspace,
+  queueCreateWorkspace,
   queueWorkspaceOperation,
   startWorkspaceSync,
 } from "./workspace-sync";
@@ -121,5 +123,36 @@ describe("workspace optimistic projection", () => {
       "old-tab",
       "new-tab",
     ]);
+  });
+
+  it("owns a newly created workspace synchronously so its first pane routes to the right host", async () => {
+    configureWorkspaceProjection({
+      replaceHost: () => {},
+      upsert: () => {},
+      remove: () => {},
+    });
+    await startWorkspaceSync([]);
+
+    // A workspace created on a remote host must resolve to that host
+    // immediately — before the create request round-trips. Otherwise the
+    // pane's session (constructed synchronously when the tab renders) reads a
+    // still-empty owner map, falls back to LOCAL, and binds to the wrong
+    // daemon — the "new remote tab can't take control until restart" bug.
+    queueCreateWorkspace({
+      id: "remote-ws",
+      name: "workspace",
+      hostId: "ssh-host",
+      tabs: [
+        {
+          id: "t",
+          name: "shell",
+          root: { type: "leaf", id: "p", cwd: "~" },
+          activePaneId: "p",
+        },
+      ],
+      activeTabId: "t",
+    } as never);
+
+    expect(hostIdForWorkspace("remote-ws")).toBe("ssh-host");
   });
 });
