@@ -2003,6 +2003,15 @@ export async function snapshotAllAgents() {
  * arrives. Linux webkit2gtk resolves fonts eagerly via fontconfig, so this is
  * a near-no-op there. `document.fonts.load` resolves (does not reject) for
  * missing families, so an unknown/hand-edited font id won't stall the flow.
+ *
+ * Loads all four faces xterm can render — normal, bold (`\e[1m`, ubiquitous
+ * in `ls`/prompts), italic (`\e[3m`), and bold-italic — since each is a
+ * SEPARATE font face. Loading only the normal weight left bold/italic cells
+ * rasterized from unloaded faces when the atlas baked, so they rendered in the
+ * wrong glyphs until a repaint (selecting the text) healed them — the reported
+ * "bold/italic rows look like a different font, fixed by selecting" bug.
+ * `fonts.ready` then lets any load xterm itself kicked off settle before we
+ * invalidate.
  */
 function ensureTerminalFontLoaded(
   stack: string,
@@ -2016,8 +2025,21 @@ function ensureTerminalFontLoaded(
     ?.trim()
     .replace(/^["']|["']$/g, "");
   if (!first) return Promise.resolve();
-  return document.fonts
-    .load(`${fontSize}px "${first}"`)
+  const quoted = `"${first}"`;
+  // Preload all four style/weight faces xterm can render: normal, bold
+  // (`\e[1m`), italic (`\e[3m`), and bold-italic. Each is a SEPARATE font face
+  // resolved asynchronously by CoreText on macOS WKWebView; any face not yet
+  // loaded when the atlas bakes renders in the wrong glyphs until a repaint
+  // (selecting the text) heals it. `document.fonts.load` resolves (never
+  // rejects) for a face a family doesn't provide, so listing all four is safe
+  // for fonts that only ship a regular weight.
+  return Promise.all([
+    document.fonts.load(`${fontSize}px ${quoted}`),
+    document.fonts.load(`bold ${fontSize}px ${quoted}`),
+    document.fonts.load(`italic ${fontSize}px ${quoted}`),
+    document.fonts.load(`italic bold ${fontSize}px ${quoted}`),
+  ])
+    .then(() => document.fonts.ready)
     .then(
       () => undefined,
       () => undefined
