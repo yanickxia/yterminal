@@ -14,7 +14,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { ensureTerminalFontLoaded } from "./terminal-font";
 import { clearTextureAtlases } from "./webgl-atlas";
-import { installWebglGlyphCacheStabilizer } from "./webgl-glyph-cache";
+import { installWebglGlyphAtlas } from "./webgl-glyph-atlas";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
@@ -326,8 +326,8 @@ interface Session {
    * WebGL is unavailable (headless / no GPU) — xterm then uses the DOM renderer.
    */
   webgl?: WebglAddon;
-  /** Cleanup for the transparent, background-independent WebGL glyph cache. */
-  glyphCacheStabilizerCleanup?: () => void;
+  /** Cleanup for yterminal's WebGL glyph atlas rasterization policy. */
+  glyphAtlasCleanup?: () => void;
   /**
    * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
    * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
@@ -1153,8 +1153,8 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
-        s.glyphCacheStabilizerCleanup?.();
-        s.glyphCacheStabilizerCleanup = undefined;
+        s.glyphAtlasCleanup?.();
+        s.glyphAtlasCleanup = undefined;
         try {
           webgl.dispose();
         } catch {
@@ -1164,7 +1164,7 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       });
       s.term.loadAddon(webgl);
       s.webgl = webgl;
-      s.glyphCacheStabilizerCleanup = installWebglGlyphCacheStabilizer(
+      s.glyphAtlasCleanup = installWebglGlyphAtlas(
         webgl,
         clearAllTextureAtlases
       );
@@ -1373,7 +1373,7 @@ export function disposeSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
-  s.glyphCacheStabilizerCleanup?.();
+  s.glyphAtlasCleanup?.();
   try {
     s.pty.kill();
   } catch {
@@ -1414,6 +1414,7 @@ export function unloadSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
+  s.glyphAtlasCleanup?.();
   try {
     s.pty.detach();
   } catch {
