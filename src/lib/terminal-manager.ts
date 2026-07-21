@@ -14,6 +14,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { ensureTerminalFontLoaded } from "./terminal-font";
 import { clearTextureAtlases } from "./webgl-atlas";
+import { installWebglGlyphCacheStabilizer } from "./webgl-glyph-cache";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
@@ -325,6 +326,8 @@ interface Session {
    * WebGL is unavailable (headless / no GPU) — xterm then uses the DOM renderer.
    */
   webgl?: WebglAddon;
+  /** Cleanup for the transparent, background-independent WebGL glyph cache. */
+  glyphCacheStabilizerCleanup?: () => void;
   /**
    * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
    * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
@@ -1150,6 +1153,8 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
+        s.glyphCacheStabilizerCleanup?.();
+        s.glyphCacheStabilizerCleanup = undefined;
         try {
           webgl.dispose();
         } catch {
@@ -1159,6 +1164,10 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       });
       s.term.loadAddon(webgl);
       s.webgl = webgl;
+      s.glyphCacheStabilizerCleanup = installWebglGlyphCacheStabilizer(
+        webgl,
+        clearAllTextureAtlases
+      );
       // xterm measures and rasterizes synchronously, while macOS CoreText can
       // resolve local faces asynchronously. Startup normally preloads them;
       // this second guard also covers a pane opened during a live font change.
@@ -1364,6 +1373,7 @@ export function disposeSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
+  s.glyphCacheStabilizerCleanup?.();
   try {
     s.pty.kill();
   } catch {
