@@ -1294,14 +1294,20 @@ fn git_status(dir: String) -> Result<GitStatus, String> {
 ///     case here), so we read stdout directly instead of via `run_git` (which
 ///     treats a non-zero exit as an error).
 ///   * nothing to show → empty string (the frontend renders "No diff").
-/// `path` is repo-relative (as returned by `git_status`); we run git with `-C
-/// dir` so the relative path resolves against the same worktree.
+/// `path` is repo-root-relative (as returned by `git_status`). `dir` may be any
+/// directory inside the worktree, so resolve the top level before applying the
+/// pathspec; otherwise a terminal in a subdirectory would make Git look for
+/// `<subdirectory>/<repo-relative-path>` and return an empty diff.
 #[tauri::command]
 fn git_diff(dir: String, path: String) -> Result<String, String> {
     logger::info("git", &format!("git_diff dir={dir:?} path={path:?}"));
 
+    let root = run_git(&dir, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+
     // Tracked changes vs HEAD (staged + unstaged in one view).
-    let tracked = run_git(&dir, &["diff", "HEAD", "--", &path]).unwrap_or_default();
+    let tracked = run_git(&root, &["diff", "HEAD", "--", &path]).unwrap_or_default();
     if !tracked.trim().is_empty() {
         return Ok(tracked);
     }
@@ -1311,11 +1317,11 @@ fn git_diff(dir: String, path: String) -> Result<String, String> {
     // expected — capture stdout without failing on the non-zero status.
     let out = std::process::Command::new(git_bin())
         .arg("-C")
-        .arg(&dir)
+        .arg(&root)
         .args(["diff", "--no-index", "--", "/dev/null", &path])
         .output()
         .map_err(|e| {
-            let msg = format!("spawn git diff --no-index in {dir:?}: {e}");
+            let msg = format!("spawn git diff --no-index in {root:?}: {e}");
             logger::error("git", &msg);
             msg
         })?;
@@ -2636,6 +2642,63 @@ mod ime_tests {
     fn cache_without_native_or_xim_is_left_alone() {
         let bare = "\"im-cedilla.so\"\n\"cedilla\" \"Cedilla\" \"gtk30\" \"\" \"\"\n";
         assert_eq!(plan_ime_module("fcitx", Some(bare)), ImePlan::LeaveAlone);
+    }
+}
+
+#[cfg(test)]
+mod git_diff_tests {
+    use super::{git_diff, run_git};
+    use std::path::PathBuf;
+
+    struct TestRepo(PathBuf);
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn repo_with_nested_change() -> TestRepo {
+        let root = std::env::temp_dir().join(format!("yt-git-diff-{}", uuid::Uuid::new_v4()));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("file.txt"), "before\n").unwrap();
+
+        let root_str = root.to_str().unwrap();
+        run_git(root_str, &["init", "--quiet"]).unwrap();
+        run_git(root_str, &["add", "--", "nested/file.txt"]).unwrap();
+        run_git(
+            root_str,
+            &[
+                "-c",
+                "user.name=yterminal test",
+                "-c",
+                "user.email=test@yterminal.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+        std::fs::write(nested.join("file.txt"), "after\n").unwrap();
+        TestRepo(root)
+    }
+
+    #[test]
+    fn repo_relative_diff_works_from_nested_cwd() {
+        let repo = repo_with_nested_change();
+        let nested = repo.0.join("nested");
+        let diff = git_diff(
+            nested.to_string_lossy().into_owned(),
+            "nested/file.txt".into(),
+        )
+        .unwrap();
+
+        assert!(diff.contains("-before"), "missing deletion in {diff:?}");
+        assert!(diff.contains("+after"), "missing addition in {diff:?}");
     }
 }
 

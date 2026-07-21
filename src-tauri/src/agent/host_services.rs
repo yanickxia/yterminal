@@ -347,13 +347,19 @@ pub fn git_status(dir: &str) -> Result<RemoteGitStatus, String> {
 }
 
 pub fn git_diff(dir: &str, path: &str) -> Result<String, String> {
-    let tracked = run_git(dir, &["diff", "HEAD", "--", path]).unwrap_or_default();
+    // Status paths are relative to the repository root even when the active
+    // terminal is in a nested directory. Resolve that root before passing the
+    // path back to Git or the cwd prefix would be applied a second time.
+    let root = run_git(dir, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+    let tracked = run_git(&root, &["diff", "HEAD", "--", path]).unwrap_or_default();
     if !tracked.trim().is_empty() {
         return Ok(limit_text(tracked, MAX_GIT_DIFF_BYTES));
     }
     let output = std::process::Command::new(git_bin())
         .arg("-C")
-        .arg(dir)
+        .arg(&root)
         .args(["diff", "--no-index", "--", "/dev/null", path])
         .output()
         .map_err(|e| format!("spawn git diff: {e}"))?;
@@ -595,6 +601,53 @@ pub fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestRepo(PathBuf);
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn repo_with_nested_change() -> TestRepo {
+        let root = std::env::temp_dir().join(format!("yt-agent-git-{}", uuid::Uuid::new_v4()));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("file.txt"), "before\n").unwrap();
+
+        let root_str = root.to_str().unwrap();
+        run_git(root_str, &["init", "--quiet"]).unwrap();
+        run_git(root_str, &["add", "--", "nested/file.txt"]).unwrap();
+        run_git(
+            root_str,
+            &[
+                "-c",
+                "user.name=yterminal test",
+                "-c",
+                "user.email=test@yterminal.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+        std::fs::write(nested.join("file.txt"), "after\n").unwrap();
+        TestRepo(root)
+    }
+
+    #[test]
+    fn repo_relative_diff_works_from_nested_cwd() {
+        let repo = repo_with_nested_change();
+        let nested = repo.0.join("nested");
+        let diff = git_diff(nested.to_str().unwrap(), "nested/file.txt").unwrap();
+
+        assert!(diff.contains("-before"), "missing deletion in {diff:?}");
+        assert!(diff.contains("+after"), "missing addition in {diff:?}");
+    }
 
     #[test]
     fn process_descendants_are_transitive() {

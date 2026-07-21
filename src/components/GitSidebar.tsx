@@ -333,9 +333,10 @@ export function GitSidebar() {
     const seq = ++diffSeq.current;
     setOpenPath(path);
     setDiffText("");
-    if (!cwd) return;
+    const repoDir = status.root || cwd;
+    if (!repoDir) return;
     setDiffLoading(true);
-    const text = await gitDiff(cwd, path, workspaceId ?? undefined);
+    const text = await gitDiff(repoDir, path, workspaceId ?? undefined);
     if (seq !== diffSeq.current) return; // superseded by a newer click
     setDiffText(text);
     setDiffLoading(false);
