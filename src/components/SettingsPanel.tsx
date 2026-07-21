@@ -158,7 +158,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   // re-apply to live terminals and persist to the JSON file on any change
   useEffect(() => {
-    applyAppearance();
+    void applyAppearance();
     if (mounted.current) saveConfigToDisk();
     else mounted.current = true;
   }, [

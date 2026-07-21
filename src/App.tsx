@@ -118,8 +118,10 @@ export default function App() {
       });
       await startWorkspaceSync(useWorkspaceStore.getState().workspaces);
       if (cancelled) return;
-      // sync app-chrome colors to the saved theme before any terminal opens
-      applyAppearance();
+      // Load every face before the first terminal opens. Otherwise open() can
+      // measure fallback metrics and WebGL can bake fallback glyphs on macOS.
+      await applyAppearance();
+      if (cancelled) return;
       // drop scrollback snapshots whose panes no longer exist in the store
       const live = new Set<string>();
       for (const w of useWorkspaceStore.getState().workspaces) {
@@ -180,7 +182,7 @@ export default function App() {
     if (!ready) return;
     async function reload() {
       const changed = await loadConfigFromDisk();
-      if (changed) applyAppearance();
+      if (changed) await applyAppearance();
       void useGitStore.getState().refresh();
     }
     window.addEventListener("focus", reload);

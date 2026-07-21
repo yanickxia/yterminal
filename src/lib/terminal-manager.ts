@@ -11,6 +11,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { ensureTerminalFontLoaded } from "./terminal-font";
+import { clearTextureAtlases } from "./webgl-atlas";
+import { installWebglGlyphCacheStabilizer } from "./webgl-glyph-cache";
 import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
@@ -322,6 +326,8 @@ interface Session {
    * WebGL is unavailable (headless / no GPU) — xterm then uses the DOM renderer.
    */
   webgl?: WebglAddon;
+  /** Cleanup for the transparent, background-independent WebGL glyph cache. */
+  glyphCacheStabilizerCleanup?: () => void;
   /**
    * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
    * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
@@ -544,6 +550,16 @@ function xtermCore(s: Session): XtermCoreInternals | undefined {
   return (s.term as unknown as { _core?: XtermCoreInternals })._core;
 }
 
+function measureTerminalFont(s: Session): boolean {
+  if (!s.el.isConnected) return false;
+  try {
+    xtermCore(s)?._charSizeService?.measure?.();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resumeXtermRenderer(s: Session): boolean {
   try {
     const core = xtermCore(s);
@@ -677,6 +693,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     fontSize,
     cursorBlink: true,
     allowProposedApi: true,
+    // Match the reference xterm consumer (VS Code). rescaleOverlappingGlyphs
+    // scales a glyph that overflows its cell back down to cell width in the
+    // WebGL renderer (default false) — without it, wide glyphs from Nerd/CJK
+    // fonts whose natural advance exceeds the cell are clipped/rounded per
+    // glyph, so they render at inconsistent sizes on the GPU path.
+    rescaleOverlappingGlyphs: true,
     theme: toXtermTheme(theme.palette),
     scrollback: resolveScrollback(useSettingsStore.getState().scrollbackLines),
   });
@@ -687,6 +709,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   term.loadAddon(fit);
   term.loadAddon(serialize);
   term.loadAddon(search);
+  // Unicode 11 width tables (xterm defaults to Unicode 6). Match VS Code so the
+  // cell-count for wide/ambiguous characters agrees with what modern shells and
+  // fonts assume. Must activate the version after loading the addon.
+  try {
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
+  } catch (e) {
+    logger.warn("term", `unicode11 addon unavailable: ${String(e)}`);
+  }
   // Web-URL link provider. We DON'T use @xterm/addon-web-links: it only stitches
   // a URL back together across *soft*-wrapped rows (`isWrapped`), so a long URL
   // that a CLI program hard-wraps at the terminal width (its own newline, so the
@@ -1122,6 +1153,8 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
+        s.glyphCacheStabilizerCleanup?.();
+        s.glyphCacheStabilizerCleanup = undefined;
         try {
           webgl.dispose();
         } catch {
@@ -1131,23 +1164,32 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       });
       s.term.loadAddon(webgl);
       s.webgl = webgl;
-      // xterm rasterizes glyphs into the WebGL atlas at open() time. On macOS
-      // WKWebView the configured terminal font is loaded asynchronously by
-      // CoreText, so if it isn't in the FontFaceSet yet the atlas gets baked
-      // with the fallback font — text then renders in the wrong glyphs until an
-      // unrelated repaint (e.g. selecting it) heals it. Mirror applyAppearance:
-      // once the real font is loaded, invalidate the atlas so it re-rasterizes.
-      // Guarded to this addon instance so a dispose/context-loss in between is a
-      // no-op. Linux webkit2gtk resolves fonts eagerly, so this is a near no-op
-      // there; it fixes the macOS-only "weird font, fixed by selecting" bug.
+      s.glyphCacheStabilizerCleanup = installWebglGlyphCacheStabilizer(
+        webgl,
+        clearAllTextureAtlases
+      );
+      // xterm measures and rasterizes synchronously, while macOS CoreText can
+      // resolve local faces asynchronously. Startup normally preloads them;
+      // this second guard also covers a pane opened during a live font change.
       const { font, fontSize } = currentAppearance();
       void ensureTerminalFontLoaded(font.stack, fontSize).then(() => {
         if (s.disposed || s.webgl !== webgl) return;
-        try {
-          webgl.clearTextureAtlas();
-        } catch {
-          /* addon disposed after context loss → DOM renderer, nothing to clear */
+        const current = currentAppearance();
+        if (current.font.stack !== font.stack || current.fontSize !== fontSize) {
+          return;
         }
+        // open() may have measured a fallback while CoreText loaded the real
+        // face. Re-measure first so cell geometry and the new glyphs agree.
+        measureTerminalFont(s);
+        try {
+          if (!s.pty.readOnly) s.fit.fit();
+        } catch {
+          /* detached or not measurable */
+        }
+        // addon-webgl shares atlases between equal terminal configs. Clearing
+        // only this addon corrupts sibling models (xterm.js #6014), so every
+        // live renderer must be invalidated synchronously before repaint.
+        clearAllTextureAtlases();
       });
     } catch (e) {
       logger.warn("term", `webgl unavailable pane=${tabId}: ${String(e)}`);
@@ -1261,6 +1303,10 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     if (s.disposed || s.el.parentElement !== container) return;
     try {
       resumeXtermRenderer(s);
+      // Re-parented terminals may carry metrics measured while their previous
+      // host was detached. This attach rAF is the first reliably measurable
+      // point, so re-measure even when no explicit dirty flag survived.
+      measureTerminalFont(s);
       if (!s.pty.readOnly) s.fit.fit();
       resumeXtermRenderer(s);
       syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
@@ -1327,6 +1373,7 @@ export function disposeSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
+  s.glyphCacheStabilizerCleanup?.();
   try {
     s.pty.kill();
   } catch {
@@ -1993,59 +2040,6 @@ export async function snapshotAllAgents() {
   return agentSnapshotPromise;
 }
 
-/**
- * Ensure the terminal font family is actually loaded before we rebuild the
- * WebGL glyph atlas. xterm rasterizes glyphs lazily into the atlas and never
- * awaits the document FontFaceSet, so on macOS WKWebView — where CoreText
- * loads a freshly-picked font asynchronously — the atlas gets baked with the
- * fallback font and the new family never appears: the terminal looks "stuck"
- * on the old font even though the DOM renderer would reflow once the font
- * arrives. Linux webkit2gtk resolves fonts eagerly via fontconfig, so this is
- * a near-no-op there. `document.fonts.load` resolves (does not reject) for
- * missing families, so an unknown/hand-edited font id won't stall the flow.
- *
- * Loads all four faces xterm can render — normal, bold (`\e[1m`, ubiquitous
- * in `ls`/prompts), italic (`\e[3m`), and bold-italic — since each is a
- * SEPARATE font face. Loading only the normal weight left bold/italic cells
- * rasterized from unloaded faces when the atlas baked, so they rendered in the
- * wrong glyphs until a repaint (selecting the text) healed them — the reported
- * "bold/italic rows look like a different font, fixed by selecting" bug.
- * `fonts.ready` then lets any load xterm itself kicked off settle before we
- * invalidate.
- */
-function ensureTerminalFontLoaded(
-  stack: string,
-  fontSize: number
-): Promise<void> {
-  if (typeof document === "undefined" || !document.fonts) {
-    return Promise.resolve();
-  }
-  const first = stack
-    .split(",")[0]
-    ?.trim()
-    .replace(/^["']|["']$/g, "");
-  if (!first) return Promise.resolve();
-  const quoted = `"${first}"`;
-  // Preload all four style/weight faces xterm can render: normal, bold
-  // (`\e[1m`), italic (`\e[3m`), and bold-italic. Each is a SEPARATE font face
-  // resolved asynchronously by CoreText on macOS WKWebView; any face not yet
-  // loaded when the atlas bakes renders in the wrong glyphs until a repaint
-  // (selecting the text) heals it. `document.fonts.load` resolves (never
-  // rejects) for a face a family doesn't provide, so listing all four is safe
-  // for fonts that only ship a regular weight.
-  return Promise.all([
-    document.fonts.load(`${fontSize}px ${quoted}`),
-    document.fonts.load(`bold ${fontSize}px ${quoted}`),
-    document.fonts.load(`italic ${fontSize}px ${quoted}`),
-    document.fonts.load(`italic bold ${fontSize}px ${quoted}`),
-  ])
-    .then(() => document.fonts.ready)
-    .then(
-      () => undefined,
-      () => undefined
-    );
-}
-
 /** Bumped on every applyAppearance call so a slow font-load from a stale call
  * can't overwrite a newer one (rapid font switching). */
 let applyAppearanceToken = 0;
@@ -2055,7 +2049,7 @@ let applyAppearanceToken = 0;
  * terminal. Called whenever theme / font / font size changes so the update is
  * instant, without re-spawning shells.
  */
-export function applyAppearance() {
+export function applyAppearance(): Promise<void> {
   const { theme, font, fontSize } = currentAppearance();
   applyChromeVars(theme.palette);
   applyDividerVars();
@@ -2065,7 +2059,7 @@ export function applyAppearance() {
     useSettingsStore.getState().scrollbackLines
   );
   const token = ++applyAppearanceToken;
-  void ensureTerminalFontLoaded(font.stack, fontSize).then(() => {
+  return ensureTerminalFontLoaded(font.stack, fontSize).then(() => {
     if (token !== applyAppearanceToken) return;
     for (const [, s] of sessions) {
       if (s.disposed) continue;
@@ -2073,23 +2067,18 @@ export function applyAppearance() {
       s.term.options.fontFamily = font.stack;
       s.term.options.fontSize = fontSize;
       s.term.options.scrollback = scrollback;
+      // Detached xterm measurement elements report zero in WebKit. Defer those
+      // panes until attachSession puts them back in a measurable DOM tree.
+      measureTerminalFont(s);
       try {
         if (!s.pty.readOnly) s.fit.fit();
       } catch {
         /* not measurable while detached */
       }
-      // WebGL caches rendered glyphs in a texture atlas keyed by the old font;
-      // changing fontFamily/fontSize alone leaves stale glyphs on screen (the
-      // DOM renderer reflows automatically, the GPU one does not). Invalidate
-      // the atlas so it's rebuilt with the new font and the terminal redraws.
-      // This runs after ensureTerminalFontLoaded so the atlas re-rasterizes
-      // with the real glyphs, not the fallback the browser used pre-load.
-      try {
-        s.webgl?.clearTextureAtlas();
-      } catch {
-        /* addon disposed after context loss → DOM renderer, nothing to clear */
-      }
     }
+    // WebGL caches glyphs across terminals with equal render options. Clear
+    // every renderer only after all options and cell metrics are current.
+    clearAllTextureAtlases();
   });
 }
 
@@ -2103,14 +2092,9 @@ export function applyAppearance() {
  * WebGL addon was disposed after a context loss (they use the DOM renderer).
  */
 function clearAllTextureAtlases() {
-  for (const [, s] of sessions) {
-    if (s.disposed) continue;
-    try {
-      s.webgl?.clearTextureAtlas();
-    } catch {
-      /* addon disposed after context loss → DOM renderer, nothing to clear */
-    }
-  }
+  clearTextureAtlases(
+    Array.from(sessions.values(), (s) => (s.disposed ? undefined : s.webgl))
+  );
 }
 
 /** Push divider width/color from settings onto CSS variables. */
