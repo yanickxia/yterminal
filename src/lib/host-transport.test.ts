@@ -2,11 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  channel: undefined as
+    | { onmessage?: (event: unknown) => void }
+    | undefined,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage?: (event: unknown) => void;
+
+    constructor() {
+      mocks.channel = this;
+    }
   },
   invoke: mocks.invoke,
 }));
@@ -16,6 +23,7 @@ import { HostTransport } from "./host-transport";
 describe("HostTransport control leases", () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
+    mocks.channel = undefined;
     let epoch = 0;
     mocks.invoke.mockImplementation(async (method: string, args: any) => {
       if (method === "host_connect") {
@@ -100,5 +108,41 @@ describe("HostTransport control leases", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reports a foreign controller even before a local lease is cached", async () => {
+    const transport = await HostTransport.connect({ kind: "local" });
+    const changes: Array<number | null> = [];
+    transport.subscribeControl("w", (epoch) => changes.push(epoch));
+
+    mocks.channel?.onmessage?.({
+      type: "agent",
+      payload: {
+        event: "control_changed",
+        data: {
+          workspace_id: "w",
+          controller_client_id: "another-client",
+          lease_epoch: 9,
+        },
+      },
+    });
+
+    expect(changes).toEqual([null]);
+    await transport.disconnect();
+  });
+
+  it("does not let a late stale response clear a newly acquired lease", async () => {
+    const transport = await HostTransport.connect({ kind: "local" });
+    const changes: Array<number | null> = [];
+    const first = await transport.ensureControl("w");
+    transport.subscribeControl("w", (epoch) => changes.push(epoch));
+
+    expect(transport.invalidateControlLease("w", first)).toBe(true);
+    const second = await transport.ensureControl("w", true);
+    expect(transport.invalidateControlLease("w", first)).toBe(false);
+    expect(transport.invalidateControlLease("w", second)).toBe(true);
+
+    expect(changes).toEqual([first, null, second, null]);
+    await transport.disconnect();
   });
 });

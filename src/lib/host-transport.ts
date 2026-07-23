@@ -392,6 +392,25 @@ export class HostTransport {
     return response.data.lease_epoch;
   }
 
+  /**
+   * Drop a lease after an acknowledged agent request proves it is stale.
+   *
+   * `expectedLeaseEpoch` prevents a late response from an older resize from
+   * clearing a lease that this transport acquired in the meantime. When the
+   * cache is already empty we still notify subscribers: AgentPty may have
+   * optimistically retained the epoch even though the transport missed (or
+   * has not yet processed) the corresponding control_changed event.
+   */
+  invalidateControlLease(
+    workspaceId: string,
+    expectedLeaseEpoch: number
+  ): boolean {
+    const current = this.leases.get(workspaceId);
+    if (current !== undefined && current !== expectedLeaseEpoch) return false;
+    this.clearLease(workspaceId, true);
+    return true;
+  }
+
   subscribeSession(sessionId: string, listener: SessionListener): () => void {
     let listeners = this.sessionListeners.get(sessionId);
     if (!listeners) {
@@ -460,12 +479,17 @@ export class HostTransport {
     }
     if (body.event === "control_changed") {
       const current = this.leases.get(body.data.workspace_id);
-      if (
+      const stillOurs =
+        body.data.controller_client_id !== null &&
         current !== undefined &&
-        (body.data.controller_client_id === null ||
-          current !== body.data.lease_epoch)
-      ) {
-        this.clearLease(body.data.workspace_id);
+        current === body.data.lease_epoch;
+      if (!stillOurs) {
+        // A transport can receive a foreign takeover before its own acquire
+        // response has populated `leases` (or after a reconnect cleared that
+        // cache). Notify subscribers even when there is no cached lease to
+        // delete; otherwise AgentPty can remain writable for one event and
+        // discard the new controller's immediately-following size_changed.
+        this.clearLease(body.data.workspace_id, true);
       }
       return;
     }
@@ -488,8 +512,9 @@ export class HostTransport {
     for (const listener of this.statusListeners) listener(online, message);
   }
 
-  private clearLease(workspaceId: string): void {
-    if (!this.leases.delete(workspaceId)) return;
+  private clearLease(workspaceId: string, notifyWithoutLease = false): void {
+    const deleted = this.leases.delete(workspaceId);
+    if (!deleted && !notifyWithoutLease) return;
     for (const listener of this.controlListeners.get(workspaceId) ?? []) {
       listener(null);
     }

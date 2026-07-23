@@ -269,9 +269,11 @@ impl AgentClient {
             .map_err(|_| RemoteError::retryable("disconnected", "agent response channel closed"))?
     }
 
-    /// Queue a latency-sensitive request without waiting for its ACK. The
-    /// reader safely ignores the unmatched response. Used for PTY input and
-    /// resize; ordered SSH/socket delivery is still preserved.
+    /// Queue latency-sensitive PTY input without waiting for its ACK. The
+    /// reader safely ignores the unmatched response; ordered SSH/socket
+    /// delivery is still preserved. Resize deliberately uses `request` so a
+    /// stale control lease cannot leave the renderer and PTY at different
+    /// grids without the frontend noticing.
     pub async fn notify(&self, body: RequestBody) -> Result<(), RemoteError> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.outgoing

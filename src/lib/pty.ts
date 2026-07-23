@@ -18,6 +18,16 @@ import { acceptOutputSequence } from "./remote-sequence";
 
 const SLOW_MS = 250;
 const CHECKPOINT_CHUNK = 256 * 1024;
+const CONTROL_LEASE_ERRORS = new Set([
+  "stale_control_lease",
+  "control_expired",
+  "control_required",
+]);
+
+interface PendingResize {
+  cols: number;
+  rows: number;
+}
 
 export interface SpawnOptions {
   cols?: number;
@@ -103,6 +113,9 @@ class AgentPty implements IPty {
   private unsubscribeControl: (() => void) | undefined;
   private unsubscribeTransport: (() => void) | undefined;
   private checkpointQueue: Promise<void> = Promise.resolve();
+  private pendingResize: PendingResize | undefined;
+  private resizePump: Promise<void> | undefined;
+  private remoteSizeGeneration = 0;
   private disposed = false;
   private disposeAction: "none" | "detach" | "kill" = "none";
   private freshSpawned = false;
@@ -140,6 +153,7 @@ class AgentPty implements IPty {
           // the lease straight back, so takeover only worked while that GUI
           // was closed. Stay read-only until this user explicitly takes control
           // (or a fresh GUI connection performs its initial acquire below).
+          this.pendingResize = undefined;
           this.readOnly = true;
           this.readOnlyEmitter.fire(this.readOnly);
           return;
@@ -186,8 +200,8 @@ class AgentPty implements IPty {
           await this.attach(
             host,
             candidateSessionId,
-            initialCols,
-            initialRows,
+            this.cols,
+            this.rows,
             resuming ? this.parsedSeq : null
           );
           await this.refreshSessionPid(host, candidateSessionId);
@@ -218,8 +232,8 @@ class AgentPty implements IPty {
           lease_epoch: this.leaseEpoch,
           file: hostId === "local" ? file : "",
           args,
-          cols: initialCols,
-          rows: initialRows,
+          cols: this.cols,
+          rows: this.rows,
           cwd: opt.cwd ?? null,
           env: hostId === "local" ? (opt.env ?? {}) : safeRemoteEnv(opt.env),
         },
@@ -262,7 +276,7 @@ class AgentPty implements IPty {
       // A brand-new session starts at sequence zero, so preserve that buffer
       // and append the new session's replay. Existing sessions use `null`
       // above and receive an authoritative reset/checkpoint instead.
-      await this.attach(host, this.sessionId, initialCols, initialRows, 0);
+      await this.attach(host, this.sessionId, this.cols, this.rows, 0);
       this.freshSpawned = true;
       this.freshSpawnEmitter.fire(undefined);
       logger.info(
@@ -333,23 +347,14 @@ class AgentPty implements IPty {
   }
 
   resize(cols: number, rows: number) {
-    if (this.disposed) return;
-    logger.info("term", `DEBUG local resize session=${this.sessionId} cols=${cols} rows=${rows}`);
+    if (this.disposed || this.readOnly) return;
+    logger.debug(
+      "term",
+      `local resize session=${this.sessionId} cols=${cols} rows=${rows}`
+    );
     this.cols = cols;
     this.rows = rows;
-    void this.ready
-      .then(async () => {
-        if (this.disposed || !this.host || !this.sessionId || this.readOnly) return;
-        await this.host.notify({
-          method: "resize",
-          params: {
-            session_id: this.sessionId,
-            lease_epoch: this.leaseEpoch,
-            cols,
-            rows,
-          },
-        });
-      })
+    void this.enqueueResize(cols, rows)
       .catch((error) => logger.error("pty", `agent resize failed: ${String(error)}`));
   }
 
@@ -365,6 +370,11 @@ class AgentPty implements IPty {
       "pty",
       `take control acquired workspace=${this.workspaceId} lease=${nextEpoch}`
     );
+    // A stale client can already have fitted its xterm while its previous
+    // fire-and-forget resize was rejected. In that state the subsequent fit is
+    // a no-op (the xterm already matches the container), so explicitly
+    // re-assert the current grid with the newly acknowledged lease.
+    await this.enqueueResize(this.cols, this.rows);
     return nextEpoch;
   }
 
@@ -415,28 +425,38 @@ class AgentPty implements IPty {
       .then(async () => {
         await this.ready;
         if (this.disposed || !this.host || !this.sessionId || this.readOnly) return;
-        await this.host.request({
-          method: "checkpoint_begin",
-          params: {
-            session_id: this.sessionId,
-            lease_epoch: this.leaseEpoch,
-            through_seq: throughSeq,
-            total_bytes: ansi.length,
-          },
-        });
-        for (let offset = 0; offset < ansi.length; offset += CHECKPOINT_CHUNK) {
-          await this.host.request({
-            method: "checkpoint_chunk",
+        const host = this.host;
+        const sessionId = this.sessionId;
+        const leaseEpoch = this.leaseEpoch;
+        try {
+          await host.request({
+            method: "checkpoint_begin",
             params: {
-              session_id: this.sessionId,
-              bytes: Array.from(ansi.subarray(offset, offset + CHECKPOINT_CHUNK)),
+              session_id: sessionId,
+              lease_epoch: leaseEpoch,
+              through_seq: throughSeq,
+              total_bytes: ansi.length,
             },
           });
+          for (let offset = 0; offset < ansi.length; offset += CHECKPOINT_CHUNK) {
+            await host.request({
+              method: "checkpoint_chunk",
+              params: {
+                session_id: sessionId,
+                bytes: Array.from(
+                  ansi.subarray(offset, offset + CHECKPOINT_CHUNK)
+                ),
+              },
+            });
+          }
+          await host.request({
+            method: "checkpoint_end",
+            params: { session_id: sessionId },
+          });
+        } catch (error) {
+          this.handleControlLeaseError(error, host, leaseEpoch);
+          throw error;
         }
-        await this.host.request({
-          method: "checkpoint_end",
-          params: { session_id: this.sessionId },
-        });
       })
       .catch((error) => logger.warn("pty", `checkpoint failed: ${String(error)}`));
   }
@@ -539,23 +559,29 @@ class AgentPty implements IPty {
         break;
       case "size_changed": {
         const { cols, rows } = event.data;
-        logger.info("term", `DEBUG size_changed session=${this.sessionId} cols=${cols} rows=${rows}`);
-        if (!this.readOnly) {
-          // The controller's xterm DOM is the size authority. Re-applying the
-          // agent's broadcast here can race a local fit() and bounce the terminal
-          // between the previous PTY size and the current container size.
-          if (cols !== this.cols || rows !== this.rows) {
-            logger.debug(
-              "pty",
-              `ignored controller size_changed session=${this.sessionId} remote=${cols}x${rows} local=${this.cols}x${this.rows}`
-            );
-            this.resize(this.cols, this.rows);
-          }
+        logger.debug(
+          "term",
+          `agent resize session=${this.sessionId} cols=${cols} rows=${rows}`
+        );
+        // During a drag the local xterm immediately reaches the newest width,
+        // while acknowledged size events can still represent an older request
+        // in the coalesced queue. Do not bounce the controller's renderer back
+        // to that intermediate grid. Once control is lost pending resizes are
+        // cleared before the new controller's ordered size_changed event, so a
+        // watcher always projects the agent's canonical value.
+        if (
+          !this.readOnly &&
+          (this.resizePump || this.pendingResize) &&
+          (cols !== this.cols || rows !== this.rows)
+        ) {
+          logger.debug(
+            "term",
+            `ignored superseded resize session=${this.sessionId} agent=${cols}x${rows} desired=${this.cols}x${this.rows}`
+          );
           break;
         }
-        this.cols = cols;
-        this.rows = rows;
-        this.resizeEmitter.fire({ cols: this.cols, rows: this.rows });
+        this.remoteSizeGeneration += 1;
+        this.applyCanonicalSize(cols, rows);
         break;
       }
       case "exited":
@@ -570,6 +596,130 @@ class AgentPty implements IPty {
   private emitData(data: Uint8Array): void {
     if (this.dataEmitter.empty) this.pendingData.push(data);
     else this.dataEmitter.fire(data);
+  }
+
+  /**
+   * Resize is latency-insensitive compared with PTY input, but correctness
+   * requires the agent ACK: a rejected fire-and-forget resize only widened the
+   * local xterm and never delivered SIGWINCH to the foreground application.
+   * Keep one request in flight and collapse drag-resize bursts to the newest
+   * dimensions so SSH latency cannot build an obsolete resize backlog.
+   */
+  private enqueueResize(cols: number, rows: number): Promise<void> {
+    this.pendingResize = { cols, rows };
+    if (this.resizePump) return this.resizePump;
+
+    const pump = this.flushPendingResizes();
+    this.resizePump = pump;
+    void pump.then(
+      () => this.finishResizePump(pump),
+      () => this.finishResizePump(pump)
+    );
+    return pump;
+  }
+
+  private finishResizePump(pump: Promise<void>): void {
+    if (this.resizePump !== pump) return;
+    this.resizePump = undefined;
+    // A resize can arrive after flushPendingResizes observed an empty slot but
+    // before this promise continuation ran. Start a successor pump for it.
+    const pending = this.pendingResize;
+    if (!pending || this.disposed || this.readOnly) return;
+    void this.enqueueResize(pending.cols, pending.rows).catch((error) =>
+      logger.error("pty", `agent resize failed: ${String(error)}`)
+    );
+  }
+
+  private async flushPendingResizes(): Promise<void> {
+    await this.ready;
+    while (this.pendingResize) {
+      const next = this.pendingResize;
+      this.pendingResize = undefined;
+      if (this.disposed || !this.host || !this.sessionId || this.readOnly) return;
+
+      const host = this.host;
+      const sessionId = this.sessionId;
+      const leaseEpoch = this.leaseEpoch;
+      try {
+        const response = await host.request({
+          method: "resize",
+          params: {
+            session_id: sessionId,
+            lease_epoch: leaseEpoch,
+            cols: next.cols,
+            rows: next.rows,
+          },
+        });
+        if (response.kind !== "ack") {
+          throw new Error(`unexpected resize response: ${response.kind}`);
+        }
+      } catch (error) {
+        const controlFailure = this.handleControlLeaseError(
+          error,
+          host,
+          leaseEpoch
+        );
+        const superseded =
+          controlFailure &&
+          this.host === host &&
+          !this.readOnly &&
+          this.leaseEpoch !== leaseEpoch;
+        if (superseded) continue;
+        if (controlFailure && this.host === host) {
+          await this.refreshCanonicalSize(host, sessionId);
+        }
+        throw error;
+      }
+    }
+  }
+
+  private handleControlLeaseError(
+    error: unknown,
+    host: HostTransport,
+    leaseEpoch: number
+  ): boolean {
+    if (
+      !(error instanceof HostRequestError) ||
+      !CONTROL_LEASE_ERRORS.has(error.code)
+    ) {
+      return false;
+    }
+    if (this.host === host) {
+      host.invalidateControlLease(this.workspaceId, leaseEpoch);
+    }
+    return true;
+  }
+
+  private async refreshCanonicalSize(
+    host: HostTransport,
+    sessionId: string
+  ): Promise<void> {
+    const generation = this.remoteSizeGeneration;
+    try {
+      const response = await host.request({ method: "list_sessions" });
+      if (
+        response.kind !== "sessions" ||
+        generation !== this.remoteSizeGeneration ||
+        this.host !== host
+      ) {
+        return;
+      }
+      const session = response.data.sessions.find(
+        (candidate) => candidate.sessionId === sessionId
+      );
+      if (session) this.applyCanonicalSize(session.cols, session.rows);
+    } catch (error) {
+      logger.warn(
+        "pty",
+        `canonical size refresh failed session=${sessionId}: ${String(error)}`
+      );
+    }
+  }
+
+  private applyCanonicalSize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+    this.resizeEmitter.fire({ cols, rows });
   }
 
   private async recoverFromGap(): Promise<void> {

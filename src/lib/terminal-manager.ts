@@ -853,6 +853,13 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     },
   });
 
+  // term.resize() emits onResize just like a user/container-driven fit. Mark
+  // the synchronous agent projection so that callback repaints the terminal
+  // but does not send the same dimensions back to the PTY. Without this
+  // source guard, accepting the agent as authoritative creates an echo loop;
+  // filtering by readOnly instead loses the first resize during a takeover.
+  let applyingAgentResize = false;
+
   // A fresh remote attach may require replacing a stale local xterm with the
   // agent checkpoint. Register this before the async attach can replay data.
   pty.onReset(() => {
@@ -863,9 +870,15 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     }
   });
   pty.onRemoteResize(({ cols, rows }) => {
-    if (term.cols === cols && term.rows === rows) return;
     try {
-      term.resize(cols, rows);
+      if (term.cols !== cols || term.rows !== rows) {
+        applyingAgentResize = true;
+        try {
+          term.resize(cols, rows);
+        } finally {
+          applyingAgentResize = false;
+        }
+      }
     } catch {
       /* terminal may not be open yet */
     }
@@ -1072,10 +1085,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
   term.onResize(({ cols, rows }) => {
     logger.debug("term", `resize pane=${tabId} cols=${cols} rows=${rows}`);
-    try {
-      pty.resize(cols, rows);
-    } catch (e) {
-      logger.warn("term", `resize forward failed pane=${tabId}: ${String(e)}`);
+    if (!applyingAgentResize) {
+      try {
+        pty.resize(cols, rows);
+      } catch (e) {
+        logger.warn("term", `resize forward failed pane=${tabId}: ${String(e)}`);
+      }
     }
   });
   pty.onExit((e) => {
@@ -1472,7 +1487,14 @@ export async function takeControlOfWorkspace(workspaceId: string): Promise<void>
       attemptedConnections.add(key);
       try {
         await session.pty.takeControl();
-        if (!session.pty.readOnly) return;
+        if (!session.pty.readOnly) {
+          // Establish the mounted pane's container as the new controller grid
+          // immediately. The subscription also schedules a fit for sibling
+          // panes, but this avoids waiting a frame before the active TUI gets
+          // its SIGWINCH.
+          fitSession(paneId);
+          return;
+        }
         errors.push(`${paneId}: still read-only`);
       } catch (error) {
         const message = `${paneId}: ${String(error)}`;
@@ -1661,6 +1683,7 @@ export async function runCommandInPane(
   if (s.pty.readOnly) {
     try {
       await s.pty.takeControl();
+      fitSession(tabId);
     } catch (error) {
       return {
         output: `Unable to take control of the remote workspace: ${String(error)}`,
