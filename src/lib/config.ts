@@ -1,6 +1,6 @@
-// config: a plain JSON file on disk that mirrors the user's appearance
-// settings, so it can be synced across machines (git, Dropbox, etc.) and edited
-// by hand. The file lives at:
+// config: a plain JSON file on disk that mirrors the user's syncable settings,
+// so it can be shared across machines (git, Dropbox, etc.) and edited by hand.
+// The file lives at:
 //   macOS / Linux: ~/.config/yterminal/config.json  (honors $XDG_CONFIG_HOME)
 //   Windows:       %APPDATA%\yterminal\config.json
 //
@@ -31,6 +31,9 @@ import {
   DEFAULT_COPY_ON_SELECT,
   DEFAULT_AUTO_TAB_TITLE,
   DEFAULT_AGENT_STATUS_HOOKS,
+  DEFAULT_AUTO_DOWNLOAD_UPDATES,
+  DEFAULT_GITHUB_MIRROR,
+  DEFAULT_UPDATE_HTTP_PROXY,
   type DefaultCwdMode,
 } from "../stores/settings-store";
 
@@ -73,9 +76,18 @@ export interface YterminalConfig {
     /** install Claude Code hooks so agents report their exact run-state */
     agentStatusHooks: boolean;
   };
+  /** Update behavior and updater-only network routing. */
+  updates: {
+    /** download after the startup check without opening a foreground dialog */
+    autoDownload: boolean;
+    /** GitHub accelerator prefix, or a template containing {url} */
+    githubMirror: string;
+    /** HTTP(S) forward proxy URL used for update checks/downloads */
+    httpProxy: string;
+  };
 }
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 /** Build a config object from the current in-memory settings. */
 export function configFromStore(): YterminalConfig {
@@ -101,6 +113,11 @@ export function configFromStore(): YterminalConfig {
       copyOnSelect: s.copyOnSelect,
       autoTabTitle: s.autoTabTitle,
       agentStatusHooks: s.agentStatusHooks,
+    },
+    updates: {
+      autoDownload: s.autoDownloadUpdates,
+      githubMirror: s.githubMirror,
+      httpProxy: s.updateHttpProxy,
     },
   };
 }
@@ -157,6 +174,10 @@ function validBool(b: unknown, fallback: boolean): boolean {
   return typeof b === "boolean" ? b : fallback;
 }
 
+function validString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
 /**
  * Parse + validate raw JSON text into a normalized config. Unknown/invalid
  * values fall back to defaults, so a malformed or partial file is always safe.
@@ -173,6 +194,7 @@ export function parseConfig(text: string): YterminalConfig | null {
   const ap = raw.appearance ?? {};
   const tm = raw.terminal ?? {};
   const dc = tm.defaultCwd ?? {};
+  const up = raw.updates ?? {};
 
   const themeOk = THEMES.some((t) => t.id === ap.theme);
   // accept any built-in preset OR a detected system font; an unknown id is kept
@@ -215,6 +237,14 @@ export function parseConfig(text: string): YterminalConfig | null {
         DEFAULT_AGENT_STATUS_HOOKS
       ),
     },
+    updates: {
+      autoDownload: validBool(
+        up.autoDownload,
+        DEFAULT_AUTO_DOWNLOAD_UPDATES
+      ),
+      githubMirror: validString(up.githubMirror, DEFAULT_GITHUB_MIRROR),
+      httpProxy: validString(up.httpProxy, DEFAULT_UPDATE_HTTP_PROXY),
+    },
   };
 }
 
@@ -252,6 +282,11 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   const { agentStatusHooks } = cfg.terminal;
   if (agentStatusHooks !== s.agentStatusHooks)
     s.setAgentStatusHooks(agentStatusHooks);
+  const { autoDownload, githubMirror, httpProxy } = cfg.updates;
+  if (autoDownload !== s.autoDownloadUpdates)
+    s.setAutoDownloadUpdates(autoDownload);
+  if (githubMirror !== s.githubMirror) s.setGithubMirror(githubMirror);
+  if (httpProxy !== s.updateHttpProxy) s.setUpdateHttpProxy(httpProxy);
 }
 
 /** Absolute path of the config file (for display in the UI). */

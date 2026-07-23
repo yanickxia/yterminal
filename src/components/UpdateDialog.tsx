@@ -17,10 +17,16 @@ export function UpdateDialog({
   const manifest = useUpdaterStore((s) => s.manifest);
   const progress = useUpdaterStore((s) => s.progress);
   const errorMessage = useUpdaterStore((s) => s.errorMessage);
+  const installKind = useUpdaterStore((s) => s.installKind);
   const debManualPath = useUpdaterStore((s) => s.debManualPath);
   const startDownload = useUpdaterStore((s) => s.startDownload);
   const doRelaunch = useUpdaterStore((s) => s.relaunch);
   const recheck = useUpdaterStore((s) => s.check);
+
+  function downloadInBackground() {
+    onClose();
+    void startDownload();
+  }
 
   if (!open) return null;
   if (state !== "available" && state !== "downloading"
@@ -32,7 +38,7 @@ export function UpdateDialog({
         <div className="modal-header">
           <span>
             {state === "ready"
-              ? "Update ready to install"
+              ? "Update downloaded"
               : state === "error"
               ? "Update failed"
               : `Update available${manifest ? ` — v${manifest.version}` : ""}`}
@@ -45,7 +51,7 @@ export function UpdateDialog({
         <div className="modal-body">
           {state === "available" && manifest && (
             <>
-              <p>A new version of yterminal is ready to download.</p>
+              <p>A new version of yterminal is available.</p>
               {manifest.notes && (
                 <pre
                   style={{
@@ -60,7 +66,9 @@ export function UpdateDialog({
               )}
               <div className="modal-footer">
                 <button onClick={onClose}>Later</button>
-                <button onClick={() => startDownload()}>Update now</button>
+                <button onClick={downloadInBackground}>
+                  Download in background
+                </button>
               </div>
             </>
           )}
@@ -78,8 +86,11 @@ export function UpdateDialog({
                   ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`
                   : progress
                   ? `${formatBytes(progress.downloaded)}`
-                  : "Verifying signature and installing…"}
+                  : "Preparing download…"}
               </p>
+              <div className="modal-footer">
+                <button onClick={onClose}>Continue in background</button>
+              </div>
             </>
           )}
 
@@ -101,10 +112,16 @@ export function UpdateDialog({
                 </>
               ) : (
                 <>
-                  <p>Download complete. Restart yterminal to apply the update.</p>
+                  <p>
+                    Download complete and verified. {installKind === "deb"
+                      ? "Install the package and restart yterminal to apply it."
+                      : "Restart yterminal to install and apply the update."}
+                  </p>
                   <div className="modal-footer">
                     <button onClick={onClose}>Restart later</button>
-                    <button onClick={() => doRelaunch()}>Restart now</button>
+                    <button onClick={() => void doRelaunch()}>
+                      {installKind === "deb" ? "Install and restart" : "Restart now"}
+                    </button>
                   </div>
                 </>
               )}

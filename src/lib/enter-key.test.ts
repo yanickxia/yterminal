@@ -16,34 +16,31 @@ describe("encodeEnter", () => {
     expect(encodeEnter(key())).toBe("\r");
   });
 
-  it("encodes Shift+Enter as CSI-u with modifier 2", () => {
-    expect(encodeEnter(key({ shiftKey: true }))).toBe("\x1b[13;2u");
+  it("encodes Shift+Enter as the Claude Code multiline sequence", () => {
+    expect(encodeEnter(key({ shiftKey: true }))).toBe("\x1b\r");
   });
 
-  it("encodes Alt+Enter as CSI-u with modifier 3", () => {
-    expect(encodeEnter(key({ altKey: true }))).toBe("\x1b[13;3u");
+  it("encodes Alt/Option+Enter as the same multiline sequence", () => {
+    expect(encodeEnter(key({ altKey: true }))).toBe("\x1b\r");
   });
 
-  it("encodes Ctrl+Enter as CSI-u with modifier 5", () => {
-    expect(encodeEnter(key({ ctrlKey: true }))).toBe("\x1b[13;5u");
+  it("encodes Ctrl+Enter as the same multiline sequence", () => {
+    expect(encodeEnter(key({ ctrlKey: true }))).toBe("\x1b\r");
   });
 
-  it("encodes Meta/Cmd+Enter as CSI-u with modifier 9", () => {
-    expect(encodeEnter(key({ metaKey: true }))).toBe("\x1b[13;9u");
+  it("encodes Meta/Cmd+Enter as the same multiline sequence", () => {
+    expect(encodeEnter(key({ metaKey: true }))).toBe("\x1b\r");
   });
 
-  it("encodes Ctrl+Shift+Enter distinctly (modifier 6) so tmux can bind it", () => {
-    const ctrlShift = encodeEnter(key({ ctrlKey: true, shiftKey: true }));
-    expect(ctrlShift).toBe("\x1b[13;6u");
-    // must differ from plain Shift+Enter — the whole point of the fix.
-    expect(ctrlShift).not.toBe(encodeEnter(key({ shiftKey: true })));
+  it("normalizes combined modifiers too", () => {
+    expect(encodeEnter(key({ ctrlKey: true, shiftKey: true }))).toBe("\x1b\r");
   });
 
-  it("combines all four modifiers (modifier 16)", () => {
+  it("normalizes all four modifiers", () => {
     expect(
       encodeEnter(
         key({ shiftKey: true, altKey: true, ctrlKey: true, metaKey: true })
       )
-    ).toBe("\x1b[13;16u");
+    ).toBe("\x1b\r");
   });
 });

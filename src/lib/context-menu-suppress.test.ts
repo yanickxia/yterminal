@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { shouldSuppressContextMenu } from "./context-menu-suppress";
 
 // On macOS, Ctrl is the "secondary click" modifier, so a Ctrl+Enter keydown
-// (which we now turn into a CSI-u sequence for tmux, see enter-key.ts) ALSO
+// (which we turn into ESC+CR for multiline input, see enter-key.ts) ALSO
 // makes WKWebView dispatch a `contextmenu` event — popping the Copy/Paste menu
 // unexpectedly. We suppress that `contextmenu` only when it arrives right after
 // a modified Enter fired. A self-expiring timestamp (not a sticky flag) avoids

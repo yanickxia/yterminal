@@ -81,6 +81,13 @@ export const DEFAULT_ALERT_SOUND_ENABLED = true;
 /** Attention chime loudness: linear 0..1 gain multiplier. Default full. */
 export const DEFAULT_ALERT_VOLUME = 1;
 
+/** Download a discovered update without opening the update dialog. */
+export const DEFAULT_AUTO_DOWNLOAD_UPDATES = false;
+/** Optional GitHub download accelerator prefix/template. */
+export const DEFAULT_GITHUB_MIRROR = "";
+/** Optional HTTP(S) forward proxy used only by the updater. */
+export const DEFAULT_UPDATE_HTTP_PROXY = "";
+
 /**
  * Wire protocol a provider speaks.
  *   openai    — OpenAI-compatible `/chat/completions` (Bearer auth). Also fits
@@ -168,6 +175,12 @@ interface SettingsState {
   alertSoundEnabled: boolean;
   /** attention chime loudness, linear 0..1 */
   alertVolume: number;
+  /** automatically download updates after the startup check */
+  autoDownloadUpdates: boolean;
+  /** GitHub mirror prefix, or a template containing {url} */
+  githubMirror: string;
+  /** updater-only HTTP(S) proxy URL */
+  updateHttpProxy: string;
   /** capture verbose (DEBUG/TRACE) debug logs; default on until opted out */
   debugVerbose: boolean;
   /** configured AI providers for the sidebar (see AiProvider) */
@@ -193,6 +206,9 @@ interface SettingsState {
   setAgentStatusHooks: (on: boolean) => void;
   setAlertSoundEnabled: (on: boolean) => void;
   setAlertVolume: (v: number) => void;
+  setAutoDownloadUpdates: (on: boolean) => void;
+  setGithubMirror: (url: string) => void;
+  setUpdateHttpProxy: (url: string) => void;
   setDebugVerbose: (on: boolean) => void;
   /** append a provider row (of the given kind) and make it active; returns its id */
   addAiProvider: (kind?: AiProviderKind) => string;
@@ -222,6 +238,9 @@ export const useSettingsStore = create<SettingsState>()(
       agentStatusHooks: DEFAULT_AGENT_STATUS_HOOKS,
       alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
       alertVolume: DEFAULT_ALERT_VOLUME,
+      autoDownloadUpdates: DEFAULT_AUTO_DOWNLOAD_UPDATES,
+      githubMirror: DEFAULT_GITHUB_MIRROR,
+      updateHttpProxy: DEFAULT_UPDATE_HTTP_PROXY,
       debugVerbose: true,
       aiProviders: [],
       activeAiProviderId: "",
@@ -268,6 +287,9 @@ export const useSettingsStore = create<SettingsState>()(
       setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
       setAlertVolume: (v) =>
         set({ alertVolume: Math.max(0, Math.min(1, v)) }),
+      setAutoDownloadUpdates: (on) => set({ autoDownloadUpdates: on }),
+      setGithubMirror: (url) => set({ githubMirror: url }),
+      setUpdateHttpProxy: (url) => set({ updateHttpProxy: url }),
       setDebugVerbose: (on) => set({ debugVerbose: on }),
       addAiProvider: (kind = "openai") => {
         const id = newProviderId();
@@ -306,7 +328,7 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       setActiveAiProvider: (id) => set({ activeAiProviderId: id }),
     }),
-    { name: "yterminal-settings", version: 8,
+    { name: "yterminal-settings", version: 9,
       // v4→v5: providers gained a `kind` field. Backfill "openai" so existing
       // configs keep working (they were all OpenAI-compatible before).
       // v5→v6: added a separate interface font (uiFontId). Backfill the "system"
@@ -315,6 +337,7 @@ export const useSettingsStore = create<SettingsState>()(
       // 13px chrome size so pre-existing configs look unchanged.
       // v7→v8: added agentStatusHooks (Claude Code hook install). Backfill the
       // default (on) so existing configs opt in like a fresh install.
+      // v8→v9: added updater background-download and network settings.
       migrate: (persisted, version) => {
         const s = persisted as Partial<SettingsState> | undefined;
         if (s && version < 5 && Array.isArray(s.aiProviders)) {
@@ -331,6 +354,17 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (s && version < 8 && typeof s.agentStatusHooks !== "boolean") {
           s.agentStatusHooks = DEFAULT_AGENT_STATUS_HOOKS;
+        }
+        if (s && version < 9) {
+          if (typeof s.autoDownloadUpdates !== "boolean") {
+            s.autoDownloadUpdates = DEFAULT_AUTO_DOWNLOAD_UPDATES;
+          }
+          if (typeof s.githubMirror !== "string") {
+            s.githubMirror = DEFAULT_GITHUB_MIRROR;
+          }
+          if (typeof s.updateHttpProxy !== "string") {
+            s.updateHttpProxy = DEFAULT_UPDATE_HTTP_PROXY;
+          }
         }
         return s as SettingsState;
       },

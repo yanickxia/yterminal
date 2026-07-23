@@ -7,7 +7,7 @@ export function scheduleAutoCheck(): void {
   setTimeout(() => {
     useUpdaterStore
       .getState()
-      .check()
+      .check({ autoDownload: true })
       .catch((e) => console.warn("[updater] auto-check failed:", e));
   }, 5000);
 }

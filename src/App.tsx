@@ -199,10 +199,18 @@ export default function App() {
     return () => setOnCommandSettled(null);
   }, []);
 
-  // Subscribe to store; show dialog when an update becomes available.
+  // Foreground only the decisions that need the user: a manually discovered
+  // update, and the install/restart prompt after any background download.
   useEffect(() => {
     return useUpdaterStore.subscribe((s, prev) => {
-      if (s.state === "available" && prev.state !== "available") {
+      if (
+        s.state === "available" &&
+        prev.state !== "available" &&
+        !s.backgroundDownload
+      ) {
+        setUpdateDialogOpen(true);
+      }
+      if (s.state === "ready" && prev.state !== "ready") {
         setUpdateDialogOpen(true);
       }
     });

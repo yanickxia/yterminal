@@ -341,10 +341,11 @@ interface Session {
   /** Cleanup for the tmux/TUI mouse-mode file-link click bridge listener. */
   linkClickBridgeCleanup?: () => void;
   /**
-   * When a modified Enter (Ctrl/Cmd/Alt/Shift+Enter) is handled we emit a CSI-u
-   * sequence (see enter-key.ts). On macOS, Ctrl is the "secondary click"
-   * modifier, so that same keydown ALSO makes WKWebView dispatch a
-   * `contextmenu` event — popping the Copy/Paste menu unexpectedly. We stamp
+   * When a modified Enter (Ctrl/Cmd/Alt/Shift+Enter) is handled we emit the
+   * Claude Code-compatible ESC+CR sequence (see enter-key.ts). On macOS, Ctrl
+   * is the "secondary click" modifier, so that same keydown ALSO makes
+   * WKWebView dispatch a `contextmenu` event — popping the Copy/Paste menu
+   * unexpectedly. We stamp
    * this timestamp and swallow a `contextmenu` arriving right after it. See
    * context-menu-suppress.ts.
    */
@@ -948,12 +949,9 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
 
   // Multi-line input bridge for TUIs (Claude Code, Ink-based prompts, fish/zsh
-  // continuation, etc.) AND multiplexer key passthrough: plain Enter sends CR
-  // (submit). Any modified Enter (Cmd/Ctrl/Alt/Shift) is emitted as its CSI-u
-  // ("fixterms") sequence carrying the exact modifier bitmask, so tmux and
-  // modern TUIs can tell e.g. Ctrl+Shift+Enter from Shift+Enter and bind them
-  // independently — the old ESC+CR collapse made every combo look like
-  // Alt+Enter, which a multiplexer just rendered as a newline.
+  // continuation, etc.): plain Enter sends CR (submit). Any modified Enter
+  // (Cmd/Ctrl/Alt/Shift) is emitted as ESC+CR, the sequence Claude Code's
+  // terminal setup binds to a literal newline.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
     // Clipboard shortcuts (Ctrl+Shift+C/V, or Cmd+C/V on mac). Bare Ctrl+C/V
@@ -1616,7 +1614,7 @@ export function hasSelection(tabId: string): boolean {
 /**
  * Whether a `contextmenu` event for this pane should be ignored because it's
  * the spurious one macOS WKWebView fires alongside a Ctrl-modified Enter (which
- * we turn into a CSI-u sequence). Consumes the timestamp so a genuine
+ * we turn into ESC+CR). Consumes the timestamp so a genuine
  * right-click immediately after is still honored.
  */
 export function shouldIgnoreContextMenu(tabId: string): boolean {

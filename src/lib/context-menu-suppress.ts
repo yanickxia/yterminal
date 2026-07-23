@@ -4,7 +4,7 @@
 // wiring and context-menu-suppress.test.ts for the cases.
 //
 // Background: on macOS, Ctrl is the system "secondary click" modifier, so a
-// Ctrl+Enter keydown (now emitted as a CSI-u sequence, see enter-key.ts) also
+// Ctrl+Enter keydown (emitted as ESC+CR, see enter-key.ts) also
 // makes the webview dispatch a `contextmenu` event at the caret — popping our
 // Copy/Paste menu on top of the terminal. We stamp the moment a modified Enter
 // is handled and swallow a `contextmenu` arriving right after it.

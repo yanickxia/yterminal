@@ -3,8 +3,8 @@
 // centralized and mockable in vitest.
 //
 // Why this exists: the Tauri updater only replaces an AppImage on Linux. A
-// deb-installed app must download + verify + `pkexec dpkg -i` its own .deb —
-// these commands are that path. See updater-store.ts for the state machine.
+// deb-installed app must download + verify its own .deb, then run `pkexec
+// dpkg -i` only after user confirmation. These commands are that split path.
 
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { logger } from "./logger";
@@ -12,10 +12,15 @@ import { logger } from "./logger";
 /** Which install flavor is running. Drives which updater path the store takes. */
 export type InstallKind = "appimage" | "deb" | "rpm" | "other";
 
-export interface DebUpdateResult {
-  /** true = pkexec ran dpkg to completion; caller prompts a restart. */
+export interface DebDownloadResult {
+  /** Path of the downloaded package after signature verification. */
+  downloadedPath: string;
+}
+
+export interface DebInstallResult {
+  /** true = pkexec ran dpkg to completion. */
   installed: boolean;
-  /** where the verified .deb landed (for manual install when pkexec absent). */
+  /** Where the verified .deb remains (for manual install when pkexec is absent). */
   downloadedPath: string;
 }
 
@@ -38,22 +43,35 @@ export async function installKind(): Promise<InstallKind> {
 }
 
 /**
- * Download the .deb at `url`, verify its minisign `signature`, and install it
- * via pkexec. Rejects (without installing) on a bad signature. Propagates
- * errors so the store can surface them in the update dialog. `onProgress`, when
- * given, receives download-progress events so the UI can render a progress bar.
+ * Download the .deb and verify its minisign signature without installing it.
+ * This is safe to run silently in the background; pkexec is deferred until the
+ * user explicitly chooses Install and restart.
  */
-export async function installDebUpdate(
+export async function downloadDebUpdate(
   url: string,
   signature: string,
+  options: { githubMirror?: string; httpProxy?: string } = {},
   onProgress?: (e: DebProgressEvent) => void
-): Promise<DebUpdateResult> {
+): Promise<DebDownloadResult> {
   const channel = new Channel<DebProgressEvent>();
   if (onProgress) channel.onmessage = onProgress;
-  return invoke<DebUpdateResult>("install_deb_update", {
+  return invoke<DebDownloadResult>("download_deb_update", {
     url,
     signature,
+    githubMirror: options.githubMirror?.trim() || undefined,
+    httpProxy: options.httpProxy?.trim() || undefined,
     onProgress: channel,
+  });
+}
+
+/** Install the previously verified package via pkexec. */
+export async function installDebUpdate(
+  downloadedPath: string,
+  signature: string
+): Promise<DebInstallResult> {
+  return invoke<DebInstallResult>("install_deb_update", {
+    downloadedPath,
+    signature,
   });
 }
 
@@ -64,6 +82,13 @@ export async function installDebUpdate(
  * CDN, and the CORS check on `tauri://localhost` blocks that redirect. reqwest
  * follows it fine, so the deb update path routes the fetch through Rust.
  */
-export async function fetchLatestJson(url: string): Promise<string> {
-  return invoke<string>("fetch_latest_json", { url });
+export async function fetchLatestJson(
+  url: string,
+  options: { githubMirror?: string; httpProxy?: string } = {}
+): Promise<string> {
+  return invoke<string>("fetch_latest_json", {
+    url,
+    githubMirror: options.githubMirror?.trim() || undefined,
+    httpProxy: options.httpProxy?.trim() || undefined,
+  });
 }

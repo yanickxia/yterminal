@@ -93,12 +93,13 @@ daemon.
 | `Cmd/Ctrl + F` | Search the focused pane's scrollback (Enter / Shift+Enter to step, Esc to close) |
 | `Cmd/Ctrl + Shift + W` | Close the focused pane |
 | `Cmd/Ctrl + W` | Close the current tab |
+| Any modifier + `Enter` | Insert a newline in Claude Code and compatible TUIs |
 | Double-click a tab / workspace | Rename it |
 
 ## Configuration
 
-Appearance settings are mirrored to a plain JSON file, so you can version it,
-sync it across machines, or edit it by hand:
+Appearance, terminal, and updater settings are mirrored to a plain JSON file,
+so you can version it, sync it across machines, or edit it by hand:
 
 | OS | Path |
 |---|---|
@@ -107,11 +108,16 @@ sync it across machines, or edit it by hand:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "appearance": {
     "theme": "tokyo-night",
     "font": "jetbrains-mono",
     "fontSize": 14
+  },
+  "updates": {
+    "autoDownload": false,
+    "githubMirror": "",
+    "httpProxy": ""
   }
 }
 ```
@@ -127,21 +133,27 @@ sync it across machines, or edit it by hand:
 
 Changes made in the in-app **Settings** panel are written back to this file.
 Conversely, when you sync the file in (git pull, Dropbox, a hand edit) the app
-re-reads it and applies the new appearance the next time its window regains
+re-reads it and applies the changes the next time its window regains
 focus. Unknown or invalid values fall back to defaults, so a malformed file
 never breaks the app. The Settings panel shows the exact file path.
 
 ## Auto-update
 
 yterminal checks GitHub for new releases on launch (5 seconds after the
-window opens) and via **Settings → Update → Check for updates**. When a
-new version is available, you'll see a dialog with the release notes
-and an "Update now" button. Updates are signed with ed25519 and verified
-before install — a tampered or mismatched download is refused.
+window opens) and via **Settings → Update → Check for updates**. Downloads run
+in the background; once a signed update has been downloaded and verified,
+yterminal prompts you to restart and apply it. Enable silent automatic
+downloads from the same page if you only want to see the final restart prompt.
 
-Linux users: the in-app updater works for the **AppImage** flavor only;
-`.deb` / `.rpm` users continue to install via the system package
-manager.
+The Update settings also accept a GitHub mirror (a URL prefix or a template
+containing `{url}`) and an updater-only HTTP(S) proxy such as
+`http://127.0.0.1:7890`. Both the manifest and release asset use the selected
+route. A tampered or mismatched download is refused.
+
+Linux **AppImage** and **.deb** builds can update in-app. A .deb is downloaded
+and verified silently, then asks for administrator approval only after you
+choose Install and restart. `.rpm` users continue to update via the system
+package manager.
 
 ## Tech stack
 

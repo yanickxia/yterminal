@@ -1176,54 +1176,177 @@ function DebugTab() {
 function UpdateTab() {
   const state = useUpdaterStore((s) => s.state);
   const manifest = useUpdaterStore((s) => s.manifest);
+  const progress = useUpdaterStore((s) => s.progress);
   const errorMessage = useUpdaterStore((s) => s.errorMessage);
   const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt);
   const installKind = useUpdaterStore((s) => s.installKind);
   const recheck = useUpdaterStore((s) => s.check);
+  const startDownload = useUpdaterStore((s) => s.startDownload);
+  const installAndRestart = useUpdaterStore((s) => s.relaunch);
+  const autoDownloadUpdates = useSettingsStore((s) => s.autoDownloadUpdates);
+  const githubMirror = useSettingsStore((s) => s.githubMirror);
+  const updateHttpProxy = useSettingsStore((s) => s.updateHttpProxy);
+  const setAutoDownloadUpdates = useSettingsStore(
+    (s) => s.setAutoDownloadUpdates
+  );
+  const setGithubMirror = useSettingsStore((s) => s.setGithubMirror);
+  const setUpdateHttpProxy = useSettingsStore((s) => s.setUpdateHttpProxy);
+
+  function runPrimaryAction() {
+    if (state === "available") {
+      void startDownload();
+    } else if (state === "ready") {
+      void installAndRestart();
+    } else {
+      void recheck();
+    }
+  }
+
+  const actionLabel =
+    state === "checking"
+      ? "Checking…"
+      : state === "downloading"
+      ? "Downloading in background…"
+      : state === "installing"
+      ? "Installing…"
+      : state === "available" && manifest
+      ? `Download v${manifest.version} in background`
+      : state === "ready"
+      ? installKind === "deb"
+        ? "Install and restart"
+        : "Restart to update"
+      : state === "error"
+      ? "Retry"
+      : "Check for updates";
 
   const currentVersion = __APP_VERSION__;
   return (
-    <div className="field">
-      <label className="field-label">Current version</label>
-      <div>{currentVersion}</div>
-      <div style={{ marginTop: 12 }}>
-        <button onClick={() => recheck()} disabled={state === "checking"}>
-          {state === "checking"
-            ? "Checking…"
-            : state === "available" && manifest
-            ? `View update v${manifest.version}`
-            : state === "error"
-            ? "Retry"
-            : "Check for updates"}
-        </button>
-        {lastCheckedAt && (
-          <span style={{ marginLeft: 12, fontSize: 12, opacity: 0.7 }}>
-            Last checked: {new Date(lastCheckedAt).toLocaleString()}
-          </span>
+    <>
+      <div className="field">
+        <label className="field-label">Current version</label>
+        <div>{currentVersion}</div>
+        <div style={{ marginTop: 12 }}>
+          <button
+            onClick={runPrimaryAction}
+            disabled={
+              state === "checking" ||
+              state === "downloading" ||
+              state === "installing"
+            }
+          >
+            {actionLabel}
+          </button>
+          {lastCheckedAt && (
+            <span style={{ marginLeft: 12, fontSize: 12, opacity: 0.7 }}>
+              Last checked: {new Date(lastCheckedAt).toLocaleString()}
+            </span>
+          )}
+        </div>
+        {state === "downloading" && (
+          <div style={{ marginTop: 10 }}>
+            <progress
+              value={progress?.downloaded ?? undefined}
+              max={progress?.total ?? undefined}
+              style={{ width: "100%" }}
+            />
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
+              Download continues when Settings is closed
+              {progress
+                ? ` — ${formatUpdateBytes(progress.downloaded)}${
+                    progress.total
+                      ? ` / ${formatUpdateBytes(progress.total)}`
+                      : ""
+                  }`
+                : ""}
+            </div>
+          </div>
+        )}
+        {installKind === "deb" && (
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+            The download is silent. <code>pkexec</code> asks for your admin
+            password only after you choose Install and restart.
+          </div>
+        )}
+        {installKind === "rpm" && (
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+            In-app update isn't available for the .rpm build — use your package
+            manager, or install the latest .rpm from the Releases page.
+          </div>
+        )}
+        {state === "error" && errorMessage && (
+          <div style={{ marginTop: 8, color: "var(--err, #c66)" }}>
+            {errorMessage}
+          </div>
+        )}
+        {state === "up-to-date" && (
+          <div style={{ marginTop: 8, opacity: 0.7 }}>You're up to date.</div>
         )}
       </div>
-      {installKind === "deb" && (
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-          Installing an update replaces the .deb via <code>pkexec</code> and asks
-          for your admin password.
-        </div>
-      )}
-      {installKind === "rpm" && (
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-          In-app update isn't available for the .rpm build — use your package
-          manager, or install the latest .rpm from the Releases page.
-        </div>
-      )}
-      {state === "error" && errorMessage && (
-        <div style={{ marginTop: 8, color: "var(--err, #c66)" }}>
-          {errorMessage}
-        </div>
-      )}
-      {state === "up-to-date" && (
-        <div style={{ marginTop: 8, opacity: 0.7 }}>You're up to date.</div>
-      )}
-    </div>
+
+      <div className="field">
+        <label className="field-label">Background updates</label>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={autoDownloadUpdates}
+            onChange={(event) => {
+              setAutoDownloadUpdates(event.target.checked);
+              void saveConfigToDisk();
+            }}
+          />
+          Automatically download updates silently
+        </label>
+        <p className="field-hint">
+          Startup checks stay in the background. When the verified download is
+          ready, yterminal asks before installing and restarting.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-label">GitHub mirror</label>
+        <input
+          type="text"
+          value={githubMirror}
+          onChange={(event) => {
+            setGithubMirror(event.target.value);
+            void saveConfigToDisk();
+          }}
+          placeholder="https://ghfast.top"
+          spellCheck={false}
+          style={{ width: "100%", boxSizing: "border-box" }}
+        />
+        <p className="field-hint">
+          Optional accelerator for both latest.json and release assets. Use a
+          URL prefix, or a template such as <code>https://mirror/?url={"{url}"}</code>.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-label">HTTP proxy</label>
+        <input
+          type="text"
+          value={updateHttpProxy}
+          onChange={(event) => {
+            setUpdateHttpProxy(event.target.value);
+            void saveConfigToDisk();
+          }}
+          placeholder="http://127.0.0.1:7890"
+          spellCheck={false}
+          style={{ width: "100%", boxSizing: "border-box" }}
+        />
+        <p className="field-hint">
+          Optional HTTP(S) forward proxy used only for update checks and
+          downloads. Leave both network fields empty to connect directly.
+        </p>
+      </div>
+    </>
   );
+}
+
+function formatUpdateBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Coerce any CSS color string to a 7-char #rrggbb for <input type="color">. */

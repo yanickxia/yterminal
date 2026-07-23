@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use tauri::ipc::Channel;
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 
 #[tauri::command]
 fn open_devtools(app: tauri::AppHandle) {
@@ -2192,6 +2193,114 @@ async fn ai_chat_tools(req: AiToolsRequest) -> Result<serde_json::Value, String>
 /// If the signing key is ever rotated, update BOTH places.
 const UPDATER_PUBKEY_B64: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyODMxRDk0NzU0MjRBOTEKUldTUlNrSjFsQjJEOHV4ZVNROHJVL1NTMTFIL0FJVk43YzRzYW1laGxyZlFydnFMc0kvZXF6WEoK";
 
+/// Apply a user-configured GitHub accelerator to GitHub-owned URLs. A mirror
+/// may be a simple prefix (`https://mirror.example/`) or a template containing
+/// `{url}`. Non-GitHub URLs are deliberately left untouched.
+fn github_mirror_url(original: &str, mirror: Option<&str>) -> Result<String, String> {
+    let Some(mirror) = mirror.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(original.to_string());
+    };
+    let original_url = reqwest::Url::parse(original)
+        .map_err(|e| format!("invalid update URL {original:?}: {e}"))?;
+    let host = original_url.host_str().unwrap_or_default();
+    let is_github = host == "github.com"
+        || host == "api.github.com"
+        || host.ends_with(".githubusercontent.com");
+    if !is_github {
+        return Ok(original.to_string());
+    }
+
+    let mirrored = if mirror.contains("{url}") {
+        mirror.replace("{url}", original)
+    } else {
+        format!("{}/{}", mirror.trim_end_matches('/'), original)
+    };
+    reqwest::Url::parse(&mirrored)
+        .map_err(|e| format!("invalid GitHub mirror URL {mirrored:?}: {e}"))?;
+    Ok(mirrored)
+}
+
+fn updater_http_client(http_proxy: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy) = http_proxy.map(str::trim).filter(|value| !value.is_empty()) {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy)
+                .map_err(|e| format!("invalid updater HTTP proxy {proxy:?}: {e}"))?,
+        );
+    }
+    builder
+        .build()
+        .map_err(|e| format!("build updater HTTP client: {e}"))
+}
+
+/// Metadata shape expected by `@tauri-apps/plugin-updater`'s exported Update
+/// constructor. The resource is added to this webview's table, so the stock
+/// plugin download/install commands can consume it after our dynamic endpoint
+/// check.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckMetadata {
+    rid: tauri::ResourceId,
+    current_version: String,
+    version: String,
+    date: Option<String>,
+    body: Option<String>,
+    raw_json: serde_json::Value,
+}
+
+/// Check through a runtime-configurable mirror/proxy. The stock JS check API
+/// accepts a proxy but not a dynamic endpoint, so this small bridge builds the
+/// same updater resource with the selected endpoint and then returns metadata
+/// compatible with the stock JS `Update` class.
+#[tauri::command]
+async fn check_update(
+    webview: tauri::Webview,
+    endpoint: String,
+    github_mirror: Option<String>,
+    http_proxy: Option<String>,
+) -> Result<Option<UpdateCheckMetadata>, String> {
+    let endpoint = github_mirror_url(&endpoint, github_mirror.as_deref())?;
+    logger::info("updater", &format!("check_update endpoint={endpoint:?}"));
+
+    let endpoint =
+        reqwest::Url::parse(&endpoint).map_err(|e| format!("invalid updater endpoint: {e}"))?;
+    let mut builder = webview
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("configure updater endpoint: {e}"))?;
+    if let Some(proxy) = http_proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let proxy =
+            reqwest::Url::parse(proxy).map_err(|e| format!("invalid updater HTTP proxy: {e}"))?;
+        builder = builder.proxy(proxy);
+    }
+
+    let updater = builder.build().map_err(|e| format!("build updater: {e}"))?;
+    let Some(mut update) = updater
+        .check()
+        .await
+        .map_err(|e| format!("check for update: {e}"))?
+    else {
+        return Ok(None);
+    };
+
+    let download_url = github_mirror_url(update.download_url.as_str(), github_mirror.as_deref())?;
+    update.download_url = reqwest::Url::parse(&download_url)
+        .map_err(|e| format!("invalid mirrored download URL: {e}"))?;
+    let metadata = UpdateCheckMetadata {
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
+        date: update.date.map(|date| date.to_string()),
+        body: update.body.clone(),
+        raw_json: update.raw_json.clone(),
+        rid: webview.resources_table().add(update),
+    };
+    Ok(Some(metadata))
+}
+
 /// Which install flavor is running, so the frontend picks the right updater path.
 /// `appimage`/`deb`/`rpm` on Linux; `other` = macOS/Windows (Tauri updater
 /// handles those natively) or an unrecognized Linux layout.
@@ -2265,13 +2374,19 @@ fn verify_minisign_with(data: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<
         .map_err(|_| "signature verification failed".to_string())
 }
 
-/// Result of a deb self-update attempt. `installed` = pkexec ran dpkg to
-/// completion (the caller then prompts a restart). `downloaded_path` set with
-/// `installed:false` = pkexec was unavailable, so we left the verified .deb on
-/// disk for the user to install by hand.
+/// Result of downloading and verifying a deb update.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DebUpdateResult {
+struct DebDownloadResult {
+    downloaded_path: String,
+}
+
+/// Result of the user-confirmed install step. `installed:false` means pkexec
+/// was unavailable, so the verified package remains available for a manual
+/// `sudo dpkg -i`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebInstallResult {
     installed: bool,
     downloaded_path: String,
 }
@@ -2287,26 +2402,27 @@ enum DebProgressEvent {
     Started { content_length: Option<u64> },
     /// One downloaded chunk; `chunkLength` bytes just arrived.
     Progress { chunk_length: u64 },
-    /// Bytes are all in; verification + pkexec install begin next.
+    /// Bytes are all in; signature verification begins next.
     Finished,
 }
 
 /// Download the .deb from `url`, verify its `signature` (base64 Tauri `.sig`),
-/// and install it via `pkexec dpkg -i`. Errors out (WITHOUT installing) if the
-/// signature doesn't verify — the file is about to be handed to root. Streams
-/// download progress down `on_progress` so the UI can render a progress bar.
+/// and leave it in a known temporary path. Installation is deliberately a
+/// separate user-confirmed action, allowing this step to run silently in the
+/// background. Errors out if the signature doesn't verify.
 #[tauri::command]
-async fn install_deb_update(
+async fn download_deb_update(
     url: String,
     signature: String,
+    github_mirror: Option<String>,
+    http_proxy: Option<String>,
     on_progress: Channel<DebProgressEvent>,
-) -> Result<DebUpdateResult, String> {
+) -> Result<DebDownloadResult, String> {
     use futures_util::StreamExt;
-    logger::info("updater", &format!("install_deb_update url={url:?}"));
+    let url = github_mirror_url(&url, github_mirror.as_deref())?;
+    logger::info("updater", &format!("download_deb_update url={url:?}"));
 
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("build http client: {e}"))?;
+    let client = updater_http_client(http_proxy.as_deref())?;
     let resp = client
         .get(&url)
         .send()
@@ -2333,15 +2449,66 @@ async fn install_deb_update(
     }
     let _ = on_progress.send(DebProgressEvent::Finished);
 
-    // Verify BEFORE touching disk / root.
+    // Verify BEFORE touching disk or ever handing the package to root.
     verify_minisign(&bytes, &signature)?;
     logger::info("updater", "deb signature verified");
 
-    // Write to a predictable temp path.
-    let mut path = std::env::temp_dir();
-    path.push("yterminal-update.deb");
-    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // Use a unique, owner-only file: a predictable world-readable path would
+    // allow another local user to replace the package between download and the
+    // later user-confirmed pkexec step.
+    let path = std::env::temp_dir().join(format!("yterminal-update-{}.deb", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|e| format!("create {}: {e}", path.display()))?;
+    {
+        use std::io::Write;
+        file.write_all(&bytes)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
     let path_str = path.to_string_lossy().to_string();
+    Ok(DebDownloadResult {
+        downloaded_path: path_str,
+    })
+}
+
+/// Install the already downloaded and verified package after the user chooses
+/// "Install and restart". Restrict the path to our updater temp-file pattern
+/// and verify the signature again immediately before elevation, closing the
+/// download→install replacement window.
+#[tauri::command]
+async fn install_deb_update(
+    downloaded_path: String,
+    signature: String,
+) -> Result<DebInstallResult, String> {
+    let temp_dir = std::env::temp_dir();
+    let path = std::path::PathBuf::from(&downloaded_path);
+    let valid_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("yterminal-update-") && name.ends_with(".deb"));
+    let regular_file = std::fs::symlink_metadata(&path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    if path.parent() != Some(temp_dir.as_path()) || !valid_name || !regular_file {
+        return Err("verified deb update is no longer available; download it again".to_string());
+    }
+
+    let verify_path = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&verify_path)
+            .map_err(|e| format!("read {}: {e}", verify_path.display()))?;
+        verify_minisign(&bytes, &signature)
+    })
+    .await
+    .map_err(|e| format!("join deb verification task: {e}"))??;
+    logger::info("updater", "deb signature re-verified before pkexec");
 
     // pkexec pops a polkit auth dialog and runs dpkg as root. If pkexec is
     // absent, leave the verified file for a manual `sudo dpkg -i`.
@@ -2351,28 +2518,34 @@ async fn install_deb_update(
             "updater",
             "pkexec not found; leaving verified deb for manual install",
         );
-        return Ok(DebUpdateResult {
+        return Ok(DebInstallResult {
             installed: false,
-            downloaded_path: path_str,
+            downloaded_path,
         });
     };
 
-    let status = std::process::Command::new(pkexec)
-        .arg("dpkg")
-        .arg("-i")
-        .arg(&path)
-        .status()
-        .map_err(|e| format!("run pkexec dpkg: {e}"))?;
+    let install_path = path.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(pkexec)
+            .arg("dpkg")
+            .arg("-i")
+            .arg(install_path)
+            .status()
+    })
+    .await
+    .map_err(|e| format!("join pkexec dpkg task: {e}"))?
+    .map_err(|e| format!("run pkexec dpkg: {e}"))?;
     if !status.success() {
         return Err(format!(
-            "dpkg install failed (exit {}). The verified package is at {path_str}",
+            "dpkg install failed (exit {}). The verified package is at {downloaded_path}",
             status.code().unwrap_or(-1)
         ));
     }
     logger::info("updater", "deb installed via pkexec dpkg -i");
-    Ok(DebUpdateResult {
+    let _ = std::fs::remove_file(&path);
+    Ok(DebInstallResult {
         installed: true,
-        downloaded_path: path_str,
+        downloaded_path,
     })
 }
 
@@ -2386,11 +2559,14 @@ async fn install_deb_update(
 /// and follows the redirect fine, so we do the fetch server-side and hand the
 /// JSON back to the store.
 #[tauri::command]
-async fn fetch_latest_json(url: String) -> Result<String, String> {
+async fn fetch_latest_json(
+    url: String,
+    github_mirror: Option<String>,
+    http_proxy: Option<String>,
+) -> Result<String, String> {
+    let url = github_mirror_url(&url, github_mirror.as_deref())?;
     logger::info("updater", &format!("fetch_latest_json url={url:?}"));
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("build http client: {e}"))?;
+    let client = updater_http_client(http_proxy.as_deref())?;
     let resp = client
         .get(&url)
         .send()
@@ -2857,7 +3033,7 @@ mod session_id_tests {
 
 #[cfg(test)]
 mod deb_verify_tests {
-    use super::verify_minisign_with;
+    use super::{github_mirror_url, verify_minisign_with};
 
     // Throwaway keypair (NOT the release key) generated with
     // `tauri signer sign`, signing the bytes "hello yterminal deb update\n".
@@ -2888,6 +3064,34 @@ mod deb_verify_tests {
     #[test]
     fn errors_on_garbage_base64() {
         assert!(verify_minisign_with(SIGNED_DATA, "!!!not base64!!!", TEST_PUBKEY).is_err());
+    }
+
+    #[test]
+    fn github_mirror_prefixes_github_urls() {
+        let original = "https://github.com/yanickxia/yterminal/releases/download/v1/a.zip";
+        assert_eq!(
+            github_mirror_url(original, Some("https://mirror.example/")).unwrap(),
+            format!("https://mirror.example/{original}")
+        );
+    }
+
+    #[test]
+    fn github_mirror_supports_url_templates() {
+        let original =
+            "https://github.com/yanickxia/yterminal/releases/latest/download/latest.json";
+        assert_eq!(
+            github_mirror_url(original, Some("https://mirror.example/fetch?url={url}")).unwrap(),
+            format!("https://mirror.example/fetch?url={original}")
+        );
+    }
+
+    #[test]
+    fn github_mirror_leaves_non_github_urls_alone() {
+        let original = "https://updates.example/yterminal/latest.json";
+        assert_eq!(
+            github_mirror_url(original, Some("https://mirror.example")).unwrap(),
+            original
+        );
     }
 }
 
@@ -2954,7 +3158,9 @@ fn main() {
             ai_chat_stream,
             ai_chat_cancel,
             ai_chat_tools,
+            check_update,
             install_kind,
+            download_deb_update,
             install_deb_update,
             fetch_latest_json,
             scrollback_save,

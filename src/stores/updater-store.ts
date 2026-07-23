@@ -1,29 +1,33 @@
-// updater-store: state machine for the auto-update flow.
+// updater-store: state machine for background-capable updates.
 //
 // States:
 //   idle → checking → { up-to-date | available | error }
 //   available → downloading → { ready | error }
 //   ready → installing → (process relaunches, never returns)
 //
-// Only `lastCheckedAt` is persisted. Everything else is per-session.
+// Download and installation are intentionally separate. The update dialog can
+// close as soon as a download starts; once verified bytes are ready, the app
+// prompts for the user-confirmed install/restart step.
+
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { check } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { arch as osArch } from "@tauri-apps/plugin-os";
 import {
   installKind,
+  downloadDebUpdate,
   installDebUpdate,
   fetchLatestJson,
   type InstallKind,
 } from "../lib/updater-deb";
+import {
+  checkUpdate,
+  LATEST_JSON_URL,
+  type UpdaterNetworkOptions,
+} from "../lib/updater-native";
+import { useSettingsStore } from "./settings-store";
 import { logger } from "../lib/logger";
-
-/** Updater manifest endpoint (mirrors plugins.updater.endpoints in the conf).
- *  Fetched server-side (Rust reqwest) — see fetchLatestJson — because the
- *  WebView's CORS check blocks GitHub's cross-origin 302 redirect. */
-const LATEST_JSON_URL =
-  "https://github.com/yanickxia/yterminal/releases/latest/download/latest.json";
 
 function debEntryForHost(manifest: any): { url?: string; signature?: string } | null {
   const arch = osArch();
@@ -32,6 +36,14 @@ function debEntryForHost(manifest: any): { url?: string; signature?: string } | 
     return manifest?.["linux-deb-x86_64"] ?? manifest?.["linux-deb"] ?? null;
   }
   return manifest?.[`linux-deb-${arch}`] ?? null;
+}
+
+function networkOptions(): UpdaterNetworkOptions {
+  const settings = useSettingsStore.getState();
+  return {
+    githubMirror: settings.githubMirror,
+    httpProxy: settings.updateHttpProxy,
+  };
 }
 
 export type UpdaterState =
@@ -50,29 +62,38 @@ export interface UpdateManifest {
   date: string | null;
 }
 
+export interface CheckUpdateOptions {
+  /** Honor the auto-download setting without showing the available dialog. */
+  autoDownload?: boolean;
+}
+
 interface UpdaterStore {
   state: UpdaterState;
   manifest: UpdateManifest | null;
-  /** bytes downloaded / total, both null until the plugin reports them */
+  /** bytes downloaded / total, both null until the downloader reports them */
   progress: { downloaded: number; total: number | null } | null;
   errorMessage: string | null;
   lastCheckedAt: number | null;
+  /** true while an automatic/manual download should stay out of the foreground */
+  backgroundDownload: boolean;
   /** install flavor, resolved lazily on first check; null until then. */
   installKind: InstallKind | null;
-  /** deb path when pkexec was unavailable and the user must install by hand. */
+  /** verified deb path, retained until the user confirms install. */
+  debDownloadedPath: string | null;
+  /** signature rechecked immediately before the downloaded deb is elevated. */
+  debSignature: string | null;
+  /** deb path shown when pkexec is unavailable and manual install is required. */
   debManualPath: string | null;
 
-  check: () => Promise<void>;
+  check: (options?: CheckUpdateOptions) => Promise<void>;
   startDownload: () => Promise<void>;
   relaunch: () => Promise<void>;
   dismiss: () => void;
 }
 
-// The check() call returns an `Update` instance that holds an opaque
-// IPC handle; we keep it in module scope so startDownload() can use the
-// same instance the plugin already validated. (It's not serializable,
-// so it can't live in the persisted Zustand state.)
-let pendingUpdate: Awaited<ReturnType<typeof check>> | null = null;
+// The plugin Update holds opaque resource handles and downloaded bytes, so it
+// must remain module-local rather than entering persisted Zustand state.
+let pendingUpdate: Update | null = null;
 
 export const useUpdaterStore = create<UpdaterStore>()(
   persist(
@@ -82,33 +103,53 @@ export const useUpdaterStore = create<UpdaterStore>()(
       progress: null,
       errorMessage: null,
       lastCheckedAt: null,
+      backgroundDownload: false,
       installKind: null,
+      debDownloadedPath: null,
+      debSignature: null,
       debManualPath: null,
 
-      check: async () => {
-        if (get().state === "checking" || get().state === "downloading") return;
-        set({ state: "checking", errorMessage: null });
-        // Resolve the install flavor once (cheap; cached after first success).
+      check: async (options = {}) => {
+        if (["checking", "downloading", "ready", "installing"].includes(get().state)) {
+          return;
+        }
+        set({
+          state: "checking",
+          errorMessage: null,
+          progress: null,
+          backgroundDownload: false,
+          debDownloadedPath: null,
+          debSignature: null,
+          debManualPath: null,
+        });
         if (get().installKind === null) {
           set({ installKind: await installKind() });
         }
         try {
-          const update = await check();
+          if (pendingUpdate) {
+            await pendingUpdate.close().catch(() => undefined);
+            pendingUpdate = null;
+          }
+          const update = await checkUpdate(networkOptions());
           set({ lastCheckedAt: Date.now() });
           if (!update) {
-            pendingUpdate = null;
             set({ state: "up-to-date", manifest: null });
             return;
           }
           pendingUpdate = update;
+          const shouldAutoDownload =
+            options.autoDownload === true &&
+            useSettingsStore.getState().autoDownloadUpdates;
           set({
             state: "available",
+            backgroundDownload: shouldAutoDownload,
             manifest: {
               version: update.version,
               notes: update.body ?? null,
               date: update.date ?? null,
             },
           });
+          if (shouldAutoDownload) await get().startDownload();
         } catch (e: any) {
           pendingUpdate = null;
           set({
@@ -120,13 +161,31 @@ export const useUpdaterStore = create<UpdaterStore>()(
 
       startDownload: async () => {
         if (get().state !== "available") return;
+        if (get().installKind === "rpm") {
+          set({
+            state: "error",
+            errorMessage:
+              "In-app update isn't available for the .rpm build. Use your package manager or download the latest .rpm from Releases.",
+          });
+          return;
+        }
 
-        // deb install: the Tauri updater can't replace a .deb, so download +
-        // verify + pkexec install our own signed .deb read from latest.json.
-        if (get().installKind === "deb") {
-          set({ state: "downloading", progress: null, debManualPath: null });
-          try {
-            const body = await fetchLatestJson(LATEST_JSON_URL);
+        set({
+          state: "downloading",
+          backgroundDownload: true,
+          progress: { downloaded: 0, total: null },
+          errorMessage: null,
+          debDownloadedPath: null,
+          debSignature: null,
+          debManualPath: null,
+        });
+
+        try {
+          // Tauri cannot replace a package-manager-owned .deb. Download and
+          // verify it here, but defer pkexec/dpkg until Install and restart.
+          if (get().installKind === "deb") {
+            const network = networkOptions();
+            const body = await fetchLatestJson(LATEST_JSON_URL, network);
             const manifest = JSON.parse(body);
             const deb = debEntryForHost(manifest);
             if (!deb?.url || !deb?.signature) {
@@ -134,88 +193,95 @@ export const useUpdaterStore = create<UpdaterStore>()(
                 "This release has no signed .deb for this architecture. Install the new .deb from the Releases page."
               );
             }
-            // Stream download progress so the dialog shows a real bar instead
-            // of jumping straight to the pkexec password prompt.
             let downloaded = 0;
             let total: number | null = null;
-            const result = await installDebUpdate(
+            const result = await downloadDebUpdate(
               deb.url,
               deb.signature,
-              (e) => {
-                if (e.event === "started") {
-                  total = e.contentLength;
+              network,
+              (event) => {
+                if (event.event === "started") {
+                  total = event.contentLength;
                   set({ progress: { downloaded: 0, total } });
-                } else if (e.event === "progress") {
-                  downloaded += e.chunkLength;
+                } else if (event.event === "progress") {
+                  downloaded += event.chunkLength;
                   set({ progress: { downloaded, total } });
                 }
-                // "finished" → bytes are in; verify + pkexec run next (no bar).
               }
             );
-            if (result.installed) {
-              set({ state: "ready" });
-            } else {
-              // pkexec unavailable: verified .deb left on disk for manual install.
-              set({ state: "ready", debManualPath: result.downloadedPath });
-            }
-          } catch (e: any) {
-            logger.warn("updater", `deb update failed: ${String(e)}`);
-            set({ state: "error", errorMessage: e?.message ?? String(e) });
+            set({
+              state: "ready",
+              progress: total === null ? { downloaded, total } : { downloaded: total, total },
+              debDownloadedPath: result.downloadedPath,
+              debSignature: deb.signature,
+            });
+            return;
           }
-          return;
-        }
 
-        if (!pendingUpdate) return;
-        set({ state: "downloading", progress: { downloaded: 0, total: null } });
-        try {
+          if (!pendingUpdate) throw new Error("Update handle expired. Check again.");
           let downloaded = 0;
           let total: number | null = null;
-          await pendingUpdate.downloadAndInstall((event) => {
+          await pendingUpdate.download((event) => {
             if (event.event === "Started") {
               total = event.data.contentLength ?? null;
               set({ progress: { downloaded: 0, total } });
             } else if (event.event === "Progress") {
               downloaded += event.data.chunkLength;
               set({ progress: { downloaded, total } });
-            } else if (event.event === "Finished") {
-              set({ state: "ready" });
             }
           });
-        } catch (e: any) {
+          // download() verifies the signature before it resolves. Do not mark
+          // ready from the earlier Finished event.
           set({
-            state: "error",
-            errorMessage: e?.message ?? String(e),
+            state: "ready",
+            progress: total === null ? { downloaded, total } : { downloaded: total, total },
           });
+        } catch (e: any) {
+          logger.warn("updater", `update download failed: ${String(e)}`);
+          set({ state: "error", errorMessage: e?.message ?? String(e) });
         }
       },
 
       relaunch: async () => {
-        if (get().state !== "ready") return;
-        set({ state: "installing" });
+        if (get().state !== "ready" || get().debManualPath) return;
+        set({ state: "installing", errorMessage: null });
         try {
+          if (get().installKind === "deb") {
+            const downloadedPath = get().debDownloadedPath;
+            const signature = get().debSignature;
+            if (!downloadedPath || !signature) {
+              throw new Error("Downloaded .deb is missing. Check again.");
+            }
+            const result = await installDebUpdate(downloadedPath, signature);
+            if (!result.installed) {
+              set({
+                state: "ready",
+                debManualPath: result.downloadedPath,
+              });
+              return;
+            }
+          } else {
+            if (!pendingUpdate) throw new Error("Downloaded update is no longer available.");
+            await pendingUpdate.install();
+          }
           await relaunch();
         } catch (e: any) {
-          set({
-            state: "error",
-            errorMessage: e?.message ?? String(e),
-          });
+          set({ state: "error", errorMessage: e?.message ?? String(e) });
         }
       },
 
       dismiss: () => {
-        // Keep state === 'available' so Settings can re-open the modal.
-        // Only the modal-open flag is owned by the dialog component.
+        // Dialog visibility is UI-local. Keep the update/download state alive.
       },
     }),
     {
       name: "yterminal-updater",
-      // only the timestamp deserves persistence; everything else is transient
-      partialize: (s) => ({ lastCheckedAt: s.lastCheckedAt }),
+      partialize: (state) => ({ lastCheckedAt: state.lastCheckedAt }),
     }
   )
 );
 
-/** Test-only helper. Resets store state AND the module-scope handle. */
+/** Test-only helper. Resets store state AND the module-scope resource handle. */
 export function __resetUpdaterForTests(): void {
   pendingUpdate = null;
   useUpdaterStore.setState({
@@ -224,7 +290,10 @@ export function __resetUpdaterForTests(): void {
     progress: null,
     errorMessage: null,
     lastCheckedAt: null,
+    backgroundDownload: false,
     installKind: null,
+    debDownloadedPath: null,
+    debSignature: null,
     debManualPath: null,
   });
 }
