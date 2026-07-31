@@ -279,4 +279,57 @@ describe("AgentPty control takeover", () => {
     expect(sizes).toEqual([{ cols: 100, rows: 30 }]);
     pty.detach();
   });
+
+  it("reports replay completion only after every replay chunk is parsed", async () => {
+    const pty = spawn("/bin/sh", [], {
+      workspaceId: "workspace",
+      paneId: "pane",
+      hostId: "local",
+      sessionId: "session",
+    });
+    await vi.waitFor(() => expect(mocks.host.subscribeSession).toHaveBeenCalled());
+
+    const chunks: Uint8Array[] = [];
+    const completed = vi.fn();
+    pty.onData((data) => chunks.push(data));
+    pty.onReplayComplete(completed);
+
+    mocks.fireSession({
+      event: "replay_begin",
+      data: {
+        session_id: "session",
+        reset: true,
+        base_seq: 5,
+        head_seq: 8,
+      },
+    });
+    mocks.fireSession({
+      event: "checkpoint_chunk",
+      data: { session_id: "session", bytes: [65] },
+    });
+    mocks.fireSession({
+      event: "output",
+      data: { session_id: "session", start_seq: 5, bytes: [66, 67, 68] },
+    });
+    mocks.fireSession({
+      event: "replay_end",
+      data: { session_id: "session", next_seq: 8 },
+    });
+
+    expect(completed).not.toHaveBeenCalled();
+    pty.acknowledgeData(chunks[0]);
+    expect(completed).not.toHaveBeenCalled();
+    pty.acknowledgeData(chunks[1]);
+    expect(completed).toHaveBeenCalledTimes(1);
+
+    // Ordinary live output is outside the replay boundary and must not emit a
+    // second completion event.
+    mocks.fireSession({
+      event: "output",
+      data: { session_id: "session", start_seq: 8, bytes: [69] },
+    });
+    pty.acknowledgeData(chunks[2]);
+    expect(completed).toHaveBeenCalledTimes(1);
+    pty.detach();
+  });
 });

@@ -65,6 +65,8 @@ export interface IPty {
   };
   onReadOnlyChange(cb: (readOnly: boolean) => void): { dispose(): void };
   onFreshSpawn(cb: () => void): { dispose(): void };
+  /** Fires after every attach replay has been fully parsed by xterm. */
+  onReplayComplete(cb: () => void): { dispose(): void };
 }
 
 class Emitter<T> {
@@ -98,8 +100,13 @@ class AgentPty implements IPty {
   private readonly resizeEmitter = new Emitter<{ cols: number; rows: number }>();
   private readonly readOnlyEmitter = new Emitter<boolean>();
   private readonly freshSpawnEmitter = new Emitter<void>();
+  private readonly replayCompleteEmitter = new Emitter<void>();
   private readonly pendingData: Uint8Array[] = [];
   private readonly parseEnds = new Map<Uint8Array, number>();
+  /** Replay chunks still waiting for xterm's write callback. */
+  private readonly replayPendingData = new Set<Uint8Array>();
+  private replayActive = false;
+  private replayEnded = false;
   private readonly parseIdleWaiters: Array<() => void> = [];
   private ready: Promise<void>;
   private host: HostTransport | undefined;
@@ -469,8 +476,10 @@ class AgentPty implements IPty {
     const end = this.parseEnds.get(data);
     if (end === undefined) return;
     this.parseEnds.delete(data);
+    this.replayPendingData.delete(data);
     this.parsedSeq = Math.max(this.parsedSeq, end);
     this.resolveParserIdle();
+    this.maybeCompleteReplay();
   }
 
   onData(cb: (data: Uint8Array) => void) {
@@ -510,9 +519,16 @@ class AgentPty implements IPty {
     return disposable;
   }
 
+  onReplayComplete(cb: () => void) {
+    return this.replayCompleteEmitter.add(cb);
+  }
+
   private handleEvent(event: AgentEvent): void {
     switch (event.event) {
       case "replay_begin":
+        this.replayActive = true;
+        this.replayEnded = false;
+        this.replayPendingData.clear();
         this.nextSeq = event.data.base_seq;
         if (event.data.reset) {
           this.parsedSeq = event.data.base_seq;
@@ -529,6 +545,7 @@ class AgentPty implements IPty {
         // actually passed through xterm's parser. Tracking every chunk keeps
         // waitForParserIdle() closed until the whole snapshot is applied.
         this.parseEnds.set(data, this.nextSeq);
+        if (this.replayActive) this.replayPendingData.add(data);
         this.emitData(data);
         break;
       }
@@ -551,11 +568,15 @@ class AgentPty implements IPty {
         }
         this.nextSeq = result.end;
         this.parseEnds.set(result.data, result.end);
+        if (this.replayActive) this.replayPendingData.add(result.data);
         this.emitData(result.data);
         break;
       }
       case "replay_end":
         this.nextSeq = event.data.next_seq;
+        this.replayActive = false;
+        this.replayEnded = true;
+        this.maybeCompleteReplay();
         break;
       case "size_changed": {
         const { cols, rows } = event.data;
@@ -817,6 +838,12 @@ class AgentPty implements IPty {
   private resolveParserIdle(): void {
     if (this.parseEnds.size !== 0) return;
     for (const resolve of this.parseIdleWaiters.splice(0)) resolve();
+  }
+
+  private maybeCompleteReplay(): void {
+    if (!this.replayEnded || this.replayPendingData.size !== 0) return;
+    this.replayEnded = false;
+    this.replayCompleteEmitter.fire(undefined);
   }
 
   private clearSubscriptions(): void {

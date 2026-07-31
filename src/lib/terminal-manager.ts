@@ -1122,6 +1122,21 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   };
   sessions.set(tabId, s);
 
+  // A restored agent session replays its checkpoint/journal asynchronously.
+  // The first attach rAF can run before those bytes have reached xterm, so a
+  // one-shot scroll there targets an empty buffer and the completed replay can
+  // remain parked at row 0. Once the initial replay is fully parsed, pin the
+  // restored pane to its newest output. Later transport replays must not move a
+  // user who deliberately scrolled up, and ordinary tab switches keep using
+  // the saved viewport state below.
+  let initialReplay = true;
+  pty.onReplayComplete(() => {
+    if (!initialReplay) return;
+    initialReplay = false;
+    if (!s || s.disposed || sessions.get(tabId) !== s) return;
+    scrollSessionToBottom(tabId);
+  });
+
   // Resume metadata reconstructs a dead agent session. Creating a new xterm
   // does not imply the PTY died: the daemon may have attached it to the still
   // running Claude/Codex TUI. Arm resume only when AgentPty confirms that it
@@ -1599,6 +1614,7 @@ export function scrollSessionToBottom(paneId: string): void {
   if (s.el.parentElement) {
     try {
       s.term.scrollToBottom();
+      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
     } catch {
       /* buffer not ready */
     }
