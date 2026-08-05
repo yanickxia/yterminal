@@ -112,15 +112,55 @@ fn claude_settings_path() -> Option<std::path::PathBuf> {
 const YT_HOOK_MARKER: &str = "yt-agent";
 
 /// The command string for a hook that reports `state`. Env-guarded on
-/// `YTERMINAL` (set by the yterminal-agent session manager) so it emits nothing in any other terminal,
-/// and prints a Claude Code `terminalSequence` JSON whose value is an OSC 777
-/// notification carrying `notify;yt-agent;<state>`. Claude Code writes that
-/// sequence through its own PTY; the agent and xterm both parse it per-pane.
-/// No `jq` dependency — the state is literal.
+/// `YTERMINAL` (set by the yterminal-agent session manager) so it exits
+/// successfully without emitting anything in any other terminal, and prints a
+/// Claude Code `terminalSequence` JSON whose value is an OSC 777 notification
+/// carrying `notify;yt-agent;<state>`. Claude Code writes that sequence through
+/// its own PTY; the agent and xterm both parse it per-pane. No `jq` dependency —
+/// the state is literal.
 fn yt_hook_command(state: &str) -> String {
     format!(
-        "[ -n \"$YTERMINAL\" ] && printf '%s' '{{\"terminalSequence\":\"\\u001b]777;notify;yt-agent;{state}\\u0007\"}}'"
+        "if [ -n \"${{YTERMINAL:-}}\" ]; then printf '%s' '{{\"terminalSequence\":\"\\u001b]777;notify;yt-agent;{state}\\u0007\"}}'; fi"
     )
+}
+
+#[cfg(all(test, unix))]
+mod claude_hook_tests {
+    use super::yt_hook_command;
+    use std::process::{Command, Output};
+
+    fn run_hook(yterminal: Option<&str>) -> Output {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(yt_hook_command("working"))
+            .env_remove("YTERMINAL");
+        if let Some(value) = yterminal {
+            command.env("YTERMINAL", value);
+        }
+        command.output().expect("hook command should run")
+    }
+
+    #[test]
+    fn hook_is_a_successful_noop_outside_yterminal() {
+        let output = run_hook(None);
+
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn hook_emits_terminal_sequence_inside_yterminal() {
+        let output = run_hook(Some("1"));
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            r#"{"terminalSequence":"\u001b]777;notify;yt-agent;working\u0007"}"#
+        );
+        assert!(output.stderr.is_empty());
+    }
 }
 
 /// One `{matcher?, hooks:[{type:command, command}]}` group for `state`.
