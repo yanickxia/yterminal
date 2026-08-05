@@ -97,6 +97,10 @@ import {
   formatLatencySummary,
   makeInputLatencyTracker,
 } from "./input-latency";
+import {
+  disableVisibilityPause,
+  type VisibilityPauseRenderService,
+} from "./terminal-renderer-visibility";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 
@@ -365,10 +369,7 @@ interface XtermCoreInternals {
     _ignoreNextScrollEvent?: boolean;
   };
   _charSizeService?: { hasValidSize?: boolean; measure?: () => void };
-  _renderService?: {
-    _observerDisposable?: { clear?: () => void };
-    _isPaused?: boolean;
-    _needsFullRefresh?: boolean;
+  _renderService?: VisibilityPauseRenderService & {
     _pausedResizeTask?: { flush?: () => void };
   };
   // The element xterm attaches its own mouse listeners to (rows layer). Used by
@@ -566,14 +567,15 @@ function resumeXtermRenderer(s: Session): boolean {
     const core = xtermCore(s);
     const renderService = core?._renderService;
     if (!renderService) return false;
-    const needsRefresh = Boolean(
-      renderService._isPaused || renderService._needsFullRefresh
-    );
     // These terminals are intentionally cached and re-parented between tabs.
     // xterm's IntersectionObserver pause can therefore get stuck in WKWebView;
     // disable that observer and explicitly resume before fitting/refreshing.
-    renderService._observerDisposable?.clear?.();
-    renderService._isPaused = false;
+    // Disconnect alone is insufficient: WKWebView may already have queued a
+    // non-intersecting callback which runs after nvim's final startup output,
+    // leaves the freshly-cleared alternate-buffer canvas paused, and leaves no
+    // later write to wake it. The helper also neutralizes that stale callback's
+    // dynamically-looked-up handler.
+    const needsRefresh = disableVisibilityPause(renderService);
     if (!core?._charSizeService?.hasValidSize) {
       core?._charSizeService?.measure?.();
     }
@@ -587,12 +589,12 @@ function resumeXtermRenderer(s: Session): boolean {
 
 function refreshResumedXterm(s: Session): void {
   if (!resumeXtermRenderer(s) || !s.el.parentElement) return;
-  // An IntersectionObserver callback already queued before `disconnect()` can
-  // still pause the renderer after attachSession's animation frame. Detect it
-  // again after each parsed output batch and repaint only when a pause/full
-  // refresh was actually pending. This keeps ordinary output on xterm's fast
-  // incremental path while ensuring Enter/new prompt output becomes visible
-  // immediately instead of waiting for selection or another UI interaction.
+  // Output can parse while term.open/loadAddon is still establishing the
+  // renderer, before the visibility guard above has observed an earlier
+  // pause/full-refresh request. Re-check after each parsed batch and repaint
+  // only when recovery was actually pending. This keeps ordinary output on
+  // xterm's fast incremental path while ensuring Enter/new prompt output is
+  // visible immediately instead of waiting for another UI interaction.
   s.term.refresh(0, s.term.rows - 1);
   const renderService = xtermCore(s)?._renderService;
   if (renderService) renderService._needsFullRefresh = false;
