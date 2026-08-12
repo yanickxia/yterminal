@@ -21,3 +21,6 @@ src-tauri/gen
 
 # superpowers brainstorm artifacts
 .superpowers/
+
+# local macOS codesigning setup (machine-specific, may hold cert material)
+sign/
