@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   glyphCacheBackgroundKey,
+  installWebglAtlasNoMipmap,
   installWebglGlyphAtlas,
   patchWebglGlyphAtlas,
 } from "./webgl-glyph-atlas";
@@ -105,6 +106,46 @@ describe("glyphCacheBackgroundKey", () => {
     expect(glyphCacheBackgroundKey(0x03aabbcc, 0x04000000)).toBe(
       0x03aabbcc
     );
+  });
+});
+
+describe("installWebglAtlasNoMipmap", () => {
+  it("uses non-mipmapped linear filtering for glyph-atlas uploads", () => {
+    const original = vi.fn();
+    const texParameteri = vi.fn();
+    const gl = {
+      TEXTURE_2D: 0x0de1,
+      TEXTURE_MIN_FILTER: 0x2801,
+      TEXTURE_MAG_FILTER: 0x2800,
+      LINEAR: 0x2601,
+      generateMipmap: original,
+      texParameteri,
+    };
+    const cleanup = installWebglAtlasNoMipmap({ _renderer: { _gl: gl } });
+
+    gl.generateMipmap(gl.TEXTURE_2D);
+    expect(original).not.toHaveBeenCalled();
+    expect(texParameteri).toHaveBeenNthCalledWith(
+      1,
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      gl.LINEAR
+    );
+    expect(texParameteri).toHaveBeenNthCalledWith(
+      2,
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MAG_FILTER,
+      gl.LINEAR
+    );
+
+    gl.generateMipmap(0x8513);
+    expect(original).toHaveBeenCalledWith(0x8513);
+    cleanup();
+    expect(gl.generateMipmap).toBe(original);
+  });
+
+  it("leaves an unknown renderer shape untouched", () => {
+    expect(() => installWebglAtlasNoMipmap({})()).not.toThrow();
   });
 });
 

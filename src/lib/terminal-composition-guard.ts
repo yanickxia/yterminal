@@ -9,13 +9,13 @@
 // hidden textarea's ENTIRE accumulated value (only cleared on Enter/Ctrl+C).
 // Typing `你好` therefore snowballs into `你好你你好好…` (see the user report).
 //
-// The fix (validated in coollabsio/jean#411): a capture-phase guard on an
-// ancestor of xterm's textarea that runs BEFORE xterm's own bubble listeners.
-// It restores the textarea to its pre-commit value on `input` (so xterm's diff
-// timer sees oldValue === newValue and no branch fires), delivers the committed
-// text exactly once itself, and swallows the orphan `compositionend`. Balanced
-// sequences (a real `compositionstart` fired) pass through untouched, so this
-// is a no-op on macOS/Windows and any platform without the quirk.
+// The fix (validated in coollabsio/jean#411): a Linux-only capture-phase guard
+// on an ancestor of xterm's textarea that runs BEFORE xterm's own bubble
+// listeners. It restores the textarea to its pre-commit value on `input` (so
+// xterm's diff timer sees oldValue === newValue and no branch fires), delivers
+// the committed text exactly once itself, and swallows the orphan
+// `compositionend`. When `beforeinput.data` is missing, the commit is recovered
+// from the textarea mutation. macOS/Windows keep xterm's native balanced flow.
 //
 // The time-ordering state machine lives in `makeCompositionGuard` as a pure
 // reducer (targets compared by identity, values as plain strings — no DOM), so
@@ -28,8 +28,12 @@ type TargetId = object;
 interface PendingRestore {
   target: TargetId;
   value: string;
-  /** committed text to deliver on `input`, or null to only restore (no deliver) */
-  deliver: string | null;
+  /**
+   * Committed text reported by `beforeinput`. `undefined` means WebKit did
+   * not provide `InputEvent.data`, so derive it from the post-mutation value.
+   * `null` means restore only: xterm already delivered a plain keyboard key.
+   */
+  deliver: string | null | undefined;
 }
 
 /** What the caller should do after an `input` event. */
@@ -64,6 +68,13 @@ export function makeCompositionGuard() {
 
     compositionStart(target: TargetId): void {
       compositionTarget = target;
+      pending = null;
+    },
+
+    reset(): void {
+      compositionTarget = null;
+      lastKeydownKeyCode = -1;
+      pending = null;
     },
 
     /**
@@ -81,7 +92,11 @@ export function makeCompositionGuard() {
         target !== compositionTarget
       ) {
         // Orphan commit (no matching start): we must deliver it ourselves.
-        pending = { target, value: oldValue, deliver: data ?? "" };
+        pending = {
+          target,
+          value: oldValue,
+          deliver: data && data.length > 0 ? data : undefined,
+        };
       } else if (
         inputType === "insertText" &&
         compositionTarget === null &&
@@ -93,14 +108,17 @@ export function makeCompositionGuard() {
       }
     },
 
-    input(target: TargetId): InputDecision {
+    input(target: TargetId, newValue = ""): InputDecision {
       if (!pending || pending.target !== target) return {};
       const { value, deliver } = pending;
       pending = null;
       const decision: InputDecision = { restoreValue: value };
       // Restore whole value rather than trimming a suffix: the UA mutation may
       // replace a char or rewrite an NBSP, so a suffix diff is unreliable.
-      if (deliver) decision.deliver = deliver;
+      const committed = deliver === undefined
+        ? insertedText(value, newValue)
+        : deliver;
+      if (committed) decision.deliver = committed;
       return decision;
     },
 
@@ -113,6 +131,29 @@ export function makeCompositionGuard() {
       return { swallow: !balanced };
     },
   };
+}
+
+/** Return the inserted/replaced portion of a textarea mutation. */
+export function insertedText(oldValue: string, newValue: string): string {
+  let start = 0;
+  while (
+    start < oldValue.length &&
+    start < newValue.length &&
+    oldValue[start] === newValue[start]
+  ) {
+    start++;
+  }
+  let oldEnd = oldValue.length;
+  let newEnd = newValue.length;
+  while (
+    oldEnd > start &&
+    newEnd > start &&
+    oldValue[oldEnd - 1] === newValue[newEnd - 1]
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+  return newValue.slice(start, newEnd);
 }
 
 export type CompositionGuard = ReturnType<typeof makeCompositionGuard>;
@@ -141,7 +182,7 @@ export function attachOrphanCompositionEndGuard(
   const onInput = (e: Event) => {
     const target = e.target as HTMLTextAreaElement | null;
     if (!target) return;
-    const decision = g.input(target);
+    const decision = g.input(target, target.value);
     if (typeof decision.restoreValue === "string") {
       target.value = decision.restoreValue;
     }
@@ -152,6 +193,11 @@ export function attachOrphanCompositionEndGuard(
       e.stopPropagation();
     }
   };
+  // A cached terminal may have been detached while an IME composition was in
+  // progress. Reset when its textarea becomes active again, before the next
+  // native composition event, without swallowing a late compositionend during
+  // the blur itself.
+  const onFocus = () => g.reset();
 
   root.addEventListener("keydown", onKeyDown as EventListener, true);
   root.addEventListener(
@@ -166,6 +212,7 @@ export function attachOrphanCompositionEndGuard(
     onCompositionEnd as EventListener,
     true
   );
+  root.addEventListener("focus", onFocus, true);
 
   return () => {
     root.removeEventListener("keydown", onKeyDown as EventListener, true);
@@ -185,5 +232,6 @@ export function attachOrphanCompositionEndGuard(
       onCompositionEnd as EventListener,
       true
     );
+    root.removeEventListener("focus", onFocus, true);
   };
 }

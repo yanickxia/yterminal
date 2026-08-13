@@ -5,7 +5,10 @@
 // jsdom needed, matching the pure/IO split used across the codebase.
 
 import { describe, it, expect } from "vitest";
-import { makeCompositionGuard } from "./terminal-composition-guard";
+import {
+  insertedText,
+  makeCompositionGuard,
+} from "./terminal-composition-guard";
 
 const T = { id: "textarea" }; // opaque event target; only identity matters
 const OTHER = { id: "other" };
@@ -38,6 +41,37 @@ describe("makeCompositionGuard — orphan compositionend (webkit2gtk + IME)", ()
     g.beforeInput(T, "insertFromComposition", "好", ""); // still "" — restored
     expect(g.input(T)).toEqual({ restoreValue: "", deliver: "好" });
     g.compositionEnd(T);
+  });
+
+  it("derives the committed text when beforeinput.data is missing", () => {
+    const g = makeCompositionGuard();
+    g.keydown(229);
+    g.beforeInput(T, "insertFromComposition", null, "prefix");
+
+    expect(g.input(T, "prefix中文")).toEqual({
+      restoreValue: "prefix",
+      deliver: "中文",
+    });
+    expect(g.compositionEnd(T).swallow).toBe(true);
+  });
+
+  it("resets an unfinished composition when the textarea loses focus", () => {
+    const g = makeCompositionGuard();
+    g.compositionStart(T);
+    g.beforeInput(T, "insertFromComposition", "旧", "");
+    g.reset();
+
+    g.keydown(229);
+    g.beforeInput(T, "insertFromComposition", "新", "");
+    expect(g.input(T, "新")).toEqual({ restoreValue: "", deliver: "新" });
+  });
+});
+
+describe("insertedText", () => {
+  it("extracts appended and middle replacement text", () => {
+    expect(insertedText("abc", "abc中文")).toBe("中文");
+    expect(insertedText("ab旧cd", "ab新内容cd")).toBe("新内容");
+    expect(insertedText("same", "same")).toBe("");
   });
 });
 

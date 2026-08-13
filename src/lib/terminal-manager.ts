@@ -103,6 +103,9 @@ import {
 } from "./terminal-renderer-visibility";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
+const isLinux =
+  typeof navigator !== "undefined" &&
+  navigator.userAgent.toLowerCase().includes("linux");
 
 // Lazily-resolved, cached home directory. Used to expand `~`-prefixed paths in
 // clicked terminal tokens. Resolved once on first need; failures (non-Tauri /
@@ -316,8 +319,8 @@ interface Session {
   /** Whether the queued resume command has already been injected. */
   resumeInjected: boolean;
   /**
-   * Cleanup for the orphan-composition guard, attached on first `open()`. On
-   * Linux (webkit2gtk) IMEs commit CJK via an orphan `compositionend` with no
+   * Cleanup for the Linux-only orphan-composition guard, attached on first
+   * `open()`. WebKitGTK IMEs commit CJK via an orphan `compositionend` with no
    * matching `compositionstart`, which xterm re-sends as the whole textarea
    * buffer — the "你好 → 你好你你好好…" duplication. See
    * terminal-composition-guard.ts.
@@ -332,6 +335,16 @@ interface Session {
   webgl?: WebglAddon;
   /** Cleanup for yterminal's WebGL glyph atlas rasterization policy. */
   glyphAtlasCleanup?: () => void;
+  /**
+   * Cleanup for the alternate/normal-buffer repaint listener. xterm clears
+   * the renderer synchronously on a buffer switch but schedules the matching
+   * full repaint through its frame debouncer. A cached full-screen TUI can be
+   * left permanently blank if that one repaint is lost while re-parenting or
+   * changing renderers, because it may emit no more output afterward.
+   */
+  bufferRefreshCleanup?: () => void;
+  /** Coalesced recovery frame shared by buffer switches and renderer fallback. */
+  fullRefreshFrame?: number;
   /**
    * When a keyboard paste shortcut (Ctrl+Shift+V / Cmd+V) fires, we call
    * `pasteInto` ourselves. On webkit2gtk the same keypress ALSO emits a native
@@ -600,6 +613,33 @@ function refreshResumedXterm(s: Session): void {
   if (renderService) renderService._needsFullRefresh = false;
 }
 
+/**
+ * Guarantee one full repaint on the frame after a renderer-invalidating
+ * transition. This deliberately stays off the ordinary output path: entering
+ * or leaving the alternate buffer and falling back from WebGL are rare, while
+ * vim/OpenCode can otherwise remain on a cleared, perfectly static frame with
+ * no later bytes to trigger another render.
+ */
+function scheduleFullTerminalRefresh(s: Session, reason: string): void {
+  if (s.disposed || s.fullRefreshFrame !== undefined) return;
+  s.fullRefreshFrame = requestAnimationFrame(() => {
+    s.fullRefreshFrame = undefined;
+    if (s.disposed || !s.opened || !s.el.parentElement) return;
+    try {
+      resumeXtermRenderer(s);
+      s.term.refresh(0, s.term.rows - 1);
+      const renderService = xtermCore(s)?._renderService;
+      if (renderService) renderService._needsFullRefresh = false;
+      logger.debug(
+        "term",
+        `forced full refresh pane=${s.el.dataset.paneId ?? "?"} reason=${reason}`
+      );
+    } catch {
+      /* renderer was replaced/disposed again before the recovery frame */
+    }
+  });
+}
+
 function syncXtermViewport(
   s: Session,
   opts: { immediate?: boolean; clearIgnoredScroll?: boolean } = {}
@@ -683,6 +723,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   if (s && !s.disposed) return s;
 
   const el = document.createElement("div");
+  el.dataset.paneId = tabId;
   el.style.width = "100%";
   el.style.height = "100%";
 
@@ -1124,6 +1165,18 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   };
   sessions.set(tabId, s);
 
+  // Full-screen programs use the alternate buffer. xterm clears the current
+  // renderer synchronously on every normal↔alternate transition, then relies
+  // on one debounced full repaint. Guarantee a repaint on the following frame
+  // as well: a cached/detached pane or renderer swap can otherwise lose that
+  // sole frame and remain blank because a settled vim/OpenCode emits no more
+  // bytes to wake the renderer.
+  const bufferRefresh = term.buffer.onBufferChange((buffer) => {
+    if (!s || s.disposed || sessions.get(tabId) !== s) return;
+    scheduleFullTerminalRefresh(s, `buffer-${buffer.type}`);
+  });
+  s.bufferRefreshCleanup = () => bufferRefresh.dispose();
+
   // A restored agent session replays its checkpoint/journal asynchronously.
   // The first attach rAF can run before those bytes have reached xterm, so a
   // one-shot scroll there targets an empty buffer and the completed replay can
@@ -1191,6 +1244,10 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
           /* already disposed */
         }
         if (s.webgl === webgl) s.webgl = undefined;
+        // setRenderer(DOM) requests a debounced repaint. Add a following-frame
+        // repaint too so a static alternate-buffer TUI cannot remain on the
+        // cleared WebGL frame if that first request races a tab re-attach.
+        scheduleFullTerminalRefresh(s, "webgl-fallback");
       });
       s.term.loadAddon(webgl);
       s.webgl = webgl;
@@ -1224,17 +1281,22 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     } catch (e) {
       logger.warn("term", `webgl unavailable pane=${tabId}: ${String(e)}`);
     }
-    // Attach the orphan-composition guard now that the textarea exists. `s.el`
-    // is an ancestor of xterm's textarea, so capture-phase listeners here run
-    // before xterm's own. Delivered CJK is written straight to the pty (it
-    // never matches an agent launch token, so bypassing feedInput is safe).
-    s.compositionGuardCleanup = attachOrphanCompositionEndGuard(s.el, (data) => {
-      try {
-        s.pty.write(data);
-      } catch {
-        /* pty gone */
-      }
-    });
+    // WebKitGTK alone emits orphan composition commits. Keep this workaround
+    // off macOS/Windows so their balanced native IME lifecycle stays entirely
+    // owned by xterm. Delivered CJK is written straight to the pty (it never
+    // matches an agent launch token, so bypassing feedInput is safe).
+    if (isLinux) {
+      s.compositionGuardCleanup = attachOrphanCompositionEndGuard(
+        s.el,
+        (data) => {
+          try {
+            s.pty.write(data);
+          } catch {
+            /* pty gone */
+          }
+        }
+      );
+    }
     // De-dupe paste on webkit2gtk: a keyboard paste shortcut runs pasteInto()
     // AND the browser fires a native `paste` event that xterm handles too. We
     // swallow that native duplicate (capture phase, before xterm's textarea
@@ -1377,6 +1439,14 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
 export function detachSession(tabId: string) {
   const s = sessions.get(tabId);
   if (s && s.el.parentElement) {
+    // Explicitly blur before removing the focused helper textarea. WebKit can
+    // otherwise skip the native IME cancellation when its focused node is
+    // detached, leaving the next composition unable to start cleanly.
+    try {
+      if (s.term.textarea === document.activeElement) s.term.blur();
+    } catch {
+      /* terminal was already detached */
+    }
     void persist(tabId, s);
     try {
       const buf = s.term.buffer.active;
@@ -1403,6 +1473,11 @@ export function disposeSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
+  s.bufferRefreshCleanup?.();
+  if (s.fullRefreshFrame !== undefined) {
+    cancelAnimationFrame(s.fullRefreshFrame);
+    s.fullRefreshFrame = undefined;
+  }
   s.glyphAtlasCleanup?.();
   try {
     s.pty.kill();
@@ -1444,6 +1519,11 @@ export function unloadSession(tabId: string) {
   s.compositionGuardCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
+  s.bufferRefreshCleanup?.();
+  if (s.fullRefreshFrame !== undefined) {
+    cancelAnimationFrame(s.fullRefreshFrame);
+    s.fullRefreshFrame = undefined;
+  }
   s.glyphAtlasCleanup?.();
   try {
     s.pty.detach();

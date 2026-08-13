@@ -50,14 +50,75 @@ interface TextureAtlasLike {
 interface WebglAddonLike {
   _renderer?: {
     _charAtlas?: TextureAtlasLike;
+    _gl?: WebglContextLike;
   };
   onChangeTextureAtlas(
     listener: (canvas: HTMLCanvasElement) => void
   ): DisposableLike;
 }
 
+interface WebglContextLike {
+  TEXTURE_2D: number;
+  TEXTURE_MIN_FILTER: number;
+  TEXTURE_MAG_FILTER: number;
+  LINEAR: number;
+  generateMipmap(target: number): void;
+  texParameteri(target: number, pname: number, param: number): void;
+}
+
 const patchedAtlases = new WeakSet<object>();
 const patchedCaches = new WeakSet<object>();
+
+/**
+ * Backport xterm.js#5987 for addon-webgl 0.19.
+ *
+ * Its atlas upload path calls `generateMipmap`, even though terminal glyphs
+ * are sampled pixel-for-pixel. Some GPU/WebView stacks reject or corrupt that
+ * live texture update without losing the WebGL context, so xterm's
+ * `onContextLoss` fallback never runs and the screen briefly shows unrelated
+ * atlas fragments. Upstream removed mipmaps and selected LINEAR filtering.
+ * Intercept the dedicated renderer context until a release containing that
+ * fix can replace 0.19.
+ */
+export function installWebglAtlasNoMipmap(addon: object): () => void {
+  const gl = (addon as WebglAddonLike)._renderer?._gl;
+  if (
+    !gl ||
+    typeof gl.generateMipmap !== "function" ||
+    typeof gl.texParameteri !== "function" ||
+    typeof gl.TEXTURE_2D !== "number" ||
+    typeof gl.TEXTURE_MIN_FILTER !== "number" ||
+    typeof gl.TEXTURE_MAG_FILTER !== "number" ||
+    typeof gl.LINEAR !== "number"
+  ) {
+    return () => {};
+  }
+
+  const generateMipmap = gl.generateMipmap;
+  const noMipmap = function (this: WebglContextLike, target: number) {
+    if (target !== this.TEXTURE_2D) {
+      generateMipmap.call(this, target);
+      return;
+    }
+    this.texParameteri(target, this.TEXTURE_MIN_FILTER, this.LINEAR);
+    this.texParameteri(target, this.TEXTURE_MAG_FILTER, this.LINEAR);
+  };
+  try {
+    gl.generateMipmap = noMipmap;
+  } catch {
+    return () => {};
+  }
+  if (gl.generateMipmap !== noMipmap) return () => {};
+
+  return () => {
+    if (gl.generateMipmap !== noMipmap) return;
+    try {
+      gl.generateMipmap = generateMipmap;
+    } catch {
+      /* the renderer owns and will dispose this context */
+    }
+  };
+}
 
 function atlasText(value: unknown): string {
   if (typeof value === "number") return String.fromCodePoint(value);
@@ -224,6 +285,7 @@ export function installWebglGlyphAtlas(
   onAtlasPatched: () => void
 ): () => void {
   let disposed = false;
+  const restoreMipmap = installWebglAtlasNoMipmap(addon);
   const patchCurrent = () => {
     if (!disposed && patchWebglGlyphAtlas(addon)) onAtlasPatched();
   };
@@ -236,5 +298,6 @@ export function installWebglGlyphAtlas(
   return () => {
     disposed = true;
     subscription.dispose();
+    restoreMipmap();
   };
 }
