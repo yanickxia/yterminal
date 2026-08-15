@@ -40,6 +40,7 @@ import {
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
+import { installMacosContinuousCompositionFix } from "./terminal-macos-composition";
 import { shouldSuppressNativePaste } from "./paste-suppress";
 import { shouldSuppressContextMenu } from "./context-menu-suppress";
 import { spawn, type IPty } from "./pty";
@@ -326,6 +327,11 @@ interface Session {
    * terminal-composition-guard.ts.
    */
   compositionGuardCleanup?: () => void;
+  /**
+   * Cleanup for the macOS continuous-composition backport installed after
+   * xterm creates its private CompositionHelper in `open()`.
+   */
+  macCompositionFixCleanup?: () => void;
   /**
    * The GPU renderer addon, attached on first `open()` for a real speed-up over
    * xterm's default DOM renderer. Kept on the session so we can dispose it on
@@ -1225,6 +1231,14 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   if (!s.opened) {
     s.term.open(s.el);
     s.opened = true;
+    // xterm 5.5 can consume the first key of a new macOS Chinese composition
+    // when that same key committed the previous candidate. Backport upstream's
+    // delayed-range fix without changing xterm on Linux/Windows.
+    if (isMac) {
+      s.macCompositionFixCleanup = installMacosContinuousCompositionFix(
+        s.term
+      );
+    }
     // GPU renderer: xterm's default DOM renderer repaints per-cell and is the
     // dominant source of keystroke-to-screen lag. Load the WebGL addon now that
     // the terminal is in the DOM (its contract requires open() first). On GPU
@@ -1471,6 +1485,7 @@ export function disposeSession(tabId: string) {
   controlListeners.delete(tabId);
   clearHookState(tabId);
   s.compositionGuardCleanup?.();
+  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();
@@ -1517,6 +1532,7 @@ export function unloadSession(tabId: string) {
   controlListeners.delete(tabId);
   clearHookState(tabId);
   s.compositionGuardCleanup?.();
+  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();

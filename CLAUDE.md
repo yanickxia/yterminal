@@ -133,6 +133,10 @@ xterm.js v5 doesn't integrate the clipboard — it draws the selection highlight
 - **Wiring (manager)** — `terminal-manager.ts` exports `copySelection`/`pasteInto`/`hasSelection`. `attachCustomKeyEventHandler` dispatches the shortcut before Enter handling; paste goes through `term.paste()` (honors bracketed-paste). `onSelectionChange` implements opt-in copy-on-select, reading `copyOnSelect` live.
 - **UI** — `PaneTerminal.tsx` `onContextMenu` opens the shared `ContextMenu` with Copy (disabled when `!hasSelection`) / Paste. App.tsx's global `contextmenu` `preventDefault` only blocks the OS menu; React's `onContextMenu` still fires. `copyOnSelect` (default false) lives in `settings-store` (schema stays `version: 4`) + JSON config.
 
+### macOS continuous IME composition
+
+xterm 5.5 has an input-range race when one macOS IME key commits the current Chinese candidate and immediately begins the next composition (xterm.js #5023): its delayed send snapshots the old composition `end`, so the next composition's first preedit character can be consumed and the user has to press the key twice. `src/lib/terminal-macos-composition.ts` backports upstream commit `52e8a75` by ending the old commit at the new composition's live `start` offset. It patches the private `_core._compositionHelper._finalizeComposition` only on macOS, immediately after `term.open()`, delegates the synchronous/Enter path unchanged, and restores the original method on dispose/unload. Keep the Linux orphan-composition guard separate; when upgrading xterm, re-audit this private compatibility layer and remove it once the dependency contains the upstream fix.
+
 ### Linux (webkit2gtk) input & audio quirks
 
 Three Linux-only fixes, all no-op elsewhere:
