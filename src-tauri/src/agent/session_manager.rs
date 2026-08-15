@@ -1,5 +1,6 @@
 use super::host_services;
 use super::osc::{OscParser, OscUpdate};
+use super::process_termination::PtyProcessSession;
 use super::repository::{AgentRepository, PersistedOutputChunk};
 use crate::remote_protocol::{
     EventBody, EventFrame, RemoteError, SessionInfo, SessionState, WireMessage,
@@ -155,8 +156,10 @@ struct ManagedSession {
     pane_id: String,
     cwd: Option<String>,
     pid: Option<u32>,
+    process_session: Option<PtyProcessSession>,
     pair: Mutex<PtyPair>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    termination: Mutex<()>,
     writer_tx: mpsc::Sender<Vec<u8>>,
     data: Mutex<SessionData>,
 }
@@ -332,6 +335,7 @@ impl SessionManager {
             .spawn_command(command)
             .map_err(|e| RemoteError::new("spawn_failed", e.to_string()))?;
         let pid = child.process_id();
+        let process_session = pid.and_then(PtyProcessSession::from_root);
         let killer = child.clone_killer();
         let child = Arc::new(StdMutex::new(child));
         let id = Uuid::new_v4().to_string();
@@ -356,8 +360,10 @@ impl SessionManager {
             pane_id: req.pane_id.clone(),
             cwd: spawn_cwd.clone(),
             pid,
+            process_session,
             pair: Mutex::new(pair),
             killer: Mutex::new(killer),
+            termination: Mutex::new(()),
             writer_tx,
             data: Mutex::new(SessionData {
                 state: SessionState::Running,
@@ -776,13 +782,7 @@ impl SessionManager {
 
     pub async fn kill(&self, session_id: &str) -> Result<(), RemoteError> {
         let session = self.get(session_id).await?;
-        let result = session
-            .killer
-            .lock()
-            .await
-            .kill()
-            .map_err(|e| RemoteError::new("kill_failed", e.to_string()));
-        result
+        Self::terminate_session_processes(&session).await
     }
 
     pub async fn terminate_workspace(&self, workspace_id: &str) -> Vec<String> {
@@ -818,15 +818,35 @@ impl SessionManager {
     }
 
     async fn terminate_sessions(&self, sessions: Vec<Arc<ManagedSession>>) -> Vec<String> {
-        for session in &sessions {
-            if session.data.lock().await.state == SessionState::Running {
-                let _ = session.killer.lock().await.kill();
+        // Run independent pane shutdowns concurrently. A process that ignores
+        // HUP/TERM can consume the full escalation window, and closing a
+        // workspace should not multiply that delay by its pane count.
+        let mut termination_tasks = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            termination_tasks.push(tokio::spawn(async move {
+                let id = session.id.clone();
+                let result = Self::terminate_session_processes(&session).await;
+                (id, session, result)
+            }));
+        }
+        let mut terminated = Vec::new();
+        for task in termination_tasks {
+            match task.await {
+                Ok((_, session, Ok(()))) => terminated.push(session),
+                Ok((id, _, Err(error))) => {
+                    eprintln!(
+                        "yterminal-agent terminate failed session={id}: {}",
+                        error.message
+                    );
+                }
+                Err(error) => eprintln!("yterminal-agent terminate task failed: {error}"),
             }
         }
+
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let mut finished = true;
-            for session in &sessions {
+            for session in &terminated {
                 let data = session.data.lock().await;
                 if data.state == SessionState::Running || !data.reader_done {
                     finished = false;
@@ -838,7 +858,7 @@ impl SessionManager {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let ids = sessions
+        let ids = terminated
             .iter()
             .map(|session| session.id.clone())
             .collect::<Vec<_>>();
@@ -847,6 +867,34 @@ impl SessionManager {
             live.remove(id);
         }
         ids
+    }
+
+    async fn terminate_session_processes(session: &Arc<ManagedSession>) -> Result<(), RemoteError> {
+        // Direct KillSession and an overlapping RemoveTab can race. Serialize
+        // them so a second request observes the first request's confirmed exit
+        // instead of reporting ESRCH as a false failure.
+        let _termination = session.termination.lock().await;
+        if session.data.lock().await.state != SessionState::Running {
+            return Ok(());
+        }
+
+        if let Some(process_session) = session.process_session {
+            let foreground_pgid = session.pair.lock().await.master.process_group_leader();
+            return process_session
+                .terminate(foreground_pgid)
+                .await
+                .map_err(|error| RemoteError::new("kill_failed", error));
+        }
+
+        // process_id is expected on Unix, but retain portable-pty's own
+        // signaller as a compatibility fallback if a platform cannot expose
+        // the PTY session leader.
+        session
+            .killer
+            .lock()
+            .await
+            .kill()
+            .map_err(|error| RemoteError::new("kill_failed", error.to_string()))
     }
 
     pub async fn attach(

@@ -21,6 +21,8 @@ serde_json = "1"
 # pseudo-terminal ownership in the per-user agent: spawn the user's shell,
 # stream IO, and propagate resize/exit independently of the GUI lifecycle.
 portable-pty = "0.9"
+# Reliable PTY teardown signals every process in the shell's POSIX session.
+libc = "0.2"
 # enumerate installed system fonts natively (the WebViews Tauri uses don't
 # expose the Local Font Access API). source-only to keep the build self-contained.
 font-kit = "0.14"

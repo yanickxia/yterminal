@@ -7,6 +7,9 @@ pub mod osc;
 #[path = "../../src-tauri/src/agent/paths.rs"]
 pub mod paths;
 
+#[path = "../../src-tauri/src/agent/process_termination.rs"]
+pub mod process_termination;
+
 #[path = "../../src-tauri/src/agent/repository.rs"]
 pub mod repository;
 

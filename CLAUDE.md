@@ -77,6 +77,8 @@ A program hides the cursor with `\e[?25l` (DECTCEM) and restores it with `\e[?25
 
 `src-tauri/src/agent/session_manager.rs` calls `portable-pty` and owns every live PTY independently of the GUI. The Tauri process no longer registers the legacy `pty_*` commands. `src/lib/pty.ts` exposes `AgentPty`, backed by the same length-prefixed CBOR protocol for a local Unix socket or one persistent system-OpenSSH stdio channel. Session UUIDs—not OS pids—are the durable handles. Closing/restarting a GUI or losing SSH detaches the client without killing the shell; explicit pane/workspace termination is the only kill path.
 
+**Explicit termination must kill the complete PTY POSIX session.** `portable-pty` 0.9's Unix `ChildKiller` sends `SIGHUP` only to the shell pid; an interactive TUI such as Codex/Vim normally occupies a different foreground process group and can survive while continuing to hold files/session writers. `process_termination.rs` records the `setsid()` shell/session leader at spawn, enumerates every non-zombie member of that session, and escalates `SIGHUP` → `SIGTERM` → `SIGKILL` with exit confirmation. Keep process enumeration in `spawn_blocking`, revalidate each pid with `getsid()` immediately before signalling, and do not replace this with descendant-only killing (which is both racy after reparenting and unsafe around shared daemons such as tmux).
+
 Blocking syscalls (`reader.read`, `child.wait`, `writer.write_all`) MUST stay off the async worker pool:
 
 - Each session has dedicated OS reader and writer threads bridged through bounded channels.

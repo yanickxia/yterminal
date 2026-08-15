@@ -674,6 +674,7 @@ name = "yterminal"
 version = "0.18.12"
 dependencies = [
  "ciborium",
+ "libc",
  "portable-pty",
  "rusqlite",
  "serde",
