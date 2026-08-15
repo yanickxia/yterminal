@@ -186,19 +186,30 @@ fn live_session_members(session_id: libc::pid_t) -> Result<Vec<libc::pid_t>, Str
         let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;
         };
-        let Some(end) = stat.rfind(')') else { continue };
-        let mut fields = stat[end + 2..].split_whitespace();
-        let Some(state) = fields.next() else { continue };
-        let _ppid = fields.next();
-        let _pgrp = fields.next();
-        let Some(process_session) = fields.next().and_then(|value| value.parse().ok()) else {
+        let Some((state, process_session)) = parse_linux_process_stat(&stat) else {
             continue;
         };
-        if process_session == session_id && state != "Z" {
+        if process_session == session_id && state != 'Z' {
             result.push(pid);
         }
     }
     Ok(result)
+}
+
+/// Parse the state (field 3) and POSIX session id (field 6) from Linux procfs.
+/// Kept platform-independent so macOS development and CI still type-check and
+/// exercise the parser used only by the Linux process enumerator.
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_process_stat(stat: &str) -> Option<(char, libc::pid_t)> {
+    // The command field is parenthesized and may itself contain spaces or `)`,
+    // so split after the final closing parenthesis rather than by whitespace.
+    let end = stat.rfind(')')?;
+    let mut fields = stat.get(end + 2..)?.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _ppid = fields.next()?;
+    let _pgrp = fields.next()?;
+    let process_session = fields.next()?.parse::<libc::pid_t>().ok()?;
+    Some((state, process_session))
 }
 
 #[cfg(target_os = "macos")]
@@ -297,5 +308,18 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(cleanup);
+    }
+
+    #[test]
+    fn linux_proc_stat_parser_extracts_state_and_session() {
+        assert_eq!(
+            parse_linux_process_stat("4242 (name with ) paren) S 100 200 300 0 0 0"),
+            Some(('S', 300))
+        );
+        assert_eq!(
+            parse_linux_process_stat("4243 (zombie) Z 100 200 301 0 0 0"),
+            Some(('Z', 301))
+        );
+        assert_eq!(parse_linux_process_stat("malformed"), None);
     }
 }
