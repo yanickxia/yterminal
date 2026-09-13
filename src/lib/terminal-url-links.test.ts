@@ -1,11 +1,95 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { Terminal } from "@xterm/xterm";
 import {
+  computeTerminalUrlLinks,
   computeUrlLinks,
   isContinuation,
   isValidUrl,
   urlLinkAtPosition,
   type UrlRow,
 } from "./terminal-url-links";
+
+describe("computeTerminalUrlLinks buffer bounds", () => {
+  async function withTerminal(
+    output: string,
+    check: (term: Terminal) => void,
+    scrollback = 0
+  ) {
+    const term = new Terminal({
+      allowProposedApi: true,
+      cols: 20,
+      rows: 3,
+      scrollback,
+    });
+    try {
+      await new Promise<void>((resolve) => term.write(output, resolve));
+      const buf = term.buffer.active;
+      const getLine = buf.getLine.bind(buf);
+      // xterm 5.5 wraps out-of-range reads around its circular storage.
+      // Throw at the boundary so a regression fails without hanging Vitest.
+      vi.spyOn(buf, "getLine").mockImplementation((index) => {
+        if (index < 0 || index >= buf.length) {
+          throw new Error(`out-of-bounds buffer read: ${index}/${buf.length}`);
+        }
+        return getLine(index);
+      });
+      check(term);
+    } finally {
+      term.dispose();
+    }
+  }
+
+  it("finishes hovering every row of an alternate screen painted with spaces", async () => {
+    await withTerminal("\x1b[?1049h" + " ".repeat(60), (term) => {
+      expect(term.buffer.active.type).toBe("alternate");
+      for (let row = 1; row <= term.buffer.active.length; row++) {
+        expect(computeTerminalUrlLinks(term, row)).toEqual([]);
+      }
+    });
+  });
+
+  it("stops at a full normal scrollback buffer after circular rollover", async () => {
+    await withTerminal(
+      "x".repeat(240),
+      (term) => {
+        expect(term.buffer.active.length).toBe(5);
+        for (let row = 1; row <= term.buffer.active.length; row++) {
+          expect(computeTerminalUrlLinks(term, row)).toEqual([]);
+        }
+      },
+      2
+    );
+  });
+
+  it("retains a hard-wrapped URL ending in the final column of the screen", async () => {
+    const url = "https://example.com/" + "x".repeat(20);
+    const output = "\x1b[?1049h" + " ".repeat(20) + "\r\n" +
+      url.slice(0, 20) + "\r\n" + url.slice(20);
+    await withTerminal(output, (term) => {
+      const expected = [{ url, startRow: 1, startCol: 0, endRow: 2, endCol: 20 }];
+      expect(computeTerminalUrlLinks(term, 1)).toEqual([]);
+      expect(computeTerminalUrlLinks(term, 2)).toEqual(expected);
+      expect(computeTerminalUrlLinks(term, 3)).toEqual(expected);
+    });
+  });
+
+  it("rejects stale or invalid requested rows without reading circular storage", async () => {
+    await withTerminal("\x1b[?1049h" + " ".repeat(60), (term) => {
+      for (const row of [0, -1, 4, 1.5, NaN, Infinity]) {
+        expect(computeTerminalUrlLinks(term, row)).toEqual([]);
+      }
+      expect(term.buffer.active.getLine).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps real xterm cell coordinates for URLs following wide characters", async () => {
+    await withTerminal("\x1b[?1049h访问：https://x.io", (term) => {
+      expect(computeTerminalUrlLinks(term, 1)).toEqual([
+        { url: "https://x.io", startRow: 0, startCol: 6, endRow: 0, endCol: 18 },
+      ]);
+    });
+  });
+});
 
 const LONG_URL =
   "https://code.byted.org/machinelearning/super-ops/merge_requests/new?merge_request%5Bsource_branch%5D=feat%2Fnacos-loading-state&source_branch=feat%2Fnacos-loading-state";

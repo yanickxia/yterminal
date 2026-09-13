@@ -23,19 +23,15 @@ import { encodeEnter } from "./enter-key";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
 import {
-  computeUrlLinks,
-  isContinuation,
+  computeTerminalUrlLinks,
   urlLinkAtPosition,
-  type UrlLink,
-  type UrlRow,
 } from "./terminal-url-links";
 import {
-  buildColumnMap,
+  harvestColumnMap,
   offsetToColumn,
   offsetToColumnExclusive,
   columnToOffset,
-  type ColumnMap,
-  type VisitedCell,
+  type BufferLineLike,
 } from "./terminal-cell-columns";
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
@@ -123,113 +119,6 @@ function primeHomeDir(): void {
       /* non-Tauri or unavailable — leave undefined */
     }
   })();
-}
-
-// Harvest the per-cell widths of a buffer line the same way xterm's
-// `translateToString(true)` walks it, then build the offset↔column map. This is
-// what lets us turn the string offsets our pure scanners return into the
-// terminal columns xterm's LinkProvider ranges are addressed in — without it a
-// wide (CJK) char before a link shifts the clickable range/underline left by
-// one cell per char (the "访问地址：http://…" bug). Walk stops at the trimmed
-// length so it matches `translateToString(true)` exactly (trailing blanks off).
-type BufferLineLike = {
-  readonly length: number;
-  getCell(
-    x: number,
-    cell?: unknown
-  ): { getWidth(): number; getChars(): string } | undefined;
-  translateToString(trim?: boolean): string;
-};
-
-function harvestColumnMap(line: BufferLineLike): ColumnMap {
-  const cells: VisitedCell[] = [];
-  // translateToString(true) trims trailing whitespace; mirror that by capping at
-  // the trimmed string length so map bounds line up with the text we scanned.
-  const trimmedLen = line.translateToString(true).length;
-  let produced = 0;
-  for (let x = 0; x < line.length && produced < trimmedLen; ) {
-    const cell = line.getCell(x);
-    if (!cell) break;
-    const width = cell.getWidth();
-    // A width-0 cell is the phantom trailing half of a wide char — skip it, it
-    // is not a visited cell and contributes no string char (matches xterm).
-    if (width === 0) {
-      x += 1;
-      continue;
-    }
-    const chars = cell.getChars();
-    const charLen = chars.length || 1; // empty cell still emits one space char
-    cells.push({ width, charLen });
-    produced += charLen;
-    x += width;
-  }
-  return buildColumnMap(cells);
-}
-
-// Bridge xterm's per-line `provideLinks(lineNumber)` to the pure, multi-row
-// `computeUrlLinks`. xterm asks about one buffer line at a time (1-based); to
-// stitch a hard-wrapped URL we walk UP to the first row of the physical group
-// containing `lineNumber`, then DOWN over its continuation rows, feed the slice
-// to `computeUrlLinks`, and keep only the links that actually cover the queried
-// line (so the same link isn't reported once per row it spans). Row indices in
-// the returned links are absolute buffer rows (0-based).
-//
-// `computeUrlLinks` reasons in string offsets (it only sees the collapsed row
-// text); we convert those to terminal columns per row via `harvestColumnMap`,
-// because a wide (CJK) char is 1 string char but 2 columns. A multi-row URL
-// maps its start through the first row's map and its end through the last row's.
-function computeTerminalUrlLinks(
-  term: Terminal,
-  lineNumber: number
-): UrlLink[] {
-  const buf = term.buffer.active;
-  const cols = term.cols;
-  const queried = lineNumber - 1; // 0-based absolute buffer row
-
-  // Walk up to the physical group start: while THIS row is a continuation of
-  // the row above it (soft-wrapped, or the row above fills the width).
-  let first = queried;
-  while (first > 0) {
-    const prev = buf.getLine(first - 1);
-    const cur = buf.getLine(first);
-    if (!prev || !cur) break;
-    if (!isContinuation(prev.translateToString(true), cur.isWrapped, cols)) {
-      break;
-    }
-    first--;
-  }
-
-  // Collect the group's rows from `first` downward, keeping each row's
-  // offset↔column map alongside its text (indices align with `rows`).
-  const rows: UrlRow[] = [];
-  const maps: ColumnMap[] = [];
-  let r = first;
-  const firstLine = buf.getLine(r);
-  if (!firstLine) return [];
-  rows.push({ text: firstLine.translateToString(true), isWrapped: false });
-  maps.push(harvestColumnMap(firstLine));
-  r++;
-  for (;;) {
-    const cur = buf.getLine(r);
-    if (!cur) break;
-    const prevText = rows[rows.length - 1].text;
-    if (!isContinuation(prevText, cur.isWrapped, cols)) break;
-    rows.push({ text: cur.translateToString(true), isWrapped: cur.isWrapped });
-    maps.push(harvestColumnMap(cur));
-    r++;
-  }
-
-  // Convert string offsets → columns (per row), then map slice-relative rows
-  // back to absolute buffer rows, keeping only links that touch the queried row
-  // (xterm calls us again for other rows).
-  const links = computeUrlLinks(rows, cols).map((l) => ({
-    ...l,
-    startCol: offsetToColumn(maps[l.startRow], l.startCol),
-    endCol: offsetToColumnExclusive(maps[l.endRow], l.endCol),
-    startRow: l.startRow + first,
-    endRow: l.endRow + first,
-  }));
-  return links.filter((l) => l.startRow <= queried && queried <= l.endRow);
 }
 
 // Git auto-refresh hook. The git sidebar wants to re-read status whenever a

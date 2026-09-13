@@ -1,3 +1,11 @@
+import type { Terminal } from "@xterm/xterm";
+import {
+  harvestColumnMap,
+  offsetToColumn,
+  offsetToColumnExclusive,
+  type ColumnMap,
+} from "./terminal-cell-columns";
+
 // Pure URL detection across wrapped terminal rows. The stock
 // @xterm/addon-web-links only stitches a URL back together when the buffer rows
 // are *soft* wrapped (`line.isWrapped === true`, i.e. xterm reflowed a long
@@ -163,4 +171,74 @@ function mapOffset(
     }
   }
   return { row, col: idx - offsets[row] };
+}
+
+// Bridge xterm's per-line `provideLinks(lineNumber)` to the pure, multi-row
+// `computeUrlLinks`. xterm asks about one buffer line at a time (1-based); to
+// stitch a hard-wrapped URL we walk UP to the first row of the physical group
+// containing `lineNumber`, then DOWN over its continuation rows, feed the slice
+// to `computeUrlLinks`, and keep only the links that actually cover the queried
+// line (so the same link isn't reported once per row it spans). Row indices in
+// the returned links are absolute buffer rows (0-based).
+//
+// `computeUrlLinks` reasons in string offsets (it only sees the collapsed row
+// text); we convert those to terminal columns per row via `harvestColumnMap`,
+// because a wide (CJK) char is 1 string char but 2 columns. A multi-row URL
+// maps its start through the first row's map and its end through the last row's.
+export function computeTerminalUrlLinks(
+  term: Terminal,
+  lineNumber: number
+): UrlLink[] {
+  const buf = term.buffer.active;
+  const cols = term.cols;
+  const queried = lineNumber - 1; // 0-based absolute buffer row
+  const length = buf.length;
+  if (!Number.isInteger(queried) || queried < 0 || queried >= length) return [];
+
+  // Walk up to the physical group start: while THIS row is a continuation of
+  // the row above it (soft-wrapped, or the row above fills the width).
+  let first = queried;
+  while (first > 0) {
+    const prev = buf.getLine(first - 1);
+    const cur = buf.getLine(first);
+    if (!prev || !cur) break;
+    if (!isContinuation(prev.translateToString(true), cur.isWrapped, cols)) {
+      break;
+    }
+    first--;
+  }
+
+  // Collect the group's rows from `first` downward, keeping each row's
+  // offset↔column map alongside its text (indices align with `rows`).
+  const rows: UrlRow[] = [];
+  const maps: ColumnMap[] = [];
+  let r = first;
+  const firstLine = buf.getLine(r);
+  if (!firstLine) return [];
+  rows.push({ text: firstLine.translateToString(true), isWrapped: false });
+  maps.push(harvestColumnMap(firstLine));
+  r++;
+  // xterm 5.5's getLine() does not check bounds: its circular storage wraps
+  // back to row 0. A full TUI screen (including explicitly painted spaces)
+  // can then continue forever inside the synchronous mousemove handler.
+  for (; r < length; r++) {
+    const cur = buf.getLine(r);
+    if (!cur) break;
+    const prevText = rows[rows.length - 1].text;
+    if (!isContinuation(prevText, cur.isWrapped, cols)) break;
+    rows.push({ text: cur.translateToString(true), isWrapped: cur.isWrapped });
+    maps.push(harvestColumnMap(cur));
+  }
+
+  // Convert string offsets → columns (per row), then map slice-relative rows
+  // back to absolute buffer rows, keeping only links that touch the queried row
+  // (xterm calls us again for other rows).
+  const links = computeUrlLinks(rows, cols).map((l) => ({
+    ...l,
+    startCol: offsetToColumn(maps[l.startRow], l.startCol),
+    endCol: offsetToColumnExclusive(maps[l.endRow], l.endCol),
+    startRow: l.startRow + first,
+    endRow: l.endRow + first,
+  }));
+  return links.filter((l) => l.startRow <= queried && queried <= l.endRow);
 }

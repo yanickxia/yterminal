@@ -121,3 +121,44 @@ export function columnToOffset(map: ColumnMap, col: number): number {
   // there, so saturate at the length — the caller's hit-test then finds no span.
   return map.totalOffsets;
 }
+
+// Harvest the per-cell widths of a buffer line the same way xterm's
+// `translateToString(true)` walks it, then build the offset↔column map. This is
+// what lets us turn the string offsets our pure scanners return into the
+// terminal columns xterm's LinkProvider ranges are addressed in — without it a
+// wide (CJK) char before a link shifts the clickable range/underline left by
+// one cell per char (the "访问地址：http://…" bug). Walk stops at the trimmed
+// length so it matches `translateToString(true)` exactly (trailing blanks off).
+export type BufferLineLike = {
+  readonly length: number;
+  getCell(
+    x: number,
+    cell?: unknown
+  ): { getWidth(): number; getChars(): string } | undefined;
+  translateToString(trim?: boolean): string;
+};
+
+export function harvestColumnMap(line: BufferLineLike): ColumnMap {
+  const cells: VisitedCell[] = [];
+  // translateToString(true) trims trailing whitespace; mirror that by capping at
+  // the trimmed string length so map bounds line up with the text we scanned.
+  const trimmedLen = line.translateToString(true).length;
+  let produced = 0;
+  for (let x = 0; x < line.length && produced < trimmedLen; ) {
+    const cell = line.getCell(x);
+    if (!cell) break;
+    const width = cell.getWidth();
+    // A width-0 cell is the phantom trailing half of a wide char — skip it, it
+    // is not a visited cell and contributes no string char (matches xterm).
+    if (width === 0) {
+      x += 1;
+      continue;
+    }
+    const chars = cell.getChars();
+    const charLen = chars.length || 1; // empty cell still emits one space char
+    cells.push({ width, charLen });
+    produced += charLen;
+    x += width;
+  }
+  return buildColumnMap(cells);
+}
