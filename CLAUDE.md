@@ -47,6 +47,8 @@ Workspace[]                       <- agent authority; Zustand projection/offline
 
 **Modified Enter uses Claude Code's legacy multiline protocol.** `encodeEnter()` sends plain CR for bare Enter and `ESC + CR` for any Shift/Option/Control/Command+Enter combination. Claude Code's `/terminal-setup` bindings recognize that Meta+Enter sequence as a literal newline; CSI-u Enter sequences are not reliably recognized and must not replace it. The xterm custom key handler writes the sequence directly and returns false to skip xterm's default CR.
 
+**Read-only Enter takeover** is controlled by `takeControlOnEnter` (default true), exposed in Settings → Terminal and JSON `terminal.takeControlOnEnter`. The additive setting uses Zustand's default-state merge for older persisted settings (schema stays v9). `terminal-control-shortcut.ts` handles only plain, non-composing Enter keydown and consumes the initiating press, its keypress, and repeats even after control arrives. It prevents overlapping requests per pane, reports errors through the manager logger, and allows a fresh press to retry. `terminal-manager.ts` invokes it before normal Enter handling and reuses `takeControlOfWorkspace` so the lease and canonical grid update together. Never implement this via `onData`: pasted newlines must not take control, and the takeover Enter must never reach the shell.
+
 ### Terminal caching (critical design)
 
 `terminal-manager.ts` keeps xterm.js `Terminal` + PTY instances in an in-memory `Map` keyed by paneId. Switching tabs/panes **re-parents the cached DOM node** rather than destroying/recreating — this is what makes scrollback and shell state survive tab switches. When editing:

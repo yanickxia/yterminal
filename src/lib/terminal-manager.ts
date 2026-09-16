@@ -20,6 +20,7 @@ import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { encodeEnter } from "./enter-key";
+import { createControlEnterHandler } from "./terminal-control-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
 import {
@@ -886,11 +887,22 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     return true;
   });
 
-  // Multi-line input bridge for TUIs (Claude Code, Ink-based prompts, fish/zsh
-  // continuation, etc.): plain Enter sends CR (submit). Any modified Enter
-  // (Cmd/Ctrl/Alt/Shift) is emitted as ESC+CR, the sequence Claude Code's
-  // terminal setup binds to a literal newline.
+  const handleControlEnter = createControlEnterHandler({
+    enabled: () => useSettingsStore.getState().takeControlOnEnter,
+    readOnly: () => pty.readOnly,
+    takeControl: async () => {
+      const located = locatePane(tabId);
+      if (!located || s?.disposed || s?.exited) return;
+      await takeControlOfWorkspace(located.workspaceId);
+    },
+    onError: (error) => logger.warn(
+      "pty", `take control on Enter failed pane=${tabId}: ${String(error)}`
+    ),
+  });
+  // Modified Enter uses the legacy ESC+CR multiline sequence understood by
+  // Claude Code's terminal setup; takeover must consume its Enter first.
   term.attachCustomKeyEventHandler((e) => {
+    if (handleControlEnter(e)) return false;
     if (e.type !== "keydown") return true;
     // Clipboard shortcuts (Ctrl+Shift+C/V, or Cmd+C/V on mac). Bare Ctrl+C/V
     // never matches here, so SIGINT and literal input still reach the shell.

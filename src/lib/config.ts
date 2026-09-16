@@ -30,6 +30,7 @@ import {
   DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
   DEFAULT_COPY_ON_SELECT,
   DEFAULT_AUTO_TAB_TITLE,
+  DEFAULT_TAKE_CONTROL_ON_ENTER,
   DEFAULT_AGENT_STATUS_HOOKS,
   DEFAULT_AUTO_DOWNLOAD_UPDATES,
   DEFAULT_GITHUB_MIRROR,
@@ -73,6 +74,7 @@ export interface YterminalConfig {
     copyOnSelect: boolean;
     /** let the shell/agent terminal title drive an un-renamed tab's name */
     autoTabTitle: boolean;
+    takeControlOnEnter: boolean;
     /** install Claude Code hooks so agents report their exact run-state */
     agentStatusHooks: boolean;
   };
@@ -112,6 +114,7 @@ export function configFromStore(): YterminalConfig {
       requireModifierForLinks: s.requireModifierForLinks,
       copyOnSelect: s.copyOnSelect,
       autoTabTitle: s.autoTabTitle,
+      takeControlOnEnter: s.takeControlOnEnter,
       agentStatusHooks: s.agentStatusHooks,
     },
     updates: {
@@ -232,6 +235,10 @@ export function parseConfig(text: string): YterminalConfig | null {
       ),
       copyOnSelect: validBool(tm.copyOnSelect, DEFAULT_COPY_ON_SELECT),
       autoTabTitle: validBool(tm.autoTabTitle, DEFAULT_AUTO_TAB_TITLE),
+      takeControlOnEnter: validBool(
+        tm.takeControlOnEnter,
+        DEFAULT_TAKE_CONTROL_ON_ENTER
+      ),
       agentStatusHooks: validBool(
         tm.agentStatusHooks,
         DEFAULT_AGENT_STATUS_HOOKS
@@ -279,6 +286,9 @@ export function applyConfigToStore(cfg: YterminalConfig) {
   if (copyOnSelect !== s.copyOnSelect) s.setCopyOnSelect(copyOnSelect);
   const { autoTabTitle } = cfg.terminal;
   if (autoTabTitle !== s.autoTabTitle) s.setAutoTabTitle(autoTabTitle);
+  const { takeControlOnEnter } = cfg.terminal;
+  if (takeControlOnEnter !== s.takeControlOnEnter)
+    s.setTakeControlOnEnter(takeControlOnEnter);
   const { agentStatusHooks } = cfg.terminal;
   if (agentStatusHooks !== s.agentStatusHooks)
     s.setAgentStatusHooks(agentStatusHooks);

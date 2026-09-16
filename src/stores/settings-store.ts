@@ -62,6 +62,7 @@ export const DEFAULT_COPY_ON_SELECT = false;
  * only fills in the auto name. Default on.
  */
 export const DEFAULT_AUTO_TAB_TITLE = true;
+export const DEFAULT_TAKE_CONTROL_ON_ENTER = true;
 
 /**
  * Install Claude Code hooks into ~/.claude/settings.json so a running agent
@@ -169,6 +170,7 @@ interface SettingsState {
   copyOnSelect: boolean;
   /** let the shell/agent terminal title drive an un-renamed tab's name */
   autoTabTitle: boolean;
+  takeControlOnEnter: boolean;
   /** install Claude Code hooks so agents report their exact run-state (see DEFAULT_AGENT_STATUS_HOOKS) */
   agentStatusHooks: boolean;
   /** play a chime when an unfocused pane rings the bell (agent needs attention) */
@@ -203,6 +205,7 @@ interface SettingsState {
   setRequireModifierForLinks: (on: boolean) => void;
   setCopyOnSelect: (on: boolean) => void;
   setAutoTabTitle: (on: boolean) => void;
+  setTakeControlOnEnter: (on: boolean) => void;
   setAgentStatusHooks: (on: boolean) => void;
   setAlertSoundEnabled: (on: boolean) => void;
   setAlertVolume: (v: number) => void;
@@ -235,6 +238,7 @@ export const useSettingsStore = create<SettingsState>()(
       requireModifierForLinks: DEFAULT_REQUIRE_MODIFIER_FOR_LINKS,
       copyOnSelect: DEFAULT_COPY_ON_SELECT,
       autoTabTitle: DEFAULT_AUTO_TAB_TITLE,
+      takeControlOnEnter: DEFAULT_TAKE_CONTROL_ON_ENTER,
       agentStatusHooks: DEFAULT_AGENT_STATUS_HOOKS,
       alertSoundEnabled: DEFAULT_ALERT_SOUND_ENABLED,
       alertVolume: DEFAULT_ALERT_VOLUME,
@@ -283,6 +287,7 @@ export const useSettingsStore = create<SettingsState>()(
         set({ requireModifierForLinks: on }),
       setCopyOnSelect: (on) => set({ copyOnSelect: on }),
       setAutoTabTitle: (on) => set({ autoTabTitle: on }),
+      setTakeControlOnEnter: (on) => set({ takeControlOnEnter: on }),
       setAgentStatusHooks: (on) => set({ agentStatusHooks: on }),
       setAlertSoundEnabled: (on) => set({ alertSoundEnabled: on }),
       setAlertVolume: (v) =>

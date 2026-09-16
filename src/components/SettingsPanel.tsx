@@ -89,6 +89,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
   const autoTabTitle = useSettingsStore((s) => s.autoTabTitle);
+  const takeControlOnEnter = useSettingsStore((s) => s.takeControlOnEnter);
   const agentStatusHooks = useSettingsStore((s) => s.agentStatusHooks);
   const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
   const alertVolume = useSettingsStore((s) => s.alertVolume);
@@ -107,6 +108,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   );
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
   const setAutoTabTitle = useSettingsStore((s) => s.setAutoTabTitle);
+  const setTakeControlOnEnter = useSettingsStore((s) => s.setTakeControlOnEnter);
   const setAgentStatusHooks = useSettingsStore((s) => s.setAgentStatusHooks);
   const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
   const setAlertVolume = useSettingsStore((s) => s.setAlertVolume);
@@ -175,6 +177,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     requireModifierForLinks,
     copyOnSelect,
     autoTabTitle,
+    takeControlOnEnter,
     agentStatusHooks,
   ]);
 
@@ -536,7 +539,23 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 </p>
               </div>
 
-              {/* agent status via Claude Code hooks */}
+              <div className="field">
+                <label className="field-label">Workspace control</label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={takeControlOnEnter}
+                    onChange={(e) => setTakeControlOnEnter(e.target.checked)}
+                  />
+                  Press Enter to take control when read-only
+                </label>
+                <p className="field-hint">
+                  Plain Enter takes control of the workspace from the current
+                  controller. This first Enter is not sent to the terminal;
+                  press Enter again to submit.
+                </p>
+              </div>
+
               <div className="field">
                 <label className="field-label">Agent status</label>
                 <label className="checkbox-label">

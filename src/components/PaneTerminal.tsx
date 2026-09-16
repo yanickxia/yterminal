@@ -14,6 +14,7 @@ import {
   shouldIgnoreContextMenu,
 } from "../lib/terminal-manager";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { useSettingsStore } from "../stores/settings-store";
 
 /**
  * One leaf == one live terminal. Mounts the cached xterm DOM node for this
@@ -52,6 +53,7 @@ export function PaneTerminal({
 
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [readOnly, setReadOnly] = useState(false);
+  const takeControlOnEnter = useSettingsStore((s) => s.takeControlOnEnter);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -102,8 +104,10 @@ export function PaneTerminal({
     >
       <div className="pane-host" ref={containerRef} />
       {readOnly && (
-        <div className="pane-readonly-badge" title="Use the workspace menu to take control">
-          REMOTE · READ ONLY
+        <div className="pane-readonly-badge" title={takeControlOnEnter
+          ? "Press Enter to take control, or use the workspace menu"
+          : "Use the workspace menu to take control"}>
+          REMOTE · READ ONLY{takeControlOnEnter ? " · ENTER TO CONTROL" : ""}
         </div>
       )}
       {menu && (

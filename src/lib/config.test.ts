@@ -14,9 +14,24 @@ import {
 
 beforeEach(() => {
   useSettingsStore.setState({
+    takeControlOnEnter: true,
     autoDownloadUpdates: DEFAULT_AUTO_DOWNLOAD_UPDATES,
     githubMirror: DEFAULT_GITHUB_MIRROR,
     updateHttpProxy: DEFAULT_UPDATE_HTTP_PROXY,
+  });
+});
+
+describe("Enter takeover config", () => {
+  it.each([undefined, null, "false", 0])("defaults missing/invalid values to on: %j", (value) => {
+    const parsed = parseConfig(JSON.stringify({ terminal: { takeControlOnEnter: value } }));
+    expect(parsed?.terminal.takeControlOnEnter).toBe(true);
+  });
+
+  it.each([true, false])("round-trips the explicit setting: %s", (value) => {
+    const parsed = parseConfig(JSON.stringify({ terminal: { takeControlOnEnter: value } }));
+    applyConfigToStore(parsed!);
+    expect(useSettingsStore.getState().takeControlOnEnter).toBe(value);
+    expect(configFromStore().terminal.takeControlOnEnter).toBe(value);
   });
 });
 
@@ -66,4 +81,3 @@ describe("updater config", () => {
     });
   });
 });
-

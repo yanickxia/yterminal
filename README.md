@@ -48,6 +48,12 @@ controls a workspace at a time; other clients attach read-only and can use
 **Take Control**. **Disconnect** only detaches the GUI. **Terminate** is the
 explicit operation that ends a remote shell/workspace.
 
+By default, pressing plain **Enter** in a read-only terminal takes control of
+its workspace. That first Enter is consumed; press Enter again to submit input.
+Disable this in **Settings → Terminal → Workspace control**, or set
+`terminal.takeControlOnEnter` to `false` in `config.json`. Modified Enter,
+IME confirmation, and pasting do not trigger a takeover.
+
 The agent keeps the PTY, workspace document, output journal and renderer
 checkpoints under the remote OS user. Reconnect resumes from a byte sequence,
 so scrollback and full-screen TUIs continue without intentionally respawning a
