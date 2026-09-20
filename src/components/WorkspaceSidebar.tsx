@@ -92,6 +92,8 @@ export function WorkspaceSidebar({
   const collapsed = useLayoutStore((s) => s.sidebarCollapsed);
   const setCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
+  const collapsedHostIds = useLayoutStore((s) => s.collapsedHostIds);
+  const setHostCollapsed = useLayoutStore((s) => s.setHostCollapsed);
 
   // Attention roll-up: which tabs rang the bell while unfocused (a coding agent
   // pausing for input / erroring). Surfaced here in the workspace area — a
@@ -343,39 +345,68 @@ export function WorkspaceSidebar({
           ⌕
         </button>
         <div className="rail-list">
-          {workspaces.map((w) => (
-            <button
-              key={w.id}
-              className={
-                "rail-item" +
-                (w.id === activeId ? " active" : "") +
-                (w.pinned ? " pinned" : "")
-              }
-              title={`${hostLabels.get(w.hostId ?? "local") ?? "Host"} · ${w.name}${w.pinned ? " (pinned)" : ""}`}
-              onClick={() => setActive(w.id)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
-              }}
-            >
-              {railGlyph(w.name, w.icon)}
-              {attentionByWs.has(w.id) ? (
-                <span
-                  className="rail-attention-dot"
-                  aria-label="waiting for you"
-                />
-              ) : (
-                agentByWs.has(w.id) && (
-                  <span
-                    className={
-                      "rail-agent-dot " + agentByWs.get(w.id)!.state
-                    }
-                    aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
-                  />
-                )
-              )}
-            </button>
-          ))}
+          {hostGroups.map((group) => {
+            const hostCollapsed = collapsedHostIds.includes(group.id);
+            const label = `${hostCollapsed ? "Expand" : "Collapse"} ${group.name} · ${group.status} · ${group.workspaces.length} workspaces`;
+            return (
+              <div className="rail-host-group" key={group.id}>
+                <button
+                  type="button"
+                  className="rail-host-toggle"
+                  title={label}
+                  aria-label={label}
+                  aria-expanded={!hostCollapsed}
+                  aria-controls={`rail-host-workspaces-${group.id}`}
+                  onClick={() => setHostCollapsed(group.id, !hostCollapsed)}
+                >
+                  <svg className="ws-host-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="m4 2 4 4-4 4" />
+                  </svg>
+                  <span aria-hidden="true">{group.id === "local" ? "PC" : group.name.slice(0, 2).toUpperCase()}</span>
+                  <span className={`remote-status ${group.status}`} aria-hidden="true" />
+                </button>
+                <div
+                  id={`rail-host-workspaces-${group.id}`}
+                  className="rail-host-workspaces"
+                  hidden={hostCollapsed}
+                >
+                  {group.workspaces.map((w) => (
+                    <button
+                      key={w.id}
+                      className={
+                        "rail-item" +
+                        (w.id === activeId ? " active" : "") +
+                        (w.pinned ? " pinned" : "")
+                      }
+                      title={`${hostLabels.get(w.hostId ?? "local") ?? "Host"} · ${w.name}${w.pinned ? " (pinned)" : ""}`}
+                      onClick={() => setActive(w.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setCtxMenu({ wsId: w.id, x: e.clientX, y: e.clientY });
+                      }}
+                    >
+                      {railGlyph(w.name, w.icon)}
+                      {attentionByWs.has(w.id) ? (
+                        <span
+                          className="rail-attention-dot"
+                          aria-label="waiting for you"
+                        />
+                      ) : (
+                        agentByWs.has(w.id) && (
+                          <span
+                            className={
+                              "rail-agent-dot " + agentByWs.get(w.id)!.state
+                            }
+                            aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
+                          />
+                        )
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
         <button
           className="icon-btn rail-git"
@@ -491,24 +522,45 @@ export function WorkspaceSidebar({
             ))}
           </div>
         )}
-        {hostGroups.map((group) => (
+        {hostGroups.map((group) => {
+          const hostCollapsed = collapsedHostIds.includes(group.id);
+          return (
           <div className="ws-host-group" key={group.id}>
             <div className="ws-host-header">
-              <span className={`remote-status ${group.status}`} />
-              <span className="ws-host-name">{group.name}</span>
-              {group.id !== "local" && (
-                <span className="ws-host-state">{group.status}</span>
-              )}
+              <button
+                type="button"
+                className="ws-host-toggle"
+                aria-expanded={!hostCollapsed}
+                aria-controls={`ws-host-workspaces-${group.id}`}
+                title={`${hostCollapsed ? "Expand" : "Collapse"} ${group.name}`}
+                onClick={() => setHostCollapsed(group.id, !hostCollapsed)}
+              >
+                <svg className="ws-host-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="m4 2 4 4-4 4" />
+                </svg>
+                <span className={`remote-status ${group.status}`} />
+                <span className="ws-host-name">{group.name}</span>
+                {hostCollapsed && (
+                  <span className="ws-host-count">{group.workspaces.length}</span>
+                )}
+                {group.id !== "local" && (
+                  <span className="ws-host-state">{group.status}</span>
+                )}
+              </button>
               <button
                 type="button"
                 className="icon-btn ws-host-add"
                 title={`New workspace on ${group.name}`}
                 disabled={group.status !== "online"}
-                onClick={() => addWorkspaceOnHost(group.id)}
+                onClick={() => {
+                  setHostCollapsed(group.id, false);
+                  addWorkspaceOnHost(group.id);
+                }}
               >
                 +
               </button>
             </div>
+            <div id={`ws-host-workspaces-${group.id}`} hidden={hostCollapsed}>
             {group.workspaces.map((w) => {
           const isOver = over?.id === w.id && dragId && w.id !== dragId;
           const dragSrc = dragId
@@ -649,8 +701,10 @@ export function WorkspaceSidebar({
           </div>
           );
             })}
+            </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="sidebar-footer">

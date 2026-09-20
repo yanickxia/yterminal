@@ -99,6 +99,7 @@ import {
   disableVisibilityPause,
   type VisibilityPauseRenderService,
 } from "./terminal-renderer-visibility";
+import { installWebglDisposalCompatibility } from "./webgl-disposal";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 const isLinux =
@@ -1143,20 +1144,21 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     // GPU renderer: xterm's default DOM renderer repaints per-cell and is the
     // dominant source of keystroke-to-screen lag. Load the WebGL addon now that
     // the terminal is in the DOM (its contract requires open() first). On GPU
-    // context loss the addon self-disposes; we drop our handle so xterm falls
+    // context loss we dispose the addon and drop our handle so xterm falls
     // back to the DOM renderer instead of rendering nothing. Construction can
     // throw when WebGL is unavailable (headless / blocked) — swallow and keep
     // the DOM renderer.
     try {
       const webgl = new WebglAddon();
+      installWebglDisposalCompatibility(s.term, webgl);
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
         s.glyphAtlasCleanup?.();
         s.glyphAtlasCleanup = undefined;
         try {
           webgl.dispose();
-        } catch {
-          /* already disposed */
+        } catch (error) {
+          logger.error("term", `webgl fallback failed pane=${tabId}: ${String(error)}`);
         }
         if (s.webgl === webgl) s.webgl = undefined;
         // setRenderer(DOM) requests a debounced repaint. Add a following-frame

@@ -12,6 +12,7 @@ const AI_W_KEY = "yterminal.layout.aiWidth";
 const GIT_W_KEY = "yterminal.layout.gitWidth";
 // Reuse the pre-existing collapse key so users' saved state migrates silently.
 const COLLAPSE_KEY = "yterminal.sidebar.collapsed";
+const COLLAPSED_HOSTS_KEY = "yterminal.sidebar.collapsedHosts";
 
 // Drag bounds (px). Min keeps a panel usable; max keeps the terminal usable.
 export const SIDEBAR_MIN = 140;
@@ -52,6 +53,17 @@ function loadCollapsed(): boolean {
   }
 }
 
+function loadCollapsedHosts(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(COLLAPSED_HOSTS_KEY) ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 interface LayoutState {
   /** Workspace sidebar width in px (ignored while collapsed). */
   sidebarWidth: number;
@@ -61,10 +73,13 @@ interface LayoutState {
   gitWidth: number;
   /** Whether the workspace sidebar is collapsed to the icon rail. */
   sidebarCollapsed: boolean;
+  /** Device groups hidden in the expanded sidebar; client-local view state. */
+  collapsedHostIds: string[];
   setSidebarWidth: (w: number) => void;
   setAiWidth: (w: number) => void;
   setGitWidth: (w: number) => void;
   setSidebarCollapsed: (c: boolean) => void;
+  setHostCollapsed: (hostId: string, collapsed: boolean) => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set) => ({
@@ -72,6 +87,7 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   aiWidth: loadNum(AI_W_KEY, 340, AI_MIN, AI_MAX),
   gitWidth: loadNum(GIT_W_KEY, 300, GIT_MIN, GIT_MAX),
   sidebarCollapsed: loadCollapsed(),
+  collapsedHostIds: loadCollapsedHosts(),
   setSidebarWidth: (w) => {
     const clamped = clamp(w, SIDEBAR_MIN, SIDEBAR_MAX);
     save(SIDEBAR_W_KEY, String(Math.round(clamped)));
@@ -90,5 +106,13 @@ export const useLayoutStore = create<LayoutState>((set) => ({
   setSidebarCollapsed: (c) => {
     save(COLLAPSE_KEY, c ? "1" : "0");
     set({ sidebarCollapsed: c });
+  },
+  setHostCollapsed: (hostId, collapsed) => {
+    set((state) => {
+      const ids = state.collapsedHostIds.filter((id) => id !== hostId);
+      if (collapsed) ids.push(hostId);
+      save(COLLAPSED_HOSTS_KEY, JSON.stringify(ids));
+      return { collapsedHostIds: ids };
+    });
   },
 }));
