@@ -12,6 +12,7 @@
 mod agent_cli_entry;
 #[cfg(unix)]
 mod agent_service;
+mod clipboard;
 #[cfg(unix)]
 mod host_connection;
 mod logger;
@@ -3177,6 +3178,8 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            clipboard::clipboard_read_text,
+            clipboard::clipboard_write_text,
             default_shell,
             config_file_path,
             read_config,

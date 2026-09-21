@@ -16,8 +16,6 @@
         { "url": "http://*" }
       ]
     },
-    "opener:allow-open-path",
-    "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text"
+    "opener:allow-open-path"
   ]
 }
