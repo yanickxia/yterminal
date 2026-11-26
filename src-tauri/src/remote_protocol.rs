@@ -383,6 +383,8 @@ pub enum ResponseBody {
     },
     Processes {
         processes: Vec<RemoteProcessInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_process: Option<RemoteAgentProcess>,
     },
     AgentSession {
         session_id: Option<String>,
@@ -443,6 +445,13 @@ pub struct RemoteProcessInfo {
     pub pid: u32,
     pub ppid: u32,
     pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAgentProcess {
+    pub pid: u32,
+    pub instance_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

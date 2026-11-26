@@ -61,7 +61,7 @@ export type WorkspaceOperation =
       op: "set_pane_runtime_status";
       data: {
         pane_id: string;
-        status: "working" | "idle" | "permission" | null;
+        status: "working" | "idle" | "permission" | "unknown" | "background" | null;
       };
     }
   | {

@@ -1,408 +1,79 @@
 import { describe, it, expect } from "vitest";
-import {
-  workspaceAgentSummary,
-  workspacesAgentStatus,
-} from "./workspace-agents";
-import type { PaneAgent, PaneTree, Tab, Workspace } from "./types";
+import { classify, workspaceAgentSummary, workspacesAgentStatus } from "./workspace-agents";
+import type { PaneLeaf, Workspace } from "./types";
+import type { PtyAgentObservation } from "./agent-pty";
+import { setPtyObservation, useAgentPtyStore } from "../stores/agent-pty-store";
 
-function agent(kind: PaneAgent["kind"], command: string = kind): PaneAgent {
-  return { kind, command, sessionId: `${kind}-sess` };
-}
-
-function leaf(id: string, opts: { agent?: PaneAgent } = {}): PaneTree {
-  return { type: "leaf", id, cwd: "~", agent: opts.agent };
-}
-
-function split(direction: "row" | "column", children: PaneTree[]): PaneTree {
-  return {
-    type: "split",
-    id: `split-${children.map((c) => c.id).join("-")}`,
-    direction,
-    children,
-    sizes: children.map(() => 100 / children.length),
-  };
-}
-
-function tab(id: string, root: PaneTree, extra: Partial<Tab> = {}): Tab {
-  return {
-    id,
-    name: id,
-    cwd: "~",
-    root,
-    activePaneId: root.type === "leaf" ? root.id : root.children[0].id,
-    ...extra,
-  };
-}
-
-function ws(tabs: Tab[], id = "w1", name = "Work"): Workspace {
-  return { id, name, tabs, activeTabId: tabs[0]?.id ?? null };
-}
-
-describe("workspaceAgentSummary", () => {
-  it("returns an empty summary for an undefined workspace", () => {
-    const s = workspaceAgentSummary(undefined, new Set());
-    expect(s).toEqual({
-      entries: [],
-      total: 0,
-      attention: 0,
-      executing: 0,
-      waiting: 0,
-    });
-  });
-
-  it("returns an empty summary when no pane has an agent", () => {
-    const w = ws([tab("t1", leaf("p1"))]);
-    const s = workspaceAgentSummary(w, new Set());
-    expect(s.total).toBe(0);
-    expect(s.entries).toEqual([]);
-  });
-
-  it("lists one entry per agent pane across tabs, in workspace→tab order", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("codex") })),
-    ]);
-    const s = workspaceAgentSummary(w, new Set());
-    expect(s.total).toBe(2);
-    expect(s.entries.map((e) => e.kind)).toEqual(["claude", "codex"]);
-    expect(s.entries.map((e) => e.paneId)).toEqual(["p1", "p2"]);
-    // no active/everActive set given → both fall to "idle" (never produced output).
-    expect(s.entries.every((e) => e.state === "idle")).toBe(true);
-  });
-
-  it("classifies a worked-then-quiet agent (everActive, not active) as waiting", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("codex") })),
-    ]);
-    // p1 produced output earlier this session but is silent now → waiting.
-    // p2 never produced output → idle.
-    const s = workspaceAgentSummary(w, new Set(), new Set(), new Set(["p1"]));
-    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("waiting");
-    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("idle");
-    expect(s.waiting).toBe(1);
-  });
-
-  it("prefers executing over waiting when an everActive pane is still active", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(["p1"]),
-      new Set(["p1"])
-    );
-    expect(s.entries[0].state).toBe("executing");
-    expect(s.executing).toBe(1);
-    expect(s.waiting).toBe(0);
-  });
-
-  it("hook `permission` maps to attention, even on the focused pane", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(),
-      new Set(),
-      "p1", // focused
-      new Map([["p1", "permission"]])
-    );
-    expect(s.entries[0].state).toBe("attention");
-    expect(s.attention).toBe(1);
-  });
-
-  it("hook `working` maps to executing", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(),
-      new Set(),
-      undefined,
-      new Map([["p1", "working"]])
-    );
-    expect(s.entries[0].state).toBe("executing");
-  });
-
-  it("hook `idle` maps to waiting, and is focus-suppressed", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("claude") })),
-    ]);
-    // p1 focused → suppressed to idle; p2 unfocused → waiting.
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(),
-      new Set(),
-      "p1",
-      new Map([
-        ["p1", "idle"],
-        ["p2", "idle"],
-      ])
-    );
-    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("idle");
-    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("waiting");
-  });
-
-  it("live output (active) overrides a stale hook `idle` → executing", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(["p1"]), // producing output right now
-      new Set(["p1"]),
-      undefined,
-      new Map([["p1", "idle"]]) // stale hook state
-    );
-    expect(s.entries[0].state).toBe("executing");
-  });
-
-  it("bell attention still wins over a hook `working` state", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(
-      w,
-      new Set(["p1"]), // rang the bell
-      new Set(),
-      new Set(),
-      undefined,
-      new Map([["p1", "working"]])
-    );
-    expect(s.entries[0].state).toBe("attention");
-  });
-
-  it("falls back to the heuristic when no hook state is present", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("codex") }))]);
-    // no hook (Codex has none): worked-then-quiet → waiting via everActive.
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(),
-      new Set(["p1"]),
-      undefined,
-      new Map()
-    );
-    expect(s.entries[0].state).toBe("waiting");
-  });
-
-  it("does not mark the focused pane as waiting (you're already looking at it)", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("codex") })),
-    ]);
-    // both worked and fell silent, but p1 is the pane the user is looking at →
-    // p1 drops to idle (no nag), p2 stays waiting.
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(),
-      new Set(["p1", "p2"]),
-      "p1"
-    );
-    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("idle");
-    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("waiting");
-    expect(s.waiting).toBe(1);
-  });
-
-  it("still marks the focused pane as executing while it is producing output", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    // focused AND active → executing wins; focus only suppresses the waiting nag.
-    const s = workspaceAgentSummary(
-      w,
-      new Set(),
-      new Set(["p1"]),
-      new Set(["p1"]),
-      "p1"
-    );
-    expect(s.entries[0].state).toBe("executing");
-  });
-
-  it("walks split trees left-to-right and finds nested agent panes", () => {
-    const w = ws([
-      tab(
-        "t1",
-        split("row", [
-          leaf("p1", { agent: agent("claude") }),
-          split("column", [leaf("p2"), leaf("p3", { agent: agent("opencode") })]),
-        ])
-      ),
-    ]);
-    const s = workspaceAgentSummary(w, new Set());
-    expect(s.entries.map((e) => e.paneId)).toEqual(["p1", "p3"]);
-  });
-
-  it("flags a waiting agent pane as attention and counts it", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("codex") })),
-    ]);
-    const s = workspaceAgentSummary(w, new Set(["p2"]));
-    expect(s.total).toBe(2);
-    expect(s.attention).toBe(1);
-    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("attention");
-    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("idle");
-  });
-
-  it("flags an active (not waiting) agent pane as executing and counts it", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") })),
-      tab("t2", leaf("p2", { agent: agent("codex") })),
-    ]);
-    const s = workspaceAgentSummary(w, new Set(), new Set(["p1"]));
-    expect(s.executing).toBe(1);
-    expect(s.attention).toBe(0);
-    expect(s.entries.find((e) => e.paneId === "p1")?.state).toBe("executing");
-    expect(s.entries.find((e) => e.paneId === "p2")?.state).toBe("idle");
-  });
-
-  it("prefers attention over executing when a pane is both waiting and active", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))]);
-    const s = workspaceAgentSummary(w, new Set(["p1"]), new Set(["p1"]));
-    expect(s.attention).toBe(1);
-    expect(s.executing).toBe(0);
-    expect(s.entries[0].state).toBe("attention");
-  });
-
-  it("does not count a waiting pane that has no agent", () => {
-    const w = ws([tab("t1", leaf("p1"))]);
-    const s = workspaceAgentSummary(w, new Set(["p1"]));
-    expect(s.total).toBe(0);
-    expect(s.attention).toBe(0);
-  });
-
-  it("skips file-viewer tabs even if their inert leaf carries an agent", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude") }), {
-        file: { path: "/a.md", language: "markdown", markdown: true },
-      }),
-    ]);
-    const s = workspaceAgentSummary(w, new Set());
-    expect(s.total).toBe(0);
-  });
-
-  it("prefers a tab's customName over its auto name and carries the icon", () => {
-    const w = ws([
-      tab("t1", leaf("p1", { agent: agent("claude", "cc") }), {
-        name: "auto",
-        customName: "  My Agent ",
-        icon: "🤖",
-      }),
-    ]);
-    const [e] = workspaceAgentSummary(w, new Set()).entries;
-    expect(e.tabName).toBe("My Agent");
-    expect(e.tabIcon).toBe("🤖");
-    expect(e.command).toBe("cc");
-  });
+const leaf = (id: string, runtimeStatus?: PaneLeaf["runtimeStatus"]): PaneLeaf => ({
+  type: "leaf", id, cwd: "/tmp", agent: { kind: "claude", command: "cc", sessionId: "", instanceId: id }, runtimeStatus,
 });
+const workspace = (leaves: PaneLeaf[]): Workspace => ({
+  id: "w", name: "Work", activeTabId: "t",
+  tabs: [{ id: "t", name: "Terminal", customName: "Auth service", cwd: "/tmp", activePaneId: leaves[0]?.id ?? "",
+    root: { type: "split", id: "split", direction: "row", children: leaves, sizes: leaves.map(() => 100 / leaves.length) } }],
+});
+const observation = (state: PtyAgentObservation["state"]): PtyAgentObservation => ({ state, source: "screen", reason: "live controls" });
 
-describe("workspacesAgentStatus", () => {
-  it("omits workspaces with no agent, and workspaces whose agents never ran", () => {
-    const a = ws([tab("t1", leaf("p1"))], "w1");
-    const b = ws([tab("t2", leaf("p2", { agent: agent("claude") }))], "w2");
-    // w1 has no agent; w2's only agent never produced output (idle) → hidden.
-    const m = workspacesAgentStatus([a, b], new Set(), new Set(), new Set());
-    expect(m.has("w1")).toBe(false);
-    expect(m.has("w2")).toBe(false);
+describe("PTY agent roll-up", () => {
+  it("keeps an agent present without a resumable session, with unknown status", () => {
+    const summary = workspaceAgentSummary(workspace([leaf("p")]));
+    expect(summary.total).toBe(1);
+    expect(summary.entries[0]).toMatchObject({ state: "unknown", command: "cc", tabName: "Auth service" });
+    expect(summary.waiting).toBe(0);
   });
-
-  it("surfaces a worked-then-quiet agent as waiting", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
-    // p1 produced output earlier but is silent now → waiting dot shows.
-    const m = workspacesAgentStatus([w], new Set(), new Set(), new Set(["p1"]));
-    expect(m.get("w1")).toEqual({ total: 1, state: "waiting" });
+  it("does not infer waiting from silence or executing from terminal activity", () => {
+    expect(classify(leaf("p")).state).toBe("unknown");
+    expect(workspacesAgentStatus([workspace([leaf("p")])]).get("w")).toEqual({ total: 1, state: "unknown" });
   });
-
-  it("hides the dot when the only waiting agent is the focused pane", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
-    // p1 is worked-then-quiet but it's the focused pane → drops to idle → no dot.
-    const m = workspacesAgentStatus(
-      [w],
-      new Set(),
-      new Set(),
-      new Set(["p1"]),
-      "p1"
-    );
-    expect(m.has("w1")).toBe(false);
+  it("uses screen evidence for attached terminals and owner title evidence otherwise", () => {
+    const leaves = [leaf("screen", "working"), leaf("owner", "permission"), leaf("idle", "idle")];
+    const summary = workspaceAgentSummary(workspace(leaves), new Map([["screen", observation("waiting")]]));
+    expect(summary.entries.map((entry) => entry.state)).toEqual(["waiting", "attention", "waiting"]);
+    expect(summary).toMatchObject({ total: 3, attention: 1, waiting: 2, executing: 0 });
   });
-
-  it("surfaces an executing agent even when other panes are idle", () => {
-    const w = ws(
-      [
-        tab("t1", leaf("p1", { agent: agent("claude") })),
-        tab("t2", leaf("p2", { agent: agent("codex") })),
-      ],
-      "w1"
-    );
-    // p1 idle, p2 executing → workspace shows, best state executing, total 2.
-    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]), new Set());
-    expect(m.get("w1")).toEqual({ total: 2, state: "executing" });
+  it("does not apply the foreground screen to a backgrounded agent", () => {
+    expect(classify(leaf("p", "background"), new Map([["p", observation("executing")]])).state).toBe("unknown");
   });
-
-  it("counts all agent panes in a workspace and takes the most urgent state", () => {
-    const w = ws(
-      [
-        tab("t1", leaf("p1", { agent: agent("claude") })),
-        tab("t2", leaf("p2", { agent: agent("codex") })),
-      ],
-      "w1"
-    );
-    // p1 executing, p2 waiting → most urgent = attention, total 2.
-    const m = workspacesAgentStatus(
-      [w],
-      new Set(["p2"]),
-      new Set(["p1"]),
-      new Set()
-    );
-    expect(m.get("w1")).toEqual({ total: 2, state: "attention" });
+  it("retains owner evidence when an attached screen has no recognized controls", () => {
+    expect(classify(leaf("p", "permission"), new Map([["p", observation("unknown")]])).state).toBe("attention");
   });
-
-  it("reports executing when some pane is active and none are waiting", () => {
-    const w = ws(
-      [
-        tab("t1", leaf("p1", { agent: agent("claude") })),
-        tab("t2", leaf("p2", { agent: agent("codex") })),
-      ],
-      "w1"
-    );
-    const m = workspacesAgentStatus([w], new Set(), new Set(["p2"]), new Set());
-    expect(m.get("w1")).toEqual({ total: 2, state: "executing" });
+  it("ignores persisted hook status from older daemons", () => {
+    const old = leaf("p", "working");
+    delete old.agent!.instanceId;
+    expect(classify(old).state).toBe("unknown");
   });
-
-  it("skips file tabs when counting", () => {
-    const w = ws(
-      [
-        tab("t1", leaf("p1", { agent: agent("claude") }), {
-          file: { path: "/a.md", language: "markdown", markdown: true },
-        }),
-      ],
-      "w1"
-    );
-    const m = workspacesAgentStatus([w], new Set(), new Set(), new Set());
-    expect(m.has("w1")).toBe(false);
+  it("does not apply screen evidence from a previous process generation", () => {
+    const pane = leaf("p", "working");
+    const old = { ...observation("attention"), instanceId: "previous" };
+    expect(classify(pane, new Map([["p", old]])).state).toBe("executing");
+    expect(classify(pane, new Map([["p", { ...old, instanceId: "p" }]])).state).toBe("attention");
   });
-
-  it("surfaces a hook `permission` as attention", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
-    const m = workspacesAgentStatus(
-      [w],
-      new Set(),
-      new Set(),
-      new Set(),
-      undefined,
-      new Map([["p1", "permission"]])
-    );
-    expect(m.get("w1")).toEqual({ total: 1, state: "attention" });
+  it("publishes a replacement process even when its status label is unchanged", () => {
+    try {
+      setPtyObservation("p", { ...observation("waiting"), instanceId: "previous" });
+      setPtyObservation("p", { ...observation("waiting"), instanceId: "p" });
+      expect(classify(leaf("p"), useAgentPtyStore.getState().observations).state).toBe("waiting");
+    } finally {
+      setPtyObservation("p");
+    }
   });
-
-  it("surfaces a hook `working` as executing", () => {
-    const w = ws([tab("t1", leaf("p1", { agent: agent("claude") }))], "w1");
-    const m = workspacesAgentStatus(
-      [w],
-      new Set(),
-      new Set(),
-      new Set(),
-      undefined,
-      new Map([["p1", "working"]])
-    );
-    expect(m.get("w1")).toEqual({ total: 1, state: "executing" });
+  it("keeps state independent of which pane is focused", () => {
+    const w = workspace([leaf("a"), leaf("b")]);
+    const observations = new Map([["a", observation("waiting")], ["b", observation("executing")]]);
+    const before = workspaceAgentSummary(w, observations);
+    w.tabs[0].activePaneId = "b";
+    expect(workspaceAgentSummary(w, observations)).toEqual(before);
+  });
+  it("rolls up urgency without dropping idle or unknown agents", () => {
+    const observations = new Map([["a", observation("waiting")], ["b", observation("attention")]]);
+    expect(workspacesAgentStatus([workspace([leaf("a"), leaf("b")])], observations).get("w")).toEqual({ total: 2, state: "attention" });
+  });
+  it("skips ordinary terminals and file tabs", () => {
+    const w = workspace([{ type: "leaf", id: "shell", cwd: "/tmp" }]);
+    expect(workspaceAgentSummary(w).total).toBe(0);
+    w.tabs[0].file = { path: "/tmp/a.md", language: "markdown", markdown: true };
+    w.tabs[0].root = leaf("file");
+    expect(workspaceAgentSummary(w).total).toBe(0);
+    expect(workspaceAgentSummary(undefined)).toEqual({ entries: [], total: 0, attention: 0, executing: 0, waiting: 0 });
   });
 });

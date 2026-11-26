@@ -12,7 +12,28 @@ import {
   transportForWorkspace,
 } from "./workspace-sync";
 
-/** Descendant process tree of a pane's shell pid (excludes the shell itself). */
+/** Capture environment from the exact process chosen by the local owner. */
+export async function paneAgentEnv(
+  workspaceId: string,
+  sessionId: string,
+  instanceId: string
+): Promise<Record<string, string> | undefined> {
+  if (isRemoteWorkspace(workspaceId)) return;
+  try {
+    const response = await transportForWorkspace(workspaceId)?.request({
+      method: "process_tree",
+      params: { session_id: sessionId },
+    });
+    if (response?.kind !== "processes") return;
+    const process = response.data.agent_process;
+    if (process?.instanceId !== instanceId) return;
+    return await processEnv(process.pid, workspaceId);
+  } catch {
+    return;
+  }
+}
+
+/** Includes the terminal root when exec replaced its shell with an agent. */
 export async function paneProcessTree(
   pid: number,
   workspaceId?: string,

@@ -364,6 +364,40 @@ describe("agent workspace projection", () => {
     expect(leaf.agent?.env).toEqual({ ANTHROPIC_AUTH_TOKEN: "private" });
   });
 
+  it("keeps private env when the same process gains a resume ID and drops it on replacement", () => {
+    const store = useWorkspaceStore.getState();
+    const project = (revision: number, instanceId: string, sessionId: string) =>
+      store.applyAgentWorkspace("local", {
+        id: "qa-w",
+        revision,
+        name: "QA",
+        tabs: [{
+          id: "qa-t",
+          name: "shell",
+          cwd: "/work",
+          root: {
+            type: "leaf",
+            id: "qa-p",
+            cwd: "/work",
+            agent: { kind: "codex", command: "codex", instanceId, sessionId },
+          },
+        }],
+      });
+    const localEnv = () => {
+      const root = useWorkspaceStore.getState().workspaces
+        .find((workspace) => workspace.id === "qa-w")?.tabs[0].root;
+      return root?.type === "leaf" ? root.agent?.env : undefined;
+    };
+    const env = { OPENAI_MODEL: "fixture" };
+    project(1, "first", "");
+    store.setPaneAgentEnv("qa-w", "qa-t", "qa-p", "first", env);
+    project(2, "first", "resume-id");
+    expect(localEnv()).toEqual(env);
+    project(3, "replacement", "resume-id");
+    store.setPaneAgentEnv("qa-w", "qa-t", "qa-p", "first", env);
+    expect(localEnv()).toBeUndefined();
+  });
+
   it("preserves client-local split sizes until the shared structure changes", () => {
     const leaf = (id: string) => ({
       type: "leaf" as const,

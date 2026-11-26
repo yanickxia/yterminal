@@ -5,7 +5,6 @@ import { persist } from "zustand/middleware";
 import type {
   Tab,
   Workspace,
-  PaneAgent,
   PaneTree,
   TabFile,
 } from "../lib/types";
@@ -170,12 +169,13 @@ interface WorkspaceState {
     paneId: string,
     cwd: string
   ) => void;
-  /** record (or clear) the agent running in a leaf so a restart resumes it. */
-  setPaneAgent: (
+  /** Remember resume environment locally for the current owner generation. */
+  setPaneAgentEnv: (
     workspaceId: string,
     tabId: string,
     paneId: string,
-    agent: PaneAgent | undefined
+    instanceId: string,
+    env: Record<string, string>
   ) => void;
 
   // ---- selectors ----
@@ -250,7 +250,9 @@ function mergeAgentPaneTree(
       previous.agent &&
       shared.agent &&
       previous.agent.kind === shared.agent.kind &&
-      previous.agent.sessionId === shared.agent.sessionId;
+      (previous.agent.instanceId || shared.agent.instanceId
+        ? previous.agent.instanceId === shared.agent.instanceId
+        : previous.agent.sessionId === shared.agent.sessionId);
     return {
       ...shared,
       sessionId: shared.sessionId ?? undefined,
@@ -855,24 +857,24 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         });
       },
 
-      setPaneAgent: (workspaceId, tabId, paneId, agent) => {
-        set((s) => ({
-          workspaces: mapTab(s.workspaces, workspaceId, tabId, (t) => ({
-            ...t,
-            root: setLeafAgent(t.root, paneId, agent),
+      setPaneAgentEnv: (workspaceId, tabId, paneId, instanceId, env) => {
+        const tab = get().workspaces.find((workspace) => workspace.id === workspaceId)
+          ?.tabs.find((tab) => tab.id === tabId);
+        const agent = tab && findLeaf(tab.root, paneId)?.agent;
+        if (agent?.instanceId !== instanceId) return;
+        const previousEnv = agent.env ?? {};
+        const entries = Object.entries(env);
+        if (Object.keys(previousEnv).length === entries.length &&
+            entries.every(([key, value]) => previousEnv[key] === value)) return;
+        set((state) => ({
+          workspaces: mapTab(state.workspaces, workspaceId, tabId, (tab) => ({
+            ...tab,
+            root: setLeafAgent(tab.root, paneId, {
+              ...agent,
+              env: entries.length > 0 ? env : undefined,
+            }),
           })),
         }));
-        const publicAgent = agent
-          ? {
-              kind: agent.kind,
-              command: agent.command,
-              sessionId: agent.sessionId,
-            }
-          : null;
-        syncOp(workspaceId, {
-          op: "set_pane_agent",
-          data: { pane_id: paneId, agent: publicAgent },
-        });
       },
 
       activeWorkspace: () => {

@@ -1,3 +1,4 @@
+pub mod agent_status;
 pub mod host_services;
 pub mod osc;
 pub mod paths;

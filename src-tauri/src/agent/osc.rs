@@ -4,7 +4,6 @@ const MAX_PENDING_BYTES: usize = 64 * 1024;
 pub enum OscUpdate {
     Cwd(String),
     Title(String),
-    RuntimeStatus(Option<String>),
 }
 
 #[derive(Default)]
@@ -51,11 +50,7 @@ fn parse_content(content: &str) -> Option<OscUpdate> {
     let (command, payload) = content.split_once(';')?;
     match command {
         "7" => parse_cwd(payload).map(OscUpdate::Cwd),
-        "0" | "2" => {
-            let title = sanitize_title(payload);
-            (!title.is_empty()).then_some(OscUpdate::Title(title))
-        }
-        "777" => parse_runtime_status(payload).map(OscUpdate::RuntimeStatus),
+        "0" | "2" => Some(OscUpdate::Title(sanitize_title(payload))),
         _ => None,
     }
 }
@@ -64,15 +59,6 @@ fn parse_cwd(payload: &str) -> Option<String> {
     let rest = payload.strip_prefix("file://")?;
     let slash = rest.find('/')?;
     percent_decode(&rest[slash..])
-}
-
-fn parse_runtime_status(payload: &str) -> Option<Option<String>> {
-    let state = payload.strip_prefix("notify;yt-agent;")?;
-    match state {
-        "working" | "idle" | "permission" => Some(Some(state.to_string())),
-        "ended" => Some(None),
-        _ => None,
-    }
 }
 
 fn sanitize_title(value: &str) -> String {
@@ -137,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_split_cwd_title_and_runtime_without_touching_raw_stream() {
+    fn parses_split_cwd_and_title_without_consuming_hook_status() {
         let mut parser = OscParser::default();
         assert!(parser.push(b"text\x1b]7;file://host/home/me%20").is_empty());
         assert_eq!(
@@ -145,17 +131,28 @@ mod tests {
             vec![
                 OscUpdate::Cwd("/home/me work".into()),
                 OscUpdate::Title("build".into()),
-                OscUpdate::RuntimeStatus(Some("working".into())),
             ]
         );
     }
 
     #[test]
-    fn ended_clears_runtime_and_bad_percent_encoding_is_ignored() {
+    fn hook_end_and_bad_percent_encoding_are_ignored() {
         let mut parser = OscParser::default();
         assert_eq!(
             parser.push(b"\x1b]777;notify;yt-agent;ended\x07\x1b]7;file://h/%XX\x07"),
-            vec![OscUpdate::RuntimeStatus(None)]
+            vec![]
+        );
+    }
+
+    #[test]
+    fn clearing_the_title_invalidates_previous_busy_evidence() {
+        let mut parser = OscParser::default();
+        assert_eq!(
+            parser.push("\x1b]2;⠋ Working\x07\x1b]2;\x07".as_bytes()),
+            vec![
+                OscUpdate::Title("⠋ Working".into()),
+                OscUpdate::Title(String::new())
+            ]
         );
     }
 }

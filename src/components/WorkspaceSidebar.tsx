@@ -4,11 +4,11 @@ import { useAiStore } from "../stores/ai-store";
 import { useGitStore } from "../stores/git-store";
 import { useLayoutStore } from "../stores/layout-store";
 import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
-import { useActivityStore } from "../stores/activity-store";
-import { useHookStateStore } from "../stores/hook-state-store";
+import { useAgentPtyStore } from "../stores/agent-pty-store";
 import { tabsNeedingAttention } from "../lib/attention";
 import { workspacesAgentStatus } from "../lib/workspace-agents";
 import { SettingsPanel } from "./SettingsPanel";
+import { AgentsSidebar } from "./AgentsSidebar";
 import { EmojiPicker } from "./EmojiPicker";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { Workspace } from "../lib/types";
@@ -18,7 +18,6 @@ import {
   takeControlOfWorkspace,
 } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
-import { useFocusedPaneId } from "../lib/use-focused-pane";
 import { useHostStore } from "../stores/host-store";
 import {
   pauseRemoteHost,
@@ -100,29 +99,15 @@ export function WorkspaceSidebar({
   // per-row badge plus a jump list — rather than as a strip inside the tab
   // area, so it's visible no matter which workspace is active.
   const waiting = useAttentionStore((s) => s.waiting);
-  const active = useActivityStore((s) => s.active);
-  const everActive = useActivityStore((s) => s.everActive);
-  const hookState = useHookStateStore((s) => s.state);
-  const focusedPaneId = useFocusedPaneId();
+  const observations = useAgentPtyStore((s) => s.observations);
   const attentionEntries = tabsNeedingAttention(workspaces, waiting);
   const attentionByWs = new Map<string, number>();
   for (const e of attentionEntries) {
     attentionByWs.set(e.workspaceId, (attentionByWs.get(e.workspaceId) ?? 0) + 1);
   }
-  // Per-workspace agent status (cmux-style): one aggregate dot per row showing
-  // the most urgent agent state across the workspace. The bell-based attention
-  // pip above is a separate, tab-scoped signal (a chime you must acknowledge);
-  // this is a lower-key "N agents, currently working/waiting" indicator so every
-  // row surfaces its own agents regardless of which workspace is active. The
-  // focused pane is passed so its passive "waiting" nag is suppressed while the
-  // user is looking at it (matches the bell path).
   const agentByWs = workspacesAgentStatus(
     workspaces,
-    waiting,
-    active,
-    everActive,
-    focusedPaneId,
-    hookState
+    observations
   );
   const configuredHostIds = new Set(hostProfiles.map((profile) => profile.id));
   const orphanHostIds = Array.from(
@@ -670,7 +655,7 @@ export function WorkspaceSidebar({
                     title={
                       agentByWs.get(w.id)!.state === "executing"
                         ? `${agentByWs.get(w.id)!.total} agent(s) working`
-                        : `${agentByWs.get(w.id)!.total} agent(s) waiting for input`
+                        : `${agentByWs.get(w.id)!.total} agent(s) — ${agentByWs.get(w.id)!.state}`
                     }
                     aria-label={`${agentByWs.get(w.id)!.total} agent(s)`}
                   />
@@ -705,6 +690,7 @@ export function WorkspaceSidebar({
           </div>
           );
         })}
+        <AgentsSidebar hostLabels={hostLabels} />
       </div>
 
       <div className="sidebar-footer">

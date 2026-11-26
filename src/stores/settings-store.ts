@@ -64,13 +64,8 @@ export const DEFAULT_COPY_ON_SELECT = false;
 export const DEFAULT_AUTO_TAB_TITLE = true;
 export const DEFAULT_TAKE_CONTROL_ON_ENTER = true;
 
-/**
- * Install Claude Code hooks into ~/.claude/settings.json so a running agent
- * reports its exact run-state (working / idle / needs-permission / ended) via
- * an OSC 777 sequence, instead of yterminal inferring it from PTY activity.
- * Writes a third-party config file, so it's user-controllable; default on.
- */
-export const DEFAULT_AGENT_STATUS_HOOKS = true;
+// Retained for config compatibility; no longer installs or controls hooks.
+export const DEFAULT_AGENT_STATUS_HOOKS = false;
 
 /**
  * Play a short chime when a pane rings the terminal bell (BEL) while it isn't
@@ -171,7 +166,7 @@ interface SettingsState {
   /** let the shell/agent terminal title drive an un-renamed tab's name */
   autoTabTitle: boolean;
   takeControlOnEnter: boolean;
-  /** install Claude Code hooks so agents report their exact run-state (see DEFAULT_AGENT_STATUS_HOOKS) */
+  /** Legacy config key; ignored by PTY status detection. */
   agentStatusHooks: boolean;
   /** play a chime when an unfocused pane rings the bell (agent needs attention) */
   alertSoundEnabled: boolean;

@@ -15,10 +15,12 @@ export type AgentKind = "claude" | "codex" | "opencode";
  * resume its prior session.
  */
 export interface PaneAgent {
+  /** Owner-generated process generation; not a resumable session identifier. */
+  instanceId?: string;
   kind: AgentKind;
   /** literal launch token as the user typed it, e.g. "cc" or "claude". */
   command: string;
-  /** the agent's on-disk session id, resolved at snapshot time. */
+  /** Empty until a resumable session is available; presence is process-derived. */
   sessionId: string;
   /**
    * Selected env vars captured from the running agent process (whitelisted
@@ -44,8 +46,8 @@ export interface PaneLeaf {
    * resume flag. Cleared when no agent is running.
    */
   agent?: PaneAgent;
-  /** Last daemon-observed OSC 777 status, including while no GUI is attached. */
-  runtimeStatus?: "working" | "idle" | "permission";
+  /** Last daemon-observed agent title status; hooks are not a status source. */
+  runtimeStatus?: "working" | "idle" | "permission" | "unknown" | "background";
   /** Last OSC 0/2 title observed by the owner daemon for this specific pane. */
   runtimeTitle?: string;
 }
