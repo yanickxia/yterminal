@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { UpdaterNetworkOptions } from "./updater-native";
 import type {
   WorkspaceDocument,
   WorkspaceOperation,
@@ -259,10 +260,14 @@ type HostEvent =
   | { type: "diagnostic"; payload: { message: string } }
   | { type: "disconnected"; payload: { message: string } };
 
+type HostChannelEvent = HostEvent | { type: "install_progress"; payload: { message: string } };
+
 export interface HostConnectOptions {
   kind: "local" | "ssh";
   name?: string;
   sshTarget?: string;
+  installAgent?: UpdaterNetworkOptions;
+  onInstallProgress?: (message: string) => void;
 }
 
 export class HostRequestError extends Error {
@@ -291,7 +296,7 @@ const CONTROL_REQUEST_TIMEOUT_MS = 8_000;
 export class HostTransport {
   readonly connectionId: string;
   readonly hello: AgentHello;
-  private readonly channel: Channel<HostEvent>;
+  private readonly channel: Channel<HostChannelEvent>;
   private readonly sessionListeners = new Map<string, Set<SessionListener>>();
   private readonly statusListeners = new Set<StatusListener>();
   private readonly workspaceListeners = new Set<WorkspaceListener>();
@@ -303,7 +308,7 @@ export class HostTransport {
 
   private constructor(
     info: HostConnectionInfo,
-    channel: Channel<HostEvent>
+    channel: Channel<HostChannelEvent>
   ) {
     this.connectionId = info.connectionId;
     this.hello = info.hello;
@@ -330,14 +335,15 @@ export class HostTransport {
   }
 
   static async connect(options: HostConnectOptions): Promise<HostTransport> {
-    const channel = new Channel<HostEvent>();
+    const channel = new Channel<HostChannelEvent>();
     let transport: HostTransport | undefined;
     // The Rust side may finish the handshake and report a disconnect before
     // `invoke(host_connect)` resolves. Buffer those early events instead of
     // silently losing them and leaving a dead connection marked online.
     const earlyEvents: HostEvent[] = [];
     channel.onmessage = (event) => {
-      if (transport) transport.handleEvent(event);
+      if (event.type === "install_progress") options.onInstallProgress?.(event.payload.message);
+      else if (transport) transport.handleEvent(event);
       else earlyEvents.push(event);
     };
     const info = await invoke<HostConnectionInfo>("host_connect", {
@@ -345,6 +351,7 @@ export class HostTransport {
         kind: options.kind,
         name: options.name ?? "yterminal",
         sshTarget: options.sshTarget ?? null,
+        installAgent: options.installAgent,
       },
       onEvent: channel,
     });

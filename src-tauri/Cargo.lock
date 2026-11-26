@@ -6097,10 +6097,11 @@ dependencies = [
 
 [[package]]
 name = "yterminal"
-version = "0.18.20"
+version = "0.18.21"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
+ "flate2",
  "font-kit",
  "futures-util",
  "libc",
@@ -6111,6 +6112,8 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "sha2",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

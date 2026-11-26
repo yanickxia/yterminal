@@ -1,4 +1,5 @@
 import { useHostStore, type SshHostProfile } from "../stores/host-store";
+import { useSettingsStore } from "../stores/settings-store";
 import {
   connectRemoteWorkspaceHost,
   disconnectRemoteWorkspaceHost,
@@ -20,19 +21,20 @@ export function startConfiguredRemoteHosts(): void {
   }
 }
 
-export function connectProfile(profile: SshHostProfile): Promise<void> {
+function connectProfile(profile: SshHostProfile, installAgent = false): Promise<void> {
   const existing = inFlight.get(profile.id);
   if (existing) return existing;
-  const pending = connectProfileInner(profile).finally(() => {
+  const pending = connectProfileInner(profile, installAgent).finally(() => {
     if (inFlight.get(profile.id) === pending) inFlight.delete(profile.id);
   });
   inFlight.set(profile.id, pending);
   return pending;
 }
 
-async function connectProfileInner(profile: SshHostProfile): Promise<void> {
+async function connectProfileInner(profile: SshHostProfile, installAgent: boolean): Promise<void> {
   if (paused.has(profile.id)) return;
-  if (!profile.sshTarget.trim()) {
+  const target = profile.sshTarget.trim();
+  if (!target) {
     useHostStore.getState().setRuntime(profile.id, {
       status: "error",
       message: "SSH target is empty",
@@ -41,11 +43,23 @@ async function connectProfileInner(profile: SshHostProfile): Promise<void> {
   }
   clearRetry(profile.id);
   useHostStore.getState().setRuntime(profile.id, { status: "connecting" });
+  const settings = useSettingsStore.getState();
   try {
     const transport = await connectRemoteWorkspaceHost(
       profile.id,
       profile.name,
-      profile.sshTarget
+      target,
+      installAgent ? {
+        installAgent: {
+          githubMirror: settings.githubMirror,
+          httpProxy: settings.updateHttpProxy,
+        },
+        onInstallProgress: (message) => {
+          if (!paused.has(profile.id)) {
+            useHostStore.getState().setRuntime(profile.id, { status: "connecting", message });
+          }
+        },
+      } : undefined
     );
     if (paused.has(profile.id)) {
       if (forgotten.has(profile.id)) {
@@ -93,6 +107,7 @@ function isPermanentConnectionError(message: string): boolean {
   const value = message.toLowerCase();
   return [
     "already connected as",
+    "agent setup failed",
     "permission denied",
     "host key verification failed",
     "remote host identification has changed",
@@ -113,7 +128,8 @@ export async function removeRemoteHost(profileId: string): Promise<void> {
   useHostStore.getState().removeHost(profileId);
 }
 
-export async function reconnectRemoteHost(profileId: string): Promise<void> {
+export async function reconnectRemoteHost(profileId: string, installAgent = false): Promise<void> {
+  if (installAgent) await inFlight.get(profileId);
   paused.delete(profileId);
   forgotten.delete(profileId);
   clearRetry(profileId);
@@ -121,7 +137,7 @@ export async function reconnectRemoteHost(profileId: string): Promise<void> {
   const profile = useHostStore
     .getState()
     .profiles.find((item) => item.id === profileId);
-  if (profile) await connectProfile(profile);
+  if (profile) await connectProfile(profile, installAgent);
 }
 
 export async function pauseRemoteHost(profileId: string): Promise<void> {

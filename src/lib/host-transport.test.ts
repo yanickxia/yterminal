@@ -77,6 +77,26 @@ describe("HostTransport control leases", () => {
     await transport.disconnect();
   });
 
+  it("passes setup options and displays SSH install progress before handshake", async () => {
+    const onInstallProgress = vi.fn();
+    const installAgent = { githubMirror: "https://mirror.example/" };
+    const connecting = HostTransport.connect({
+      kind: "ssh",
+      sshTarget: "test-host",
+      installAgent,
+      onInstallProgress,
+    });
+    mocks.channel?.onmessage?.({
+      type: "install_progress",
+      payload: { message: "Uploading" },
+    });
+    expect(onInstallProgress).toHaveBeenCalledWith("Uploading");
+    expect(mocks.invoke).toHaveBeenCalledWith("host_connect", expect.objectContaining({
+      options: expect.objectContaining({ sshTarget: "test-host", installAgent }),
+    }));
+    await (await connecting).disconnect();
+  });
+
   it("times out a stuck control request", async () => {
     vi.useFakeTimers();
     try {

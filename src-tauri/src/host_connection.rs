@@ -11,6 +11,8 @@ use yterminal::agent::paths;
 use yterminal::agent_client::{AgentClient, AgentClientEvent, EVENT_CAPACITY};
 use yterminal::remote_protocol::{AgentHello, EventBody, RemoteError, RequestBody, ResponseBody};
 
+use crate::remote_agent_install::{install_if_missing, InstallOptions};
+
 struct HostConnection {
     client: AgentClient,
     ssh_child: Mutex<Option<Child>>,
@@ -27,6 +29,7 @@ pub struct HostConnectOptions {
     pub kind: String,
     pub ssh_target: Option<String>,
     pub name: Option<String>,
+    pub install_agent: Option<InstallOptions>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +45,7 @@ pub enum HostEvent {
     Agent(EventBody),
     Diagnostic { message: String },
     Disconnected { message: String },
+    InstallProgress { message: String },
 }
 
 #[tauri::command]
@@ -62,6 +66,15 @@ pub async fn host_connect(
                 .ssh_target
                 .as_deref()
                 .ok_or_else(|| "sshTarget is required".to_string())?;
+            if let Some(install) = options.install_agent.as_ref() {
+                install_if_missing(target, install, |message| {
+                    let _ = on_event.send(HostEvent::InstallProgress {
+                        message: message.into(),
+                    });
+                })
+                .await
+                .map_err(|error| format!("Agent setup failed: {error}"))?;
+            }
             let (client, child) = AgentClient::connect_ssh(target, name, event_tx).await?;
             (client, Some(child))
         }
