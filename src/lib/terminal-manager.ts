@@ -20,6 +20,7 @@ import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { encodeEnter } from "./enter-key";
+import { encodeAltArrow } from "./terminal-alt-arrow";
 import { createControlEnterHandler } from "./terminal-control-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
@@ -37,7 +38,6 @@ import {
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
-import { installMacosContinuousCompositionFix } from "./terminal-macos-composition";
 import { shouldSuppressNativePaste } from "./paste-suppress";
 import { shouldSuppressContextMenu } from "./context-menu-suppress";
 import { spawn, type IPty } from "./pty";
@@ -60,31 +60,20 @@ import { resolveScrollback } from "../stores/settings-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { markAttention } from "../stores/attention-store";
 import { markActivity, clearActivity } from "../stores/activity-store";
-import { setHookState, clearHookState } from "../stores/hook-state-store";
-import { parseAgentHookOsc } from "./agent-hook-osc";
+import { detectPtyAgent, readAgentScreen } from "./agent-pty";
+import { setPtyObservation, useAgentPtyStore } from "../stores/agent-pty-store";
 import { SHOW_CURSOR, shouldRestoreCursor } from "./cursor-visibility";
 import { playAlertSound } from "./alert-sound";
 import { collectLeafIds, findLeaf } from "./pane-tree";
 import { getVerbose, logger } from "./logger";
-import type { AgentKind, PaneAgent } from "./types";
-import { paneProcessTree, agentSessionId, processEnv } from "./agent";
+import type { AgentKind } from "./types";
+import { paneAgentEnv } from "./agent";
 import {
   disconnectAllWorkspaceHosts,
   isRemoteWorkspace,
   transportForWorkspace,
 } from "./workspace-sync";
-import {
-  detectAgent,
-  classifyCommandToken,
-  buildResumeCommand,
-  tokenMatchesKind,
-} from "./agent-detect";
-import {
-  makeInputLineState,
-  feedInput,
-  firstToken,
-  type InputLineState,
-} from "./input-line";
+import { buildResumeCommand } from "./agent-detect";
 import {
   makeSentinel,
   parseResult,
@@ -99,7 +88,6 @@ import {
   disableVisibilityPause,
   type VisibilityPauseRenderService,
 } from "./terminal-renderer-visibility";
-import { installWebglDisposalCompatibility } from "./webgl-disposal";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 const isLinux =
@@ -167,42 +155,14 @@ interface Session {
   disposed: boolean;
   /** the shell process has exited (user typed `exit` or it died) */
   exited: boolean;
-  /**
-   * Viewport scroll state captured at detach so we can restore it on the next
-   * attach. We snapshot the `.xterm-viewport` div's raw `scrollTop` rather
-   * than xterm's `buffer.viewportY`/`scrollToLine`, because xterm only
-   * recomputes `ydisp` from scrollTop when the viewport DOM emits a scroll
-   * event — assigning scrollTop directly keeps xterm's internal state in
-   * sync, whereas `scrollToLine` can leave `scrollTop` lagging behind on
-   * first frame after re-attach and the very next wheel event then snaps to
-   * the top because the listener reads a stale (≈0) scrollTop.
-   */
-  savedScrollTop?: number;
-  savedAtBottom?: boolean;
+  /** An explicit jump to the latest output while this terminal is detached. */
+  scrollToBottomOnAttach?: boolean;
   /**
    * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
    * refreshed on every prompt. Our native pty layer exposes the OS child pid,
    * so when this signal is stale or absent we can query the process directly.
    */
   shellCwd?: string;
-  /**
-   * Reconstructed current input line, fed from `term.onData` (user keystrokes
-   * only). Lets us capture the literal launch token — including a shell alias —
-   * the user typed to start an agent, which the process argv never reveals.
-   */
-  inputLine: InputLineState;
-  /**
-   * Launch token, per agent kind, as the user last typed it in this pane.
-   * Paired with a live detection at snapshot time to recover the alias.
-   */
-  typedCommands: Map<AgentKind, string>;
-  /**
-   * Recent first-tokens of submitted shell lines (newest at the end). We keep
-   * a small history rather than a single field so an alias the user typed at
-   * a shell prompt survives subsequent in-TUI Enter submissions: the snapshot
-   * picks the most recent entry whose basename contains the detected kind.
-   */
-  recentSubmits: string[];
   /**
    * Resume command queued for a restored pane. Injected once the shell is
    * ready (first OSC 7 prompt, or a timeout fallback for bare shells).
@@ -218,11 +178,6 @@ interface Session {
    * terminal-composition-guard.ts.
    */
   compositionGuardCleanup?: () => void;
-  /**
-   * Cleanup for the macOS continuous-composition backport installed after
-   * xterm creates its private CompositionHelper in `open()`.
-   */
-  macCompositionFixCleanup?: () => void;
   /**
    * The GPU renderer addon, attached on first `open()` for a real speed-up over
    * xterm's default DOM renderer. Kept on the session so we can dispose it on
@@ -271,13 +226,13 @@ interface Session {
    * redraw. Empty until the first title event.
    */
   lastTitle?: string;
+  ptyAgentKind?: AgentKind;
+  ptyAgentInstance?: string;
+  ptyAgentDirty?: boolean;
+  ptyAgentPendingIdleAt?: number;
 }
 
 interface XtermCoreInternals {
-  viewport?: {
-    syncScrollArea?: (immediate?: boolean) => void;
-    _ignoreNextScrollEvent?: boolean;
-  };
   _charSizeService?: { hasValidSize?: boolean; measure?: () => void };
   _renderService?: VisibilityPauseRenderService & {
     _pausedResizeTask?: { flush?: () => void };
@@ -343,7 +298,9 @@ async function persist(id: string, s: Session): Promise<void> {
   if (s.disposed) return;
   try {
     await s.pty.waitForParserIdle(2_000);
-    if (s.disposed || !s.pty.isParserIdle()) return;
+    // The serializer omits the transient DEC 2026 mode. Keep the previous
+    // checkpoint while the program is still writing this synchronized frame.
+    if (s.disposed || !s.pty.isParserIdle() || s.term.modes.synchronizedOutputMode) return;
     const snapshot = s.serialize.serialize();
     saveScrollback(id, snapshot);
     // The daemon keeps the authoritative reconnect checkpoint. The local
@@ -438,6 +395,10 @@ export function reapplyPaneTitle(paneId: string) {
  */
 function isPaneFocused(paneId: string): boolean {
   if (typeof document !== "undefined" && !document.hasFocus()) return false;
+  return isPaneActive(paneId);
+}
+
+function isPaneActive(paneId: string): boolean {
   const store = useWorkspaceStore.getState();
   const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
   if (!ws || !ws.activeTabId) return false;
@@ -537,25 +498,6 @@ function scheduleFullTerminalRefresh(s: Session, reason: string): void {
   });
 }
 
-function syncXtermViewport(
-  s: Session,
-  opts: { immediate?: boolean; clearIgnoredScroll?: boolean } = {}
-) {
-  if (s.disposed || !s.el.parentElement) return;
-  try {
-    const viewport = xtermCore(s)?.viewport;
-    viewport?.syncScrollArea?.(opts.immediate);
-    if (opts.clearIgnoredScroll && viewport) {
-      // `syncScrollArea()` may set this before programmatically assigning
-      // scrollTop. When we call it immediately before a wheel/restore scroll,
-      // clear it so the user's next scroll event is not swallowed.
-      viewport._ignoreNextScrollEvent = false;
-    }
-  } catch {
-    /* xterm internals moved; scrolling will fall back to default behavior */
-  }
-}
-
 /** Push a theme palette onto the app-chrome CSS variables. */
 function applyChromeVars(p: ThemePalette) {
   if (typeof document === "undefined") return;
@@ -633,6 +575,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     fontFamily: font.stack,
     fontSize,
     cursorBlink: true,
+    overviewRuler: { width: 10 },
     allowProposedApi: true,
     // Match the reference xterm consumer (VS Code). rescaleOverlappingGlyphs
     // scales a glyph that overflows its cell back down to cell width in the
@@ -874,20 +817,6 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     return true;
   });
 
-  // OSC 777 (agent status): the Claude Code hooks we install (see
-  // install_claude_hooks in main.rs) emit `notify;yt-agent;<state>` through the
-  // agent's own PTY on each lifecycle event, so the bytes arrive on THIS pane's
-  // stream and this handler closure-captures the pane id — no session matching
-  // needed. parseAgentHookOsc returns null for any real (non-yterminal) OSC 777
-  // notification, which we pass through (return false) untouched.
-  term.parser.registerOscHandler(777, (data) => {
-    const parsed = parseAgentHookOsc(data);
-    if (parsed === null) return false;
-    if (parsed === "ended") clearHookState(tabId);
-    else setHookState(tabId, parsed);
-    return true;
-  });
-
   const handleControlEnter = createControlEnterHandler({
     enabled: () => useSettingsStore.getState().takeControlOnEnter,
     readOnly: () => pty.readOnly,
@@ -919,6 +848,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       void pasteInto(tabId);
       return false;
     }
+    const altArrow = encodeAltArrow(e, isMac);
+    if (altArrow) {
+      e.preventDefault();
+      pty.write(altArrow);
+      return false;
+    }
     if (e.key !== "Enter") return true;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
       // Stamp the moment so the spurious `contextmenu` macOS WKWebView fires
@@ -939,13 +874,6 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     const sel = term.getSelection();
     if (sel) void clipboardWrite(sel).catch(() => {});
   });
-  term.attachCustomWheelEventHandler(() => {
-    if (s) {
-      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
-    }
-    return true;
-  });
-
   // Attention bell: CLIs (and coding agents like Claude Code / OpenCode) ring
   // the terminal bell (BEL, \x07) when they pause for user input or hit an
   // error that needs a human. If that happens in a pane the user isn't looking
@@ -970,6 +898,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   let lastTitle = "";
   let titleTimer: ReturnType<typeof setTimeout> | undefined;
   term.onTitleChange((title) => {
+    if (s) s.ptyAgentDirty = true;
     if (title === lastTitle) return;
     lastTitle = title;
     if (s) s.lastTitle = title;
@@ -1002,34 +931,13 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   });
   term.onWriteParsed(() => {
     if (s) {
+      s.ptyAgentDirty = true;
       refreshResumedXterm(s);
-      syncXtermViewport(s);
     }
   });
   // term.onData fires for every keystroke/paste leaving xterm toward the pty.
   term.onData((data: string) => {
     if (getVerbose()) inputLatency.start(performance.now());
-    // Reconstruct the user's current input line so we can capture the literal
-    // launch token (possibly a shell alias) when a coding agent is started.
-    // The running process argv only ever shows the resolved binary, so this is
-    // the only place the alias is observable.
-    if (s) {
-      const { state, submitted } = feedInput(s.inputLine, data);
-      s.inputLine = state;
-      if (submitted) {
-        const token = firstToken(submitted);
-        if (token) {
-          s.recentSubmits.push(token);
-          // Bound the history; agent launches are always near the top.
-          if (s.recentSubmits.length > 16) s.recentSubmits.shift();
-          const kind = classifyCommandToken(token);
-          if (kind) s.typedCommands.set(kind, token);
-          // Trigger an early agent re-detection so we capture an alias
-          // (e.g. `claude-yolo`) before the user types many TUI lines.
-          scheduleQuickAgentSnapshot();
-        }
-      }
-    }
     pty.write(data);
   });
   term.onResize(({ cols, rows }) => {
@@ -1047,7 +955,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (s?.disposed) return;
     if (s) s.exited = true;
     clearActivity(tabId);
-    clearHookState(tabId);
+    setPtyObservation(tabId);
     term.writeln("\r\n\x1b[90m[process exited]\x1b[0m");
     // notify the app so it can close the now-dead pane (standard terminal
     // behavior: exiting the shell closes the split / tab).
@@ -1066,9 +974,6 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     opened: false,
     disposed: false,
     exited: false,
-    inputLine: makeInputLineState(),
-    typedCommands: new Map(),
-    recentSubmits: [],
     resumeInjected: false,
   };
   sessions.set(tabId, s);
@@ -1091,7 +996,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // remain parked at row 0. Once the initial replay is fully parsed, pin the
   // restored pane to its newest output. Later transport replays must not move a
   // user who deliberately scrolled up, and ordinary tab switches keep using
-  // the saved viewport state below.
+  // the viewport after attachment.
   let initialReplay = true;
   pty.onReplayComplete(() => {
     if (!initialReplay) return;
@@ -1133,14 +1038,6 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   if (!s.opened) {
     s.term.open(s.el);
     s.opened = true;
-    // xterm 5.5 can consume the first key of a new macOS Chinese composition
-    // when that same key committed the previous candidate. Backport upstream's
-    // delayed-range fix without changing xterm on Linux/Windows.
-    if (isMac) {
-      s.macCompositionFixCleanup = installMacosContinuousCompositionFix(
-        s.term
-      );
-    }
     // GPU renderer: xterm's default DOM renderer repaints per-cell and is the
     // dominant source of keystroke-to-screen lag. Load the WebGL addon now that
     // the terminal is in the DOM (its contract requires open() first). On GPU
@@ -1150,7 +1047,6 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     // the DOM renderer.
     try {
       const webgl = new WebglAddon();
-      installWebglDisposalCompatibility(s.term, webgl);
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
         s.glyphAtlasCleanup?.();
@@ -1200,8 +1096,7 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     }
     // WebKitGTK alone emits orphan composition commits. Keep this workaround
     // off macOS/Windows so their balanced native IME lifecycle stays entirely
-    // owned by xterm. Delivered CJK is written straight to the pty (it never
-    // matches an agent launch token, so bypassing feedInput is safe).
+    // owned by xterm. The orphan IME commit is written straight to the PTY.
     if (isLinux) {
       s.compositionGuardCleanup = attachOrphanCompositionEndGuard(
         s.el,
@@ -1318,26 +1213,18 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       measureTerminalFont(s);
       if (!s.pty.readOnly) s.fit.fit();
       resumeXtermRenderer(s);
-      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       s.term.refresh(0, s.term.rows - 1);
       const renderService = xtermCore(s)?._renderService;
       if (renderService) renderService._needsFullRefresh = false;
-      // Restore the underlying viewport scrollTop. We do this rather than
-      // calling `scrollToLine` because scrollTop is the source of truth for
-      // xterm's scroll listener; writing it directly fires that listener
-      // which then computes `ydisp` consistently with the DOM. Going through
-      // scrollToLine can leave the two out of sync on first frame after
-      // re-attach so the next wheel event teleports to the top.
-      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
-      if (s.savedAtBottom) {
-        s.term.scrollToBottom();
-        syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
-      } else if (viewport && typeof s.savedScrollTop === "number") {
-        viewport.scrollTop = s.savedScrollTop;
-        viewport.dispatchEvent(new Event("scroll"));
+      // xterm 6 keeps the virtual scrollbar and buffer offset with the
+      // cached terminal. Only an explicit jump overrides that position.
+      if (s.scrollToBottomOnAttach) {
+        requestAnimationFrame(() => {
+          if (s.disposed || s.el.parentElement !== container || !s.scrollToBottomOnAttach) return;
+          s.term.scrollToBottom();
+          s.scrollToBottomOnAttach = false;
+        });
       }
-      s.savedScrollTop = undefined;
-      s.savedAtBottom = undefined;
       // don't steal focus from an open rename/search input (xterm's textarea
       // is allowed — that's the terminal itself getting focus).
       const ae = document.activeElement as HTMLElement | null;
@@ -1345,7 +1232,7 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
         ae &&
         (ae.tagName === "INPUT" ||
           (ae.tagName === "TEXTAREA" && !s.el.contains(ae)));
-      if (!editing) s.term.focus();
+      if (!editing && isPaneActive(tabId)) s.term.focus();
     } catch {
       /* container not measurable yet */
     }
@@ -1365,14 +1252,6 @@ export function detachSession(tabId: string) {
       /* terminal was already detached */
     }
     void persist(tabId, s);
-    try {
-      const buf = s.term.buffer.active;
-      s.savedAtBottom = buf.viewportY === buf.baseY;
-      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
-      if (viewport) s.savedScrollTop = viewport.scrollTop;
-    } catch {
-      /* buffer not ready */
-    }
     s.el.parentElement.removeChild(s.el);
   }
 }
@@ -1386,9 +1265,8 @@ export function disposeSession(tabId: string) {
   sessions.delete(tabId);
   clearActivity(tabId);
   controlListeners.delete(tabId);
-  clearHookState(tabId);
+  setPtyObservation(tabId);
   s.compositionGuardCleanup?.();
-  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();
@@ -1433,9 +1311,8 @@ export function unloadSession(tabId: string) {
   sessions.delete(tabId);
   clearActivity(tabId);
   controlListeners.delete(tabId);
-  clearHookState(tabId);
+  setPtyObservation(tabId);
   s.compositionGuardCleanup?.();
-  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();
@@ -1564,7 +1441,6 @@ export function fitSession(tabId: string) {
       ) {
         s.fit.fit();
       }
-      syncXtermViewport(s, { immediate: true });
     } catch {
       /* ignore */
     }
@@ -1604,21 +1480,20 @@ export function getSessionText(tabId: string, maxChars = 12000): string {
  * to a tab that rang the attention bell — the user wants to see the latest
  * output (the prompt the agent is waiting on), not wherever they'd left the
  * scrollback parked. Works whether the session is currently on-screen or
- * detached: if it's live we scroll now; either way we clear the saved scroll
- * state and pin `savedAtBottom` so the pending re-attach also lands at bottom.
+ * detached. A pending jump survives intervening attach/detach effects until
+ * the viewport is attached and measured.
  */
 export function scrollSessionToBottom(paneId: string): void {
   const s = sessions.get(paneId);
   if (!s || s.disposed) return;
-  s.savedScrollTop = undefined;
-  s.savedAtBottom = true;
-  if (s.el.parentElement) {
+  if (s.el.isConnected) {
     try {
       s.term.scrollToBottom();
-      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
     } catch {
       /* buffer not ready */
     }
+  } else {
+    s.scrollToBottomOnAttach = true;
   }
 }
 
@@ -1676,8 +1551,7 @@ export interface RunCommandResult {
 /**
  * Run a shell command in a pane on the AI agent's behalf and capture its
  * output. This is the P3 execution primitive: the command is injected straight
- * into the pty (same path as `maybeInjectResume`, so it doesn't re-enter the
- * input-line reducer), bracketed by a unique sentinel that also carries `$?`.
+ * into the PTY, bracketed by a unique sentinel that also carries `$?`.
  * We tap `pty.onData` until the sentinel appears (or the timeout elapses),
  * then strip escapes, drop the echoed command + sentinel lines, and return the
  * middle. Best-effort by design — output may include prompt noise, which is
@@ -1758,8 +1632,6 @@ export async function runCommandInPane(
     }, timeoutMs);
 
     // Inject: run the command, then print the sentinel with its exit status.
-    // Written directly to the pty so feedInput doesn't capture it as a user
-    // "launch token".
     try {
       s.pty.write(`${command}\n${sentinelCommand(sentinel.marker)}\r`);
     } catch {
@@ -1899,9 +1771,7 @@ export async function addTabInheritingCwd(workspaceId: string) {
 /**
  * Inject a queued agent-resume command into a restored pane's shell, exactly
  * once. Fired from the first OSC 7 prompt (shell is ready) or a timeout
- * fallback. We write straight to the pty rather than through xterm, so the
- * injected line never re-enters `feedInput` (which would otherwise re-capture
- * our own command as a "typed" launch token).
+ * fallback. The command is written directly to the PTY.
  */
 function maybeInjectResume(s: Session) {
   if (s.disposed || s.exited) return;
@@ -1939,12 +1809,10 @@ export async function snapshotAllCwds() {
  * Walk every live session, detect whether a coding agent (claude/codex/
  * opencode) is currently running in its shell, and persist enough to resume it
  * on next launch: the agent kind, the literal launch token the user typed
- * (preserving an alias), and the agent's current on-disk session id. When no
- * agent is detected the remembered agent is cleared, so a finished agent isn't
- * spuriously resumed.
+ * (preserving an alias), and the agent's current on-disk session id. Presence
+ * and its process generation remain authoritative on the owner daemon.
  */
 let agentSnapshotPromise: Promise<void> | null = null;
-let quickAgentSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Env-var name prefixes captured from the running agent process and replayed
@@ -1971,105 +1839,27 @@ function filterAgentEnv(
   }
   return out;
 }
-/**
- * Run an agent snapshot ~1s after the next call, debounced. Used right after
- * the user submits a shell line so we attribute the launch token early — but
- * we don't rely on it: `s.recentSubmits` keeps a history precisely because a
- * slow-starting agent may not be in the process tree at the 1s mark.
- */
-function scheduleQuickAgentSnapshot() {
-  if (quickAgentSnapshotTimer) return;
-  quickAgentSnapshotTimer = setTimeout(() => {
-    quickAgentSnapshotTimer = null;
-    void snapshotAllAgents();
-  }, 1000);
-}
+/** Keep local resume environment tied to the daemon's process generation. */
 export async function snapshotAllAgents() {
   if (agentSnapshotPromise) return agentSnapshotPromise;
   agentSnapshotPromise = (async () => {
     const entries = Array.from(sessions.entries());
     await Promise.all(
-      entries.map(async ([paneId, s]) => {
-        if (s.disposed || s.exited || s.pty.readOnly) return;
-        const pid = s.pty.pid ?? 0;
-        if (pid <= 0 && !s.pty.sessionId) return;
-
+      entries.map(async ([paneId, session]) => {
+        if (session.disposed || session.exited || session.pty.readOnly) return;
         const located = locatePane(paneId);
-        if (!located) return;
+        const instanceId = located?.leaf.agent?.instanceId;
+        const sessionId = session.pty.sessionId;
+        if (!located || !sessionId || !instanceId) return;
 
-        const tree = await paneProcessTree(
-          pid,
-          located.workspaceId,
-          s.pty.sessionId
-        );
-        const detected = detectAgent(tree);
-        if (!detected) {
-          // No agent running now — clear any stale remembered agent.
-          if (located.leaf.agent) {
-            located.store.setPaneAgent(
-              located.workspaceId,
-              located.tabId,
-              paneId,
-              undefined
-            );
-          }
-          return;
-        }
-
-        const cwd =
-          (await getSessionCwd(paneId)) ?? located.leaf.cwd ?? s.shellCwd;
-        if (!cwd) return;
-        // Pass the detected agent pid so the backend pins the exact session
-        // file THIS process holds open — several agents sharing one cwd each
-        // resolve to their own id, instead of all racing to the newest file.
-        const sessionId = await agentSessionId(
-          detected.kind,
-          cwd,
-          detected.pid,
-          located.workspaceId
-        );
-        if (!sessionId) return;
-
-        // Prefer the literal token the user typed (so an alias survives).
-        // classifyCommandToken at submit time only stores tokens whose basename
-        // exactly equals the kind (e.g. `claude`), so an alias like
-        // `claude-yolo` or `claude-by-kimi-...` won't be in typedCommands.
-        // Fall back to scanning recentSubmits newest-first for an entry whose
-        // basename contains the detected kind — this both recovers aliases and
-        // skips in-TUI Enter submissions (their tokens won't contain the kind
-        // name). Cache the hit so subsequent ticks are stable.
-        let command = s.typedCommands.get(detected.kind);
-        if (!command) {
-          for (let i = s.recentSubmits.length - 1; i >= 0; i--) {
-            const t = s.recentSubmits[i];
-            if (tokenMatchesKind(t, detected.kind)) {
-              command = t;
-              s.typedCommands.set(detected.kind, t);
-              break;
-            }
-          }
-        }
-        command = command ?? detected.kind;
-
-        // Capture the agent process's env vars (whitelisted prefixes only) so
-        // a wrapper alias that mainly exports env config (BASE_URL, MODEL,
-        // AUTH_TOKEN, custom headers) replays correctly on resume even when we
-        // never recovered the alias name. Skipping prefixes we don't care about
-        // keeps the captured map small and avoids persisting unrelated env.
-        const rawEnv = await processEnv(detected.pid, located.workspaceId);
-        const env = filterAgentEnv(rawEnv);
-
-        const agent: PaneAgent = {
-          kind: detected.kind,
-          command,
-          sessionId,
-          ...(Object.keys(env).length > 0 ? { env } : {}),
-        };
-        located.store.setPaneAgent(
+        const rawEnv = await paneAgentEnv(located.workspaceId, sessionId, instanceId);
+        if (!rawEnv || session.disposed || session.exited || session.pty.sessionId !== sessionId) return;
+        located.store.setPaneAgentEnv(
           located.workspaceId,
           located.tabId,
           paneId,
-          agent
+          instanceId,
+          filterAgentEnv(rawEnv)
         );
       })
     );
@@ -2160,6 +1950,43 @@ function applyUiFontVar() {
 // captured on the same cadence so restoring a session lands in the directory
 // the user actually `cd`'d to, not the one the shell was originally spawned in.
 if (typeof window !== "undefined") {
+  window.setInterval(() => {
+    for (const [paneId, session] of sessions) {
+      if (session.disposed || session.exited) continue;
+      const agent = locatePane(paneId)?.leaf.agent;
+      const kind = agent?.kind;
+      if (!kind) {
+        setPtyObservation(paneId);
+        session.ptyAgentKind = undefined;
+        session.ptyAgentInstance = undefined;
+        session.ptyAgentPendingIdleAt = undefined;
+        continue;
+      }
+      if (session.ptyAgentInstance !== agent?.instanceId) {
+        session.ptyAgentInstance = agent?.instanceId;
+        session.ptyAgentDirty = true;
+        session.ptyAgentPendingIdleAt = undefined;
+        setPtyObservation(paneId);
+      }
+      if (session.term.modes.synchronizedOutputMode) continue;
+      if (session.ptyAgentKind === kind && session.ptyAgentDirty === false && session.ptyAgentPendingIdleAt === undefined) continue;
+      session.ptyAgentKind = kind;
+      session.ptyAgentDirty = false;
+      // Title ownership is resolved by the daemon; the cached title can belong
+      // to the preceding process while a new generation is being discovered.
+      const observation = detectPtyAgent(kind, readAgentScreen(session.term));
+      if (!observation) continue;
+      const previous = useAgentPtyStore.getState().observations.get(paneId);
+      if (previous?.state === "executing" && observation.state === "waiting") {
+        const now = performance.now();
+        if (session.ptyAgentPendingIdleAt === undefined) session.ptyAgentPendingIdleAt = now;
+        if (now - session.ptyAgentPendingIdleAt < 300) continue;
+      }
+      session.ptyAgentPendingIdleAt = undefined;
+      setPtyObservation(paneId, { ...observation, instanceId: agent?.instanceId });
+    }
+  }, 300);
+
   window.setInterval(() => {
     void persistAllSessions();
     void snapshotAllCwds();

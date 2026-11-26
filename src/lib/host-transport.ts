@@ -176,7 +176,13 @@ export type HostResponse =
   | { kind: "workspace"; data: { workspace: WorkspaceDocument } }
   | { kind: "cwd"; data: { cwd: string | null } }
   | { kind: "home_directory"; data: { path: string | null } }
-  | { kind: "processes"; data: { processes: RemoteProcessInfo[] } }
+  | {
+      kind: "processes";
+      data: {
+        processes: RemoteProcessInfo[];
+        agent_process?: { pid: number; instanceId: string };
+      };
+    }
   | { kind: "agent_session"; data: { session_id: string | null } }
   | { kind: "git_status"; data: { status: RemoteGitStatus } }
   | { kind: "text"; data: { text: string } }

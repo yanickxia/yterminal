@@ -90,7 +90,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const copyOnSelect = useSettingsStore((s) => s.copyOnSelect);
   const autoTabTitle = useSettingsStore((s) => s.autoTabTitle);
   const takeControlOnEnter = useSettingsStore((s) => s.takeControlOnEnter);
-  const agentStatusHooks = useSettingsStore((s) => s.agentStatusHooks);
   const alertSoundEnabled = useSettingsStore((s) => s.alertSoundEnabled);
   const alertVolume = useSettingsStore((s) => s.alertVolume);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -109,7 +108,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setCopyOnSelect = useSettingsStore((s) => s.setCopyOnSelect);
   const setAutoTabTitle = useSettingsStore((s) => s.setAutoTabTitle);
   const setTakeControlOnEnter = useSettingsStore((s) => s.setTakeControlOnEnter);
-  const setAgentStatusHooks = useSettingsStore((s) => s.setAgentStatusHooks);
   const setAlertSoundEnabled = useSettingsStore((s) => s.setAlertSoundEnabled);
   const setAlertVolume = useSettingsStore((s) => s.setAlertVolume);
 
@@ -178,7 +176,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     copyOnSelect,
     autoTabTitle,
     takeControlOnEnter,
-    agentStatusHooks,
   ]);
 
   // close on Escape
@@ -558,22 +555,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
               <div className="field">
                 <label className="field-label">Agent status</label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={agentStatusHooks}
-                    onChange={(e) => setAgentStatusHooks(e.target.checked)}
-                  />
-                  Report Claude Code status via hooks
-                </label>
                 <p className="field-hint">
-                  When on, yterminal adds hooks to{" "}
-                  <code>~/.claude/settings.json</code> so a running Claude Code
-                  agent reports its exact state (working / waiting for you /
-                  needs permission) instead of it being guessed from output.
-                  Your own hooks are preserved; turning this off removes only
-                  yterminal's. Codex and OpenCode have no hooks and keep the
-                  activity-based heuristic.
+                  Agents are detected from their terminal processes, titles and
+                  current screen controls. Agent hook settings are never changed.
+                  Unrecognized states appear as Unknown.
                 </p>
               </div>
 

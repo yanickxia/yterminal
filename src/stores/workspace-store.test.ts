@@ -9,19 +9,27 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 // zustand persist touches localStorage at import time. node has none, so
 // stub a minimal in-memory shim before the store loads.
-const memStore = new Map<string, string>();
-(globalThis as any).localStorage = {
-  getItem: (k: string) => memStore.get(k) ?? null,
-  setItem: (k: string, v: string) => void memStore.set(k, v),
-  removeItem: (k: string) => void memStore.delete(k),
-  clear: () => memStore.clear(),
-  key: (i: number) => Array.from(memStore.keys())[i] ?? null,
-  get length() {
-    return memStore.size;
-  },
-};
+const memStore = vi.hoisted(() => {
+  const data = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+    clear: () => data.clear(),
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    get length() {
+      return data.size;
+    },
+  };
+  vi.stubGlobal("localStorage", storage);
+  vi.stubGlobal("window", { localStorage: storage });
+  return data;
+});
 
 import { insertAtAnchor, useWorkspaceStore } from "./workspace-store";
+import { collectLeaves } from "../lib/pane-tree";
+import type { PaneLeaf, PaneTree } from "../lib/types";
+import { toSharedTab } from "../lib/workspace-protocol";
 
 type Item = { id: string; pinned?: boolean };
 const ids = (xs: Item[]) => xs.map((x) => x.id);
@@ -260,6 +268,48 @@ describe("tab name: manual override vs auto title", () => {
 });
 
 describe("agent workspace projection", () => {
+  it("keeps a pane's agent name local through splits, reload, and new observations", async () => {
+    const store = useWorkspaceStore.getState();
+    const workspaceId = "named-agents";
+    const tabId = "terminal";
+    const pane = (id: string): PaneLeaf => ({
+      type: "leaf", id, cwd: "/work",
+      agent: { kind: "codex", command: "codex", sessionId: "", instanceId: id },
+    });
+    const project = (revision: number, root: PaneTree) =>
+      store.applyAgentWorkspace("host-b", {
+        id: workspaceId, revision, name: "Agents",
+        tabs: [{ id: tabId, name: "Automatic", cwd: "/work", root }],
+      });
+    const tab = () => useWorkspaceStore.getState().workspaces
+      .find((workspace) => workspace.id === workspaceId)!.tabs[0];
+
+    project(1, pane("first"));
+    store.setPaneAgentName(workspaceId, tabId, "first", "  修复登录  ");
+    project(2, {
+      type: "split", id: "split", direction: "row", sizes: [50, 50],
+      children: [pane("first"), pane("second")],
+    });
+    expect(tab().name).toBe("Automatic");
+    expect(collectLeaves(tab().root).map((leaf) => leaf.agentName)).toEqual(["修复登录", undefined]);
+    expect(collectLeaves(toSharedTab(tab()).root).every((leaf) => !("agentName" in leaf))).toBe(true);
+
+    const persisted = memStore.get("yterminal-workspaces")!;
+    useWorkspaceStore.setState({ workspaces: [] });
+    memStore.set("yterminal-workspaces", persisted);
+    await useWorkspaceStore.persist.rehydrate();
+    expect(collectLeaves(tab().root)[0].agentName).toBe("修复登录");
+
+    const replacement = { ...pane("first"), runtimeTitle: "New automatic title" };
+    project(3, { ...replacement, agent: undefined });
+    project(4, { ...replacement, agent: { ...replacement.agent!, instanceId: "new" } });
+    expect(tab().name).toBe("New automatic title");
+    expect(collectLeaves(tab().root)[0].agentName).toBe("修复登录");
+
+    store.setPaneAgentName(workspaceId, tabId, "first", "  ");
+    expect(collectLeaves(tab().root)[0].agentName).toBeUndefined();
+  });
+
   it("preserves each client's workspace order when an agent snapshot is reordered", () => {
     useWorkspaceStore.setState({
       workspaces: [
@@ -362,6 +412,40 @@ describe("agent workspace projection", () => {
       "remote build"
     );
     expect(leaf.agent?.env).toEqual({ ANTHROPIC_AUTH_TOKEN: "private" });
+  });
+
+  it("keeps private env when the same process gains a resume ID and drops it on replacement", () => {
+    const store = useWorkspaceStore.getState();
+    const project = (revision: number, instanceId: string, sessionId: string) =>
+      store.applyAgentWorkspace("local", {
+        id: "qa-w",
+        revision,
+        name: "QA",
+        tabs: [{
+          id: "qa-t",
+          name: "shell",
+          cwd: "/work",
+          root: {
+            type: "leaf",
+            id: "qa-p",
+            cwd: "/work",
+            agent: { kind: "codex", command: "codex", instanceId, sessionId },
+          },
+        }],
+      });
+    const localEnv = () => {
+      const root = useWorkspaceStore.getState().workspaces
+        .find((workspace) => workspace.id === "qa-w")?.tabs[0].root;
+      return root?.type === "leaf" ? root.agent?.env : undefined;
+    };
+    const env = { OPENAI_MODEL: "fixture" };
+    project(1, "first", "");
+    store.setPaneAgentEnv("qa-w", "qa-t", "qa-p", "first", env);
+    project(2, "first", "resume-id");
+    expect(localEnv()).toEqual(env);
+    project(3, "replacement", "resume-id");
+    store.setPaneAgentEnv("qa-w", "qa-t", "qa-p", "first", env);
+    expect(localEnv()).toBeUndefined();
   });
 
   it("preserves client-local split sizes until the shared structure changes", () => {

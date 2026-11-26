@@ -702,11 +702,12 @@ async fn handle_request(
                 .map_err(host_task_error)?;
             Ok(ResponseBody::Processes {
                 processes: bounded_processes(processes),
+                agent_process: state.sessions.agent_process(&session_id).await,
             })
         }
-        RequestBody::ResolveAgentSession { kind, cwd, pid } => {
+        RequestBody::ResolveAgentSession { kind, pid, .. } => {
             let session_id = tokio::task::spawn_blocking(move || {
-                host_services::resolve_agent_session(&kind, &cwd, pid)
+                host_services::resolve_agent_session(&kind, pid)
             })
             .await
             .map_err(host_task_error)?;

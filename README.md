@@ -12,6 +12,13 @@ drag-and-drop reordering.
 
 - **Workspaces → Tabs → Split panes** — a three-level model; each leaf pane is
   its own live shell.
+- **Agents sidebar** — find Claude, Codex and OpenCode across local/SSH
+  workspaces, filter working/waiting agents, and jump to their exact pane.
+  Right-click an agent to give its pane a display name on this device.
+  Detection uses terminal processes, titles and current screen controls;
+  no agent hooks are installed or consumed. Uncertain states stay Unknown.
+- **macOS window chrome** — native window controls share the tab bar, with a
+  theme-matched sidebar and inset terminal panes.
 - **Split panes** — split any pane horizontally or vertically, nest freely,
   resize with draggable dividers, focus follows click.
 - **Persistent scrollback** — every pane's buffer is snapshotted (colors

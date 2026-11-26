@@ -35,6 +35,11 @@ describe("classifyArgv", () => {
   it("returns null for unrelated processes", () => {
     expect(classifyArgv(["vim", "file.txt"])).toBeNull();
     expect(classifyArgv(["git", "codex-review"])).toBeNull();
+    expect(classifyArgv(["rg", "claude", "."])).toBeNull();
+    expect(classifyArgv(["cat", "/tmp/codex/README.md"])).toBeNull();
+    expect(classifyArgv(["node", "-e", "codex"])).toBeNull();
+    expect(classifyArgv(["node", "/tmp/script.js", "claude"])).toBeNull();
+    expect(classifyArgv(["node", "/tmp/codex/tools.js"])).toBeNull();
   });
 });
 
@@ -103,6 +108,10 @@ describe("buildResumeCommand", () => {
     command: "claude",
     sessionId: "abc",
     ...over,
+  });
+
+  it("does not inject a resume command for a detected process without a session", () => {
+    expect(buildResumeCommand(make({ sessionId: "" }))).toBe("");
   });
 
   it("builds claude resume", () => {

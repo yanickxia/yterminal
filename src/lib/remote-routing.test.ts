@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   request: vi.fn(),
+  isRemote: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -10,11 +11,11 @@ vi.mock("./logger", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("./workspace-sync", () => ({
-  isRemoteWorkspace: () => true,
+  isRemoteWorkspace: mocks.isRemote,
   transportForWorkspace: () => ({ request: mocks.request }),
 }));
 
-import { paneProcessTree, agentSessionId, processEnv } from "./agent";
+import { paneProcessTree, agentSessionId, paneAgentEnv, processEnv } from "./agent";
 import { pathIsFile, readTextFile } from "./file-reader";
 import { gitDiff, gitStatus } from "./git";
 
@@ -22,6 +23,7 @@ describe("owner-host routing", () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
     mocks.request.mockReset();
+    mocks.isRemote.mockReturnValue(true);
     mocks.request.mockImplementation(async (request: { method: string }) => {
       switch (request.method) {
         case "process_tree":
@@ -60,6 +62,27 @@ describe("owner-host routing", () => {
           throw new Error(`unexpected request ${request.method}`);
       }
     });
+  });
+
+  it("captures local env only from the matching owner process generation", async () => {
+    mocks.isRemote.mockReturnValue(false);
+    mocks.request.mockResolvedValue({
+      kind: "processes",
+      data: {
+        processes: [{ pid: 8, ppid: 2, argv: ["claude"] }],
+        agent_process: { pid: 2, instanceId: "foreground" },
+      },
+    });
+    mocks.invoke.mockResolvedValue([["CLAUDE_MODEL", "fixture"]]);
+    expect(await paneAgentEnv("workspace", "session", "stale")).toBeUndefined();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(await paneAgentEnv("workspace", "session", "foreground")).toEqual({
+      CLAUDE_MODEL: "fixture",
+    });
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("process_env", { pid: 2 });
+    mocks.isRemote.mockReturnValue(true);
+    expect(await paneAgentEnv("workspace", "session", "foreground")).toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
   it("routes process and coding-agent inspection to the owner agent", async () => {

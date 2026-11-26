@@ -69,6 +69,8 @@ pub struct PaneAgentSummary {
     pub kind: String,
     pub command: String,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -390,7 +392,10 @@ fn validate_tree<'a>(tree: &'a PaneTree, ids: &mut HashSet<&'a str>) -> Result<(
                 return Err(format!("empty pane cwd: {id}"));
             }
             if let Some(status) = runtime_status {
-                if !matches!(status.as_str(), "working" | "idle" | "permission") {
+                if !matches!(
+                    status.as_str(),
+                    "working" | "idle" | "permission" | "unknown" | "background"
+                ) {
                     return Err(format!("invalid pane runtime status: {status}"));
                 }
             }
@@ -398,7 +403,7 @@ fn validate_tree<'a>(tree: &'a PaneTree, ids: &mut HashSet<&'a str>) -> Result<(
                 if !matches!(agent.kind.as_str(), "claude" | "codex" | "opencode") {
                     return Err(format!("invalid pane agent kind: {}", agent.kind));
                 }
-                if agent.command.trim().is_empty() || agent.session_id.trim().is_empty() {
+                if agent.command.trim().is_empty() {
                     return Err(format!("incomplete pane agent metadata: {id}"));
                 }
             }
@@ -712,11 +717,35 @@ mod tests {
             .apply(WorkspaceOperation::SetPaneAgent {
                 pane_id: "p1".into(),
                 agent: Some(PaneAgentSummary {
+                    instance_id: None,
                     kind: "unknown".into(),
                     command: "unknown".into(),
                     session_id: "s".into(),
                 }),
             })
             .is_err());
+    }
+
+    #[test]
+    fn process_presence_does_not_require_a_resume_id() {
+        let mut document = workspace();
+        document
+            .apply(WorkspaceOperation::SetPaneAgent {
+                pane_id: "p1".into(),
+                agent: Some(PaneAgentSummary {
+                    kind: "codex".into(),
+                    command: "codex".into(),
+                    session_id: String::new(),
+                    instance_id: Some("process-generation".into()),
+                }),
+            })
+            .unwrap();
+        document
+            .apply(WorkspaceOperation::SetPaneRuntimeStatus {
+                pane_id: "p1".into(),
+                status: Some("unknown".into()),
+            })
+            .unwrap();
+        assert!(document.agent_for_pane("p1").unwrap().session_id.is_empty());
     }
 }

@@ -23,3 +23,5 @@ pub mod server;
 pub mod session_manager;
 
 pub use server::{connect_stdio, run_daemon};
+#[path = "../../src-tauri/src/agent/agent_status.rs"]
+pub mod agent_status;

@@ -1,9 +1,10 @@
+use super::agent_status::title_status;
 use super::host_services;
 use super::osc::{OscParser, OscUpdate};
 use super::process_termination::PtyProcessSession;
 use super::repository::{AgentRepository, PersistedOutputChunk};
 use crate::remote_protocol::{
-    EventBody, EventFrame, RemoteError, SessionInfo, SessionState, WireMessage,
+    EventBody, EventFrame, RemoteAgentProcess, RemoteError, SessionInfo, SessionState, WireMessage,
     MAX_CHECKPOINT_CHUNK_BYTES,
 };
 use crate::workspace::{PaneAgentSummary, WorkspaceDocument, WorkspaceOperation};
@@ -148,6 +149,7 @@ struct SessionData {
     recent_submits: VecDeque<String>,
     detected_agent_pid: Option<u32>,
     detected_agent: Option<PaneAgentSummary>,
+    agent_title: Option<String>,
 }
 
 struct ManagedSession {
@@ -190,6 +192,8 @@ struct HostObservationInput {
     cached_pid: Option<u32>,
     cached_agent: Option<PaneAgentSummary>,
     osc_cwd_seen: bool,
+    agent_title: Option<String>,
+    foreground_pgid: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -252,9 +256,8 @@ impl SessionManager {
     fn start_host_snapshot_loop(&self) {
         let manager = self.clone();
         tokio::spawn(async move {
-            let period = std::time::Duration::from_secs(15);
-            let mut interval =
-                tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 manager.snapshot_host_state().await;
@@ -382,6 +385,7 @@ impl SessionManager {
                 recent_submits: VecDeque::new(),
                 detected_agent_pid: None,
                 detected_agent: None,
+                agent_title: None,
             }),
         });
 
@@ -460,6 +464,11 @@ impl SessionManager {
                         let (start_seq, osc_updates, slow_subscribers) = {
                             let mut data = output_session.data.lock().await;
                             let osc_updates = data.osc.push(&bytes);
+                            for update in &osc_updates {
+                                if let OscUpdate::Title(title) = update {
+                                    data.agent_title = Some(title.clone());
+                                }
+                            }
                             if osc_updates
                                 .iter()
                                 .any(|update| matches!(update, OscUpdate::Cwd(_)))
@@ -558,6 +567,7 @@ impl SessionManager {
         });
 
         let wait_session = session;
+        let exit_workspace_updates = self.inner.workspace_updates.clone();
         let repository = self.inner.repository.clone();
         tokio::spawn(async move {
             let waited = tokio::task::spawn_blocking(move || {
@@ -593,6 +603,52 @@ impl SessionManager {
                     .retain(|_, subscriber| subscriber.try_send(event.clone()).is_ok());
             }
             let _ = repository.mark_exit(&wait_session.id, exit_code);
+            let workspace_id = wait_session.workspace_id.clone();
+            let pane_id = wait_session.pane_id.clone();
+            let session_id = wait_session.id.clone();
+            let cleared = tokio::task::spawn_blocking(move || {
+                let current = repository.get_workspace(&workspace_id).ok()?;
+                fn owns_session(
+                    tree: &crate::workspace::PaneTree,
+                    pane: &str,
+                    session: &str,
+                ) -> bool {
+                    match tree {
+                        crate::workspace::PaneTree::Leaf { id, session_id, .. } => {
+                            id == pane && session_id.as_deref() == Some(session)
+                        }
+                        crate::workspace::PaneTree::Split { children, .. } => children
+                            .iter()
+                            .any(|child| owns_session(child, pane, session)),
+                    }
+                }
+                if !current
+                    .tabs
+                    .iter()
+                    .any(|tab| owns_session(&tab.root, &pane_id, &session_id))
+                {
+                    return None;
+                }
+                apply_internal_operations(
+                    &repository,
+                    &workspace_id,
+                    current,
+                    vec![
+                        WorkspaceOperation::SetPaneAgent {
+                            pane_id: pane_id.clone(),
+                            agent: None,
+                        },
+                        WorkspaceOperation::SetPaneRuntimeStatus {
+                            pane_id,
+                            status: None,
+                        },
+                    ],
+                )
+            })
+            .await;
+            if let Ok(Some(workspace)) = cleared {
+                let _ = exit_workspace_updates.send(workspace);
+            }
         });
 
         Ok((id, pid))
@@ -611,7 +667,7 @@ impl SessionManager {
             .cloned()
             .collect::<Vec<_>>();
         for session in sessions {
-            let (pid, recent_submits, cached_pid, cached_agent, osc_cwd_seen) = {
+            let (pid, recent_submits, cached_pid, cached_agent, osc_cwd_seen, agent_title) = {
                 let data = session.data.lock().await;
                 if data.state != SessionState::Running {
                     continue;
@@ -623,10 +679,11 @@ impl SessionManager {
                     data.detected_agent_pid,
                     data.detected_agent.clone(),
                     data.osc_cwd_seen,
+                    data.agent_title.clone(),
                 )
             };
             let repository = self.inner.repository.clone();
-            let input = HostObservationInput {
+            let mut input = HostObservationInput {
                 workspace_id: session.workspace_id.clone(),
                 pane_id: session.pane_id.clone(),
                 pid,
@@ -634,9 +691,19 @@ impl SessionManager {
                 cached_pid,
                 cached_agent,
                 osc_cwd_seen,
+                agent_title,
+                foreground_pgid: None,
             };
-            let observed =
-                tokio::task::spawn_blocking(move || observe_host_state(&repository, input)).await;
+            let observed_session = session.clone();
+            let observed = tokio::task::spawn_blocking(move || {
+                input.foreground_pgid = observed_session
+                    .pair
+                    .blocking_lock()
+                    .master
+                    .process_group_leader();
+                observe_host_state(&repository, input)
+            })
+            .await;
             let Ok(Ok((observed, workspace))) = observed else {
                 continue;
             };
@@ -644,6 +711,9 @@ impl SessionManager {
                 let mut data = session.data.lock().await;
                 if data.state != SessionState::Running {
                     continue;
+                }
+                if data.detected_agent_pid != observed.detected_pid {
+                    data.agent_title = None;
                 }
                 data.detected_agent_pid = observed.detected_pid;
                 data.detected_agent = observed.agent;
@@ -719,6 +789,18 @@ impl SessionManager {
             .await?
             .pid
             .ok_or_else(|| RemoteError::new("session_pid_unavailable", session_id))
+    }
+
+    pub async fn agent_process(&self, session_id: &str) -> Option<RemoteAgentProcess> {
+        let session = self.get(session_id).await.ok()?;
+        let data = session.data.lock().await;
+        if data.state != SessionState::Running {
+            return None;
+        }
+        Some(RemoteAgentProcess {
+            pid: data.detected_agent_pid?,
+            instance_id: data.detected_agent.as_ref()?.instance_id.clone()?,
+        })
     }
 
     pub async fn input(&self, session_id: &str, bytes: Vec<u8>) -> Result<(), RemoteError> {
@@ -1130,61 +1212,41 @@ fn observe_host_state(
         cached_pid,
         cached_agent,
         osc_cwd_seen,
+        agent_title,
+        foreground_pgid,
     } = input;
-    let process_cwd = host_services::process_cwd(pid).ok();
+    let process_cwd = (!osc_cwd_seen)
+        .then(|| host_services::process_cwd(pid).ok())
+        .flatten();
     let processes = host_services::process_tree(pid);
-    let detected = host_services::detect_agent(&processes);
+    let (detected, foreground) =
+        host_services::terminal_agent(&processes, foreground_pgid, cached_pid);
     let current = repository
         .get_workspace(&workspace_id)
         .map_err(|error| error.to_string())?;
-    let existing = current.agent_for_pane(&pane_id);
-    // OSC 7 describes the interactive shell inside tmux and is more precise
-    // than `/proc/<outer-shell>/cwd`. Once observed, retain that authoritative
-    // document value instead of periodically overwriting it with the outer PTY.
-    let cwd = if osc_cwd_seen {
-        current.cwd_for_pane(&pane_id)
-    } else {
-        process_cwd.clone()
-    };
-    let agent = detected.as_ref().and_then(|(kind, agent_pid)| {
-        let mut agent = if cached_pid == Some(*agent_pid) {
-            cached_agent.clone().filter(|agent| agent.kind == *kind)
-        } else {
-            None
-        };
-        if agent.is_none() {
-            let session_id = host_services::resolve_agent_session(
-                kind,
-                cwd.as_deref().unwrap_or_default(),
-                *agent_pid,
-            );
-            if let Some(session_id) = session_id {
-                let command = recent_submits
+    let agent = detected.as_ref().map(|(kind, agent_pid)| {
+        let mut agent = cached_agent
+            .filter(|agent| cached_pid == Some(*agent_pid) && agent.kind == *kind)
+            .unwrap_or_else(|| PaneAgentSummary {
+                instance_id: Some(Uuid::new_v4().to_string()),
+                kind: kind.clone(),
+                command: recent_submits
                     .iter()
                     .rev()
                     .find(|token| token_matches_kind(token, kind))
                     .cloned()
-                    .unwrap_or_else(|| kind.clone());
-                agent = Some(PaneAgentSummary {
-                    kind: kind.clone(),
-                    command,
-                    session_id,
-                });
-            }
+                    .unwrap_or_else(|| kind.clone()),
+                session_id: String::new(),
+            });
+        if agent.session_id.is_empty() {
+            agent.session_id =
+                host_services::resolve_agent_session(kind, *agent_pid).unwrap_or_default();
         }
-        // Preserve a better literal alias captured by an attached GUI when
-        // the daemon's process-only fallback knows only the generic command.
-        if let (Some(candidate), Some(existing)) = (&mut agent, &existing) {
-            if candidate.kind == existing.kind
-                && candidate.session_id == existing.session_id
-                && candidate.command == candidate.kind
-            {
-                candidate.command = existing.command.clone();
-            }
-        }
-        agent.or_else(|| existing.clone().filter(|existing| existing.kind == *kind))
+        agent
     });
     let mut operations = Vec::new();
+    // OSC 7 already records the interactive shell inside tmux. Keep that cwd
+    // instead of replacing it with the outer PTY's cwd.
     if let (Some(cwd), Some(tab_id)) = (
         (!osc_cwd_seen).then_some(process_cwd).flatten(),
         current.tab_id_for_pane(&pane_id),
@@ -1196,9 +1258,20 @@ fn observe_host_state(
         });
     }
     operations.push(WorkspaceOperation::SetPaneAgent {
-        pane_id,
+        pane_id: pane_id.clone(),
         agent: agent.clone(),
     });
+    let status = agent.as_ref().map(|agent| {
+        if !foreground {
+            "background"
+        } else if detected.as_ref().map(|(_, pid)| *pid) == cached_pid {
+            title_status(&agent.kind, agent_title.as_deref().unwrap_or_default())
+        } else {
+            "unknown"
+        }
+        .to_string()
+    });
+    operations.push(WorkspaceOperation::SetPaneRuntimeStatus { pane_id, status });
     let workspace = apply_internal_operations(repository, &workspace_id, current, operations);
     Ok((
         ObservedHostState {
@@ -1226,20 +1299,6 @@ fn apply_osc_update(
             pane_id: pane_id.to_string(),
             title: Some(title),
         }],
-        OscUpdate::RuntimeStatus(status) => {
-            let ended = status.is_none();
-            let mut operations = vec![WorkspaceOperation::SetPaneRuntimeStatus {
-                pane_id: pane_id.to_string(),
-                status,
-            }];
-            if ended {
-                operations.push(WorkspaceOperation::SetPaneAgent {
-                    pane_id: pane_id.to_string(),
-                    agent: None,
-                });
-            }
-            operations
-        }
     };
     apply_internal_operations(repository, workspace_id, current, operations)
 }

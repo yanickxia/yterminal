@@ -8,10 +8,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
-import { useAttentionStore, clearAttentionMany } from "../stores/attention-store";
-import { useActivityStore } from "../stores/activity-store";
-import { useHookStateStore } from "../stores/hook-state-store";
-import { useFocusedPaneId } from "../lib/use-focused-pane";
+import { clearAttentionMany } from "../stores/attention-store";
+import { useAgentPtyStore } from "../stores/agent-pty-store";
 import { collectAllAgents, OVERVIEW_COLS } from "../lib/agent-overview";
 import { type AgentKind } from "../lib/workspace-agents";
 import { collectLeafIds } from "../lib/pane-tree";
@@ -31,23 +29,15 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
   const setActivePane = useWorkspaceStore((s) => s.setActivePane);
-  const waiting = useAttentionStore((s) => s.waiting);
-  const active = useActivityStore((s) => s.active);
-  const everActive = useActivityStore((s) => s.everActive);
-  const hookState = useHookStateStore((s) => s.state);
-  const focusedPaneId = useFocusedPaneId();
+  const observations = useAgentPtyStore((s) => s.observations);
 
   const entries = useMemo(
     () =>
       collectAllAgents(
         workspaces,
-        waiting,
-        active,
-        everActive,
-        focusedPaneId,
-        hookState
+        observations
       ),
-    [workspaces, waiting, active, everActive, focusedPaneId, hookState]
+    [workspaces, observations]
   );
 
   const [cursor, setCursor] = useState(0);
@@ -153,7 +143,7 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
                 className={
                   "agent-card " + e.state + (i === cursor ? " active" : "")
                 }
-                aria-label={`${KIND_LABEL[e.kind]} in ${e.tabName}, ${e.workspaceName}`}
+                aria-label={`${e.agentName ? `${e.agentName}, ` : ""}${KIND_LABEL[e.kind]} in ${e.tabName}, ${e.workspaceName}`}
                 onMouseEnter={() => setCursor(i)}
                 onMouseDown={(ev) => {
                   ev.preventDefault();
@@ -172,7 +162,7 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="agent-card-tab">
                   {e.tabIcon && <span className="agent-card-tab-icon">{e.tabIcon}</span>}
-                  {e.tabName}
+                  {e.agentName ?? e.tabName}
                 </div>
                 <pre className="agent-card-preview" aria-hidden="true">
                   {previews.get(e.paneId) || "（无输出）"}

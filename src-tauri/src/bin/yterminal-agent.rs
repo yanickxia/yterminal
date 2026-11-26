@@ -1432,6 +1432,7 @@ async fn run_protocol_verify(
         WorkspaceOperation::SetPaneAgent {
             pane_id: pane_id.clone(),
             agent: Some(PaneAgentSummary {
+                instance_id: None,
                 kind: "codex".into(),
                 command: "codex-verify".into(),
                 session_id: "verify-session".into(),
@@ -1847,8 +1848,12 @@ async fn run_protocol_verify(
     }
     let mut inheritor = connect_agent(cli, "yterminal-agent verify inheritor").await?;
     attach_session(&inheritor, &inherited_session_id, None, None, None).await?;
-    let inherited_replay =
-        collect_replay(&mut inheritor, &inherited_session_id, Duration::from_secs(5)).await?;
+    let inherited_replay = collect_replay(
+        &mut inheritor,
+        &inherited_session_id,
+        Duration::from_secs(5),
+    )
+    .await?;
     let inherited_text = format!("{}{}", inherited_replay.checkpoint, inherited_replay.output);
     if !inherited_replay.reset
         || !inherited_text.contains(&checkpoint_marker)

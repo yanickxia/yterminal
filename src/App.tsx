@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useWorkspaceStore, ensureSeedWorkspace } from "./stores/workspace-store";
 import { useSettingsStore } from "./stores/settings-store";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
@@ -12,7 +12,6 @@ import { disposeSession, applyAppearance, initShell, addTabInheritingCwd, setOnC
 import { collectLeafIds } from "./lib/pane-tree";
 import { pruneScrollback, preloadScrollbacks } from "./lib/scrollback";
 import { loadConfigFromDisk } from "./lib/config";
-import { installClaudeHooks } from "./lib/agent-hooks";
 import { registerSystemFonts } from "./lib/themes";
 import { detectSystemFonts } from "./lib/system-fonts";
 import { scheduleAutoCheck } from "./lib/updater-auto-check";
@@ -40,6 +39,7 @@ import { startConfiguredRemoteHosts } from "./lib/remote-host-manager";
 // Platform detected once at module load (same source as the link modifier).
 // Drives the shortcut modifier split: Cmd on macOS, Ctrl+Shift elsewhere.
 const isMac = detectIsMac();
+const compactTitlebar = isMac && isTauri();
 
 export default function App() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -163,17 +163,6 @@ export default function App() {
     window.addEventListener("contextmenu", block);
     return () => window.removeEventListener("contextmenu", block);
   }, []);
-
-  // Install (or remove) the Claude Code agent-status hooks in
-  // ~/.claude/settings.json whenever the setting changes — and once at boot
-  // after the config has loaded (which may flip the setting from disk). The
-  // Rust side is idempotent and preserves the user's own hooks; the wrapper
-  // never throws.
-  const agentStatusHooks = useSettingsStore((s) => s.agentStatusHooks);
-  useEffect(() => {
-    if (!ready) return;
-    void installClaudeHooks(agentStatusHooks);
-  }, [ready, agentStatusHooks]);
 
   // re-read the config file whenever the window regains focus, so syncing the
   // file in (git pull / Dropbox / hand edit) updates the running app live. Also
@@ -415,7 +404,7 @@ export default function App() {
     if (tabRoot) requestAnimationFrame(() => refitTree(tabRoot));
   }, [tabRoot]);
   return (
-    <div className="app">
+    <div className={`app${compactTitlebar ? " compact-titlebar" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <WorkspaceSidebar onOpenPalette={() => setPaletteOpen(true)} />
       {!sidebarCollapsed && (
         <AppDivider
@@ -425,6 +414,9 @@ export default function App() {
         />
       )}
       <div className="main">
+        {compactTitlebar && (!ready || !ws) && (
+          <div className="titlebar-drag" data-tauri-drag-region="" aria-hidden="true" />
+        )}
         {!ready ? (
           <div className="empty">
             {startupError ? `Agent startup failed: ${startupError}` : "Starting…"}

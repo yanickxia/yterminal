@@ -61,7 +61,7 @@ export type WorkspaceOperation =
       op: "set_pane_runtime_status";
       data: {
         pane_id: string;
-        status: "working" | "idle" | "permission" | null;
+        status: "working" | "idle" | "permission" | "unknown" | "background" | null;
       };
     }
   | {
@@ -83,18 +83,19 @@ export function toSharedTab(tab: Tab): SharedTab {
   const { activePaneId: _active, pinned: _pinned, ...shared } = tab;
   return {
     ...shared,
-    root: stripAgentSecrets(shared.root),
+    root: toSharedPaneTree(shared.root),
   };
 }
 
-function stripAgentSecrets(tree: PaneTree): PaneTree {
+function toSharedPaneTree(tree: PaneTree): PaneTree {
   if (tree.type === "leaf") {
-    if (!tree.agent) return { ...tree };
+    const { agentName: _localName, ...shared } = tree;
+    if (!tree.agent) return shared;
     const { env: _secret, ...agent } = tree.agent;
-    return { ...tree, agent };
+    return { ...shared, agent };
   }
   return {
     ...tree,
-    children: tree.children.map(stripAgentSecrets),
+    children: tree.children.map(toSharedPaneTree),
   };
 }

@@ -22,32 +22,37 @@ function basename(token: string): string {
 }
 
 /**
- * Classify a single argv (the full command line of one process) as an agent,
- * or null. Matching is intentionally argv-wide rather than argv[0]-only: these
- * CLIs are frequently launched through a node wrapper
- * (`node .../claude-code/cli.js`) or a shim, so argv[0] is `node`, not the
- * agent. We therefore look at every token.
+ * Node launchers need their script path checked, but ordinary arguments may
+ * mention an agent without launching it (for example, rg claude .).
  */
 export function classifyArgv(argv: string[]): AgentKind | null {
-  for (const raw of argv) {
+  const executable = basename(argv[0] ?? "").toLowerCase();
+  const direct = classifyCommandToken(executable);
+  if (direct) return direct;
+  if (!["node", "nodejs", "bun"].includes(executable)) return null;
+  for (let index = 1; index < argv.length; index++) {
+    const raw = argv[index];
+    if (/^-[ep]./.test(raw) || ["-e", "--eval", "-p", "--print"].some((flag) => raw === flag || raw.startsWith(`${flag}=`))) return null;
+    if (["-r", "--require", "--import", "--loader"].includes(raw)) { index++; continue; }
+    if (raw.startsWith("-")) continue;
     const base = basename(raw).toLowerCase();
     if (base === "claude") return "claude";
     if (base === "codex") return "codex";
     if (base === "opencode") return "opencode";
     // node-wrapper / installed-package path forms.
-    const lower = raw.toLowerCase();
+    const lower = raw.toLowerCase().replace(/\\/g, "/");
     if (
-      lower.includes("@anthropic-ai/claude-code") ||
-      lower.includes("claude-code/cli")
+      lower.endsWith("/claude-code/cli.js")
     ) {
       return "claude";
     }
-    if (lower.includes("@openai/codex") || lower.includes("/codex/")) {
+    if (lower.includes("@openai/codex/") && /\/(?:bin\/codex|bin|cli)\.js$/.test(lower)) {
       return "codex";
     }
-    if (lower.includes("opencode-ai") || lower.includes("/opencode/")) {
+    if (lower.includes("opencode-ai/") && /\/(?:dist\/index|bin)\.js$/.test(lower)) {
       return "opencode";
     }
+    return null;
   }
   return null;
 }
@@ -146,6 +151,7 @@ function formatEnvPrefix(env: Record<string, string> | undefined): string {
  *   opencode -> `[env...]<cmd> --session <id>`
  */
 export function buildResumeCommand(agent: PaneAgent): string {
+  if (!agent.sessionId.trim()) return "";
   const cmd = agent.command.trim() || agent.kind;
   const id = shellQuote(agent.sessionId);
   const envPrefix = formatEnvPrefix(agent.env);
