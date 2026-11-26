@@ -677,10 +677,20 @@ fn process_env(pid: u32) -> Vec<(String, String)> {
 #[tauri::command]
 async fn agent_session_id(kind: String, cwd: String, pid: u32) -> Option<String> {
     let _ = cwd;
-    tokio::task::spawn_blocking(move || yterminal::agent::host_services::resolve_agent_session(&kind, pid))
+    #[cfg(unix)]
+    {
+        tokio::task::spawn_blocking(move || {
+            yterminal::agent::host_services::resolve_agent_session(&kind, pid)
+        })
         .await
         .ok()
         .flatten()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (kind, pid);
+        None
+    }
 }
 
 fn home_dir() -> Option<std::path::PathBuf> {
