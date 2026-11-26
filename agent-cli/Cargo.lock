@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "yterminal"
-version = "0.18.19"
+version = "0.18.20"
 dependencies = [
  "ciborium",
  "libc",
