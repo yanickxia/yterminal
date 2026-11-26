@@ -64,6 +64,16 @@ describe("PTY agent roll-up", () => {
     w.tabs[0].activePaneId = "b";
     expect(workspaceAgentSummary(w, observations)).toEqual(before);
   });
+  it("gives split agents individual display names and retains their tab location", () => {
+    const summary = workspaceAgentSummary(workspace([
+      { ...leaf("a"), agentName: "Review patches" },
+      leaf("b"),
+    ]));
+    expect(summary.entries.map(({ agentName, tabName }) => [agentName, tabName])).toEqual([
+      ["Review patches", "Auth service"],
+      [undefined, "Auth service"],
+    ]);
+  });
   it("rolls up urgency without dropping idle or unknown agents", () => {
     const observations = new Map([["a", observation("waiting")], ["b", observation("attention")]]);
     expect(workspacesAgentStatus([workspace([leaf("a"), leaf("b")])], observations).get("w")).toEqual({ total: 2, state: "attention" });

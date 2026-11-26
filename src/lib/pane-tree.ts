@@ -157,13 +157,7 @@ export function setLeafCwd(
   id: string,
   cwd: string
 ): PaneTree {
-  function recur(node: PaneTree): PaneTree {
-    if (node.type === "leaf") {
-      return node.id === id ? { ...node, cwd } : node;
-    }
-    return { ...node, children: node.children.map(recur) };
-  }
-  return recur(root);
+  return updateLeaf(root, id, (leaf) => ({ ...leaf, cwd }));
 }
 
 /**
@@ -176,15 +170,23 @@ export function setLeafAgent(
   id: string,
   agent: PaneAgent | undefined
 ): PaneTree {
-  function recur(node: PaneTree): PaneTree {
-    if (node.type === "leaf") {
-      if (node.id !== id) return node;
-      const next = { ...node };
-      if (agent) next.agent = agent;
-      else delete next.agent;
-      return next;
-    }
-    return { ...node, children: node.children.map(recur) };
-  }
-  return recur(root);
+  return updateLeaf(root, id, (leaf) => {
+    const next = { ...leaf };
+    if (agent) next.agent = agent;
+    else delete next.agent;
+    return next;
+  });
+}
+
+export function setLeafAgentName(
+  root: PaneTree,
+  id: string,
+  agentName: string | undefined
+): PaneTree {
+  return updateLeaf(root, id, (leaf) => ({ ...leaf, agentName }));
+}
+
+function updateLeaf(node: PaneTree, id: string, update: (leaf: PaneLeaf) => PaneLeaf): PaneTree {
+  if (node.type === "leaf") return node.id === id ? update(node) : node;
+  return { ...node, children: node.children.map((child) => updateLeaf(child, id, update)) };
 }

@@ -15,6 +15,7 @@ export interface WorkspaceAgentEntry {
   command: string;
   tabId: string;
   tabName: string;
+  agentName?: string;
   tabIcon?: string;
   paneId: string;
   state: AgentRunState;
@@ -57,6 +58,7 @@ export function workspaceAgentSummary(
         command: leaf.agent.command,
         tabId: tab.id,
         tabName: tab.customName?.trim() || tab.name,
+        agentName: leaf.agentName,
         tabIcon: tab.icon,
         paneId: leaf.id,
         state: observation.state,

@@ -375,7 +375,7 @@ export function TabBar({ workspace }: { workspace: Workspace }) {
         +
       </button>
 
-      <div className="tabbar-spacer" />
+      <div className="tabbar-spacer" data-tauri-drag-region="" aria-hidden="true" />
 
       {workspace.activeTabId &&
         !workspace.tabs.find((t) => t.id === workspace.activeTabId)?.file && (

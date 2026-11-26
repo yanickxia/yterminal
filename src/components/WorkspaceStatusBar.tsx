@@ -84,7 +84,7 @@ export function WorkspaceStatusBar({
             key={e.paneId}
             type="button"
             className={"ws-agent-chip " + e.state}
-            title={`${KIND_LABEL[e.kind]} in ${e.tabName} — ${
+            title={`${e.agentName ? `${e.agentName} · ` : ""}${KIND_LABEL[e.kind]} in ${e.tabName} — ${
               STATE_WORD[e.state]
             } (${e.command})`}
             onClick={() => jumpTo(e.tabId, e.paneId)}
@@ -92,7 +92,7 @@ export function WorkspaceStatusBar({
             <span className={"ws-agent-dot " + e.state} aria-hidden="true" />
             <span className="ws-agent-kind">{KIND_LABEL[e.kind]}</span>
             {e.tabIcon && <span className="ws-agent-icon">{e.tabIcon}</span>}
-            <span className="ws-agent-tab">{e.tabName}</span>
+            <span className="ws-agent-tab">{e.agentName ?? e.tabName}</span>
           </button>
         ))}
       </div>

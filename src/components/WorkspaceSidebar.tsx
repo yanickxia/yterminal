@@ -315,6 +315,7 @@ export function WorkspaceSidebar({
   if (collapsed) {
     return (
       <div className="sidebar collapsed">
+        <div className="titlebar-drag" data-tauri-drag-region="" aria-hidden="true" />
         <button
           className="icon-btn sidebar-expand"
           title="Show workspaces"
@@ -438,6 +439,7 @@ export function WorkspaceSidebar({
       className="sidebar"
       style={{ width: sidebarWidth, minWidth: sidebarWidth }}
     >
+      <div className="titlebar-drag" data-tauri-drag-region="" aria-hidden="true" />
       <div className="sidebar-header">
         <span>WORKSPACES</span>
         <div className="sidebar-header-actions">

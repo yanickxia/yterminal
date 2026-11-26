@@ -46,6 +46,8 @@ export interface PaneLeaf {
    * resume flag. Cleared when no agent is running.
    */
   agent?: PaneAgent;
+  /** This client's display name for an agent running in this pane. */
+  agentName?: string;
   /** Last daemon-observed agent title status; hooks are not a status source. */
   runtimeStatus?: "working" | "idle" | "permission" | "unknown" | "background";
   /** Last OSC 0/2 title observed by the owner daemon for this specific pane. */

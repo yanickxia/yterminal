@@ -20,6 +20,7 @@ import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
 import { encodeEnter } from "./enter-key";
+import { encodeAltArrow } from "./terminal-alt-arrow";
 import { createControlEnterHandler } from "./terminal-control-shortcut";
 import { handleClickedToken } from "./file-link";
 import { findPathSpans, pathSpanAtColumn } from "./file-link-classify";
@@ -37,7 +38,6 @@ import {
 import { cleanTerminalText, stripAnsi } from "./terminal-text";
 import { sanitizeTabTitle } from "./tab-title";
 import { attachOrphanCompositionEndGuard } from "./terminal-composition-guard";
-import { installMacosContinuousCompositionFix } from "./terminal-macos-composition";
 import { shouldSuppressNativePaste } from "./paste-suppress";
 import { shouldSuppressContextMenu } from "./context-menu-suppress";
 import { spawn, type IPty } from "./pty";
@@ -88,7 +88,6 @@ import {
   disableVisibilityPause,
   type VisibilityPauseRenderService,
 } from "./terminal-renderer-visibility";
-import { installWebglDisposalCompatibility } from "./webgl-disposal";
 
 const isMac = typeof navigator !== "undefined" && detectIsMac();
 const isLinux =
@@ -156,18 +155,7 @@ interface Session {
   disposed: boolean;
   /** the shell process has exited (user typed `exit` or it died) */
   exited: boolean;
-  /**
-   * Viewport scroll state captured at detach so we can restore it on the next
-   * attach. We snapshot the `.xterm-viewport` div's raw `scrollTop` rather
-   * than xterm's `buffer.viewportY`/`scrollToLine`, because xterm only
-   * recomputes `ydisp` from scrollTop when the viewport DOM emits a scroll
-   * event — assigning scrollTop directly keeps xterm's internal state in
-   * sync, whereas `scrollToLine` can leave `scrollTop` lagging behind on
-   * first frame after re-attach and the very next wheel event then snaps to
-   * the top because the listener reads a stale (≈0) scrollTop.
-   */
-  savedScrollTop?: number;
-  savedAtBottom?: boolean;
+  /** An explicit jump to the latest output while this terminal is detached. */
   scrollToBottomOnAttach?: boolean;
   /**
    * Latest cwd reported by the shell via OSC 7 (`\e]7;file://host/path\a`),
@@ -190,11 +178,6 @@ interface Session {
    * terminal-composition-guard.ts.
    */
   compositionGuardCleanup?: () => void;
-  /**
-   * Cleanup for the macOS continuous-composition backport installed after
-   * xterm creates its private CompositionHelper in `open()`.
-   */
-  macCompositionFixCleanup?: () => void;
   /**
    * The GPU renderer addon, attached on first `open()` for a real speed-up over
    * xterm's default DOM renderer. Kept on the session so we can dispose it on
@@ -250,10 +233,6 @@ interface Session {
 }
 
 interface XtermCoreInternals {
-  viewport?: {
-    syncScrollArea?: (immediate?: boolean) => void;
-    _ignoreNextScrollEvent?: boolean;
-  };
   _charSizeService?: { hasValidSize?: boolean; measure?: () => void };
   _renderService?: VisibilityPauseRenderService & {
     _pausedResizeTask?: { flush?: () => void };
@@ -319,7 +298,9 @@ async function persist(id: string, s: Session): Promise<void> {
   if (s.disposed) return;
   try {
     await s.pty.waitForParserIdle(2_000);
-    if (s.disposed || !s.pty.isParserIdle()) return;
+    // The serializer omits the transient DEC 2026 mode. Keep the previous
+    // checkpoint while the program is still writing this synchronized frame.
+    if (s.disposed || !s.pty.isParserIdle() || s.term.modes.synchronizedOutputMode) return;
     const snapshot = s.serialize.serialize();
     saveScrollback(id, snapshot);
     // The daemon keeps the authoritative reconnect checkpoint. The local
@@ -517,35 +498,6 @@ function scheduleFullTerminalRefresh(s: Session, reason: string): void {
   });
 }
 
-function syncXtermViewport(
-  s: Session,
-  opts: { immediate?: boolean; clearIgnoredScroll?: boolean } = {}
-) {
-  if (s.disposed || !s.el.parentElement) return;
-  try {
-    const viewport = xtermCore(s)?.viewport;
-    viewport?.syncScrollArea?.(opts.immediate);
-    if (opts.clearIgnoredScroll && viewport) {
-      // `syncScrollArea()` may set this before programmatically assigning
-      // scrollTop. When we call it immediately before a wheel/restore scroll,
-      // clear it so the user's next scroll event is not swallowed.
-      viewport._ignoreNextScrollEvent = false;
-    }
-  } catch {
-    /* xterm internals moved; scrolling will fall back to default behavior */
-  }
-}
-
-function scrollAttachedSessionToBottom(s: Session) {
-  const viewport = s.el.querySelector<HTMLElement>(".xterm-viewport");
-  if (!viewport) return;
-  syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
-  // Set the DOM position after synchronizing its dimensions. On reattach a
-  // pending viewport update can otherwise restore the old scrollback offset.
-  viewport.scrollTop = viewport.scrollHeight;
-  viewport.dispatchEvent(new Event("scroll"));
-}
-
 /** Push a theme palette onto the app-chrome CSS variables. */
 function applyChromeVars(p: ThemePalette) {
   if (typeof document === "undefined") return;
@@ -623,6 +575,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     fontFamily: font.stack,
     fontSize,
     cursorBlink: true,
+    overviewRuler: { width: 10 },
     allowProposedApi: true,
     // Match the reference xterm consumer (VS Code). rescaleOverlappingGlyphs
     // scales a glyph that overflows its cell back down to cell width in the
@@ -895,6 +848,12 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       void pasteInto(tabId);
       return false;
     }
+    const altArrow = encodeAltArrow(e, isMac);
+    if (altArrow) {
+      e.preventDefault();
+      pty.write(altArrow);
+      return false;
+    }
     if (e.key !== "Enter") return true;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
       // Stamp the moment so the spurious `contextmenu` macOS WKWebView fires
@@ -915,13 +874,6 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     const sel = term.getSelection();
     if (sel) void clipboardWrite(sel).catch(() => {});
   });
-  term.attachCustomWheelEventHandler(() => {
-    if (s) {
-      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
-    }
-    return true;
-  });
-
   // Attention bell: CLIs (and coding agents like Claude Code / OpenCode) ring
   // the terminal bell (BEL, \x07) when they pause for user input or hit an
   // error that needs a human. If that happens in a pane the user isn't looking
@@ -981,7 +933,6 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
     if (s) {
       s.ptyAgentDirty = true;
       refreshResumedXterm(s);
-      syncXtermViewport(s);
     }
   });
   // term.onData fires for every keystroke/paste leaving xterm toward the pty.
@@ -1045,7 +996,7 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // remain parked at row 0. Once the initial replay is fully parsed, pin the
   // restored pane to its newest output. Later transport replays must not move a
   // user who deliberately scrolled up, and ordinary tab switches keep using
-  // the saved viewport state below.
+  // the viewport after attachment.
   let initialReplay = true;
   pty.onReplayComplete(() => {
     if (!initialReplay) return;
@@ -1087,14 +1038,6 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
   if (!s.opened) {
     s.term.open(s.el);
     s.opened = true;
-    // xterm 5.5 can consume the first key of a new macOS Chinese composition
-    // when that same key committed the previous candidate. Backport upstream's
-    // delayed-range fix without changing xterm on Linux/Windows.
-    if (isMac) {
-      s.macCompositionFixCleanup = installMacosContinuousCompositionFix(
-        s.term
-      );
-    }
     // GPU renderer: xterm's default DOM renderer repaints per-cell and is the
     // dominant source of keystroke-to-screen lag. Load the WebGL addon now that
     // the terminal is in the DOM (its contract requires open() first). On GPU
@@ -1104,7 +1047,6 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
     // the DOM renderer.
     try {
       const webgl = new WebglAddon();
-      installWebglDisposalCompatibility(s.term, webgl);
       webgl.onContextLoss(() => {
         logger.warn("term", `webgl context lost pane=${tabId}; falling back to DOM`);
         s.glyphAtlasCleanup?.();
@@ -1271,33 +1213,18 @@ export function attachSession(tabId: string, container: HTMLElement, cwd: string
       measureTerminalFont(s);
       if (!s.pty.readOnly) s.fit.fit();
       resumeXtermRenderer(s);
-      syncXtermViewport(s, { immediate: true, clearIgnoredScroll: true });
       s.term.refresh(0, s.term.rows - 1);
       const renderService = xtermCore(s)?._renderService;
       if (renderService) renderService._needsFullRefresh = false;
-      // Restore the underlying viewport scrollTop. We do this rather than
-      // calling `scrollToLine` because scrollTop is the source of truth for
-      // xterm's scroll listener; writing it directly fires that listener
-      // which then computes `ydisp` consistently with the DOM. Going through
-      // scrollToLine can leave the two out of sync on first frame after
-      // re-attach so the next wheel event teleports to the top.
-      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
-      const revealLatestOutput = s.scrollToBottomOnAttach;
-      if (revealLatestOutput || s.savedAtBottom) {
-        // A cached viewport can still receive its old scroll position during
-        // the fit and renderer refresh. Jump after that frame has settled.
+      // xterm 6 keeps the virtual scrollbar and buffer offset with the
+      // cached terminal. Only an explicit jump overrides that position.
+      if (s.scrollToBottomOnAttach) {
         requestAnimationFrame(() => {
-          if (s.disposed || s.el.parentElement !== container) return;
-          if (revealLatestOutput && !s.scrollToBottomOnAttach) return;
-          scrollAttachedSessionToBottom(s);
+          if (s.disposed || s.el.parentElement !== container || !s.scrollToBottomOnAttach) return;
+          s.term.scrollToBottom();
           s.scrollToBottomOnAttach = false;
         });
-      } else if (viewport && typeof s.savedScrollTop === "number") {
-        viewport.scrollTop = s.savedScrollTop;
-        viewport.dispatchEvent(new Event("scroll"));
       }
-      s.savedScrollTop = undefined;
-      s.savedAtBottom = undefined;
       // don't steal focus from an open rename/search input (xterm's textarea
       // is allowed — that's the terminal itself getting focus).
       const ae = document.activeElement as HTMLElement | null;
@@ -1325,14 +1252,6 @@ export function detachSession(tabId: string) {
       /* terminal was already detached */
     }
     void persist(tabId, s);
-    try {
-      const buf = s.term.buffer.active;
-      s.savedAtBottom = buf.viewportY === buf.baseY;
-      const viewport = s.el.querySelector(".xterm-viewport") as HTMLElement | null;
-      if (viewport) s.savedScrollTop = viewport.scrollTop;
-    } catch {
-      /* buffer not ready */
-    }
     s.el.parentElement.removeChild(s.el);
   }
 }
@@ -1348,7 +1267,6 @@ export function disposeSession(tabId: string) {
   controlListeners.delete(tabId);
   setPtyObservation(tabId);
   s.compositionGuardCleanup?.();
-  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();
@@ -1395,7 +1313,6 @@ export function unloadSession(tabId: string) {
   controlListeners.delete(tabId);
   setPtyObservation(tabId);
   s.compositionGuardCleanup?.();
-  s.macCompositionFixCleanup?.();
   s.pasteDedupeCleanup?.();
   s.linkClickBridgeCleanup?.();
   s.bufferRefreshCleanup?.();
@@ -1524,7 +1441,6 @@ export function fitSession(tabId: string) {
       ) {
         s.fit.fit();
       }
-      syncXtermViewport(s, { immediate: true });
     } catch {
       /* ignore */
     }
@@ -1572,7 +1488,7 @@ export function scrollSessionToBottom(paneId: string): void {
   if (!s || s.disposed) return;
   if (s.el.isConnected) {
     try {
-      scrollAttachedSessionToBottom(s);
+      s.term.scrollToBottom();
     } catch {
       /* buffer not ready */
     }
@@ -2052,6 +1968,7 @@ if (typeof window !== "undefined") {
         session.ptyAgentPendingIdleAt = undefined;
         setPtyObservation(paneId);
       }
+      if (session.term.modes.synchronizedOutputMode) continue;
       if (session.ptyAgentKind === kind && session.ptyAgentDirty === false && session.ptyAgentPendingIdleAt === undefined) continue;
       session.ptyAgentKind = kind;
       session.ptyAgentDirty = false;

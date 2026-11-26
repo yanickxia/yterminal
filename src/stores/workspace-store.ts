@@ -5,12 +5,14 @@ import { persist } from "zustand/middleware";
 import type {
   Tab,
   Workspace,
+  PaneLeaf,
   PaneTree,
   TabFile,
 } from "../lib/types";
 import { uid } from "../lib/uid";
 import {
   collectLeafIds,
+  collectLeaves,
   findLeaf,
   makeLeaf,
   splitPane,
@@ -18,6 +20,7 @@ import {
   setSizesAt,
   setLeafCwd,
   setLeafAgent,
+  setLeafAgentName,
 } from "../lib/pane-tree";
 import { useSettingsStore } from "./settings-store";
 import type {
@@ -177,6 +180,7 @@ interface WorkspaceState {
     instanceId: string,
     env: Record<string, string>
   ) => void;
+  setPaneAgentName: (workspaceId: string, tabId: string, paneId: string, name: string) => void;
 
   // ---- selectors ----
   activeWorkspace: () => Workspace | undefined;
@@ -203,7 +207,11 @@ function mergeAgentWorkspace(
       previous && leafIds.includes(previous.activePaneId)
         ? previous.activePaneId
         : (leafIds[0] ?? "");
-    const root = mergeAgentPaneTree(previous?.root, shared.root);
+    // Match leaves by ID even when another client moves them into a split.
+    const localLeaves = previous
+      ? new Map(collectLeaves(previous.root).map((leaf) => [leaf.id, leaf]))
+      : undefined;
+    const root = mergeAgentPaneTree(previous?.root, shared.root, localLeaves);
     const runtimeTitle = findLeaf(root, activePaneId)?.runtimeTitle?.trim();
     return {
       ...shared,
@@ -234,32 +242,27 @@ function mergeAgentWorkspace(
 
 function mergeAgentPaneTree(
   previous: PaneTree | undefined,
-  shared: PaneTree
+  shared: PaneTree,
+  localLeaves: ReadonlyMap<string, PaneLeaf> | undefined
 ): PaneTree {
   if (shared.type === "leaf") {
-    if (previous?.type !== "leaf" || previous.id !== shared.id) {
-      return {
-        ...shared,
-        sessionId: shared.sessionId ?? undefined,
-        agent: shared.agent ?? undefined,
-        runtimeStatus: shared.runtimeStatus ?? undefined,
-        runtimeTitle: shared.runtimeTitle ?? undefined,
-      };
-    }
+    const local = localLeaves?.get(shared.id);
+    const localAgent = local?.agent;
     const sameAgent =
-      previous.agent &&
+      localAgent &&
       shared.agent &&
-      previous.agent.kind === shared.agent.kind &&
-      (previous.agent.instanceId || shared.agent.instanceId
-        ? previous.agent.instanceId === shared.agent.instanceId
-        : previous.agent.sessionId === shared.agent.sessionId);
+      localAgent.kind === shared.agent.kind &&
+      (localAgent.instanceId || shared.agent.instanceId
+        ? localAgent.instanceId === shared.agent.instanceId
+        : localAgent.sessionId === shared.agent.sessionId);
     return {
       ...shared,
+      agentName: local?.agentName,
       sessionId: shared.sessionId ?? undefined,
       runtimeStatus: shared.runtimeStatus ?? undefined,
       runtimeTitle: shared.runtimeTitle ?? undefined,
       agent: sameAgent
-        ? { ...shared.agent!, env: previous.agent!.env }
+        ? { ...shared.agent!, env: localAgent.env }
         : (shared.agent ?? undefined),
     };
   }
@@ -281,7 +284,8 @@ function mergeAgentPaneTree(
     children: shared.children.map((child) =>
       mergeAgentPaneTree(
         previousChildren.find((candidate) => candidate.id === child.id),
-        child
+        child,
+        localLeaves
       )
     ),
   };
@@ -875,6 +879,22 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             }),
           })),
         }));
+      },
+
+      setPaneAgentName: (workspaceId, tabId, paneId, name) => {
+        const agentName = name.trim() || undefined;
+        set((state) => {
+          const tab = state.workspaces.find((workspace) => workspace.id === workspaceId)
+            ?.tabs.find((tab) => tab.id === tabId);
+          const pane = tab && !tab.file ? findLeaf(tab.root, paneId) : null;
+          if (!pane || pane.agentName === agentName) return state;
+          return {
+            workspaces: mapTab(state.workspaces, workspaceId, tabId, (tab) => ({
+              ...tab,
+              root: setLeafAgentName(tab.root, paneId, agentName),
+            })),
+          };
+        });
       },
 
       activeWorkspace: () => {

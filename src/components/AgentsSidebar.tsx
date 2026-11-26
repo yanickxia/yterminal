@@ -7,11 +7,16 @@ import { collectAllAgents, type AgentOverviewEntry } from "../lib/agent-overview
 import { collectLeafIds } from "../lib/pane-tree";
 import { focusSession, scrollSessionToBottom } from "../lib/terminal-manager";
 import type { AgentKind } from "../lib/types";
+import { ContextMenu } from "./ContextMenu";
 
 const kindLabel: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 const kindGlyph: Record<AgentKind, string> = { claude: "CC", codex: "CX", opencode: "OC" };
 const stateLabel = { executing: "Working", waiting: "Input", attention: "Confirm", unknown: "Unknown" };
 type Filter = "all" | "working" | "waiting";
+
+function entryKey(entry: AgentOverviewEntry) {
+  return `${entry.hostId}:${entry.paneId}`;
+}
 
 export function AgentsSidebar({ hostLabels }: { hostLabels: ReadonlyMap<string, string> }) {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -20,11 +25,27 @@ export function AgentsSidebar({ hostLabels }: { hostLabels: ReadonlyMap<string, 
   const hostRuntime = useHostStore((s) => s.runtime);
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  const [editing, setEditing] = useState<{ key: string; draft: string } | null>(null);
+  const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const entries = useMemo(() => collectAllAgents(workspaces, observations), [workspaces, observations]);
   const online = (entry: AgentOverviewEntry) => entry.hostId === "local" || hostRuntime[entry.hostId]?.status === "online";
   const working = entries.filter((entry) => online(entry) && entry.state === "executing").length;
   const waiting = entries.filter((entry) => online(entry) && (entry.state === "waiting" || entry.state === "attention")).length;
-  const visible = entries.filter((entry) => filter === "all" || (online(entry) && (filter === "working" ? entry.state === "executing" : entry.state === "waiting" || entry.state === "attention")));
+  const visible = entries.filter((entry) =>
+    entryKey(entry) === editing?.key ||
+    filter === "all" ||
+    (online(entry) && (filter === "working" ? entry.state === "executing" : entry.state === "waiting" || entry.state === "attention"))
+  );
+  const menuEntry = menu && visible.find((entry) => entryKey(entry) === menu.key);
+
+  function beginRename(entry: AgentOverviewEntry) {
+    setEditing({ key: entryKey(entry), draft: entry.agentName ?? "" });
+  }
+
+  function rename(entry: AgentOverviewEntry, name: string) {
+    useWorkspaceStore.getState().setPaneAgentName(entry.workspaceId, entry.tabId, entry.paneId, name);
+    setEditing(null);
+  }
 
   function jump(entry: AgentOverviewEntry) {
     const store = useWorkspaceStore.getState();
@@ -56,23 +77,87 @@ export function AgentsSidebar({ hostLabels }: { hostLabels: ReadonlyMap<string, 
         </div>
         <div className="agents-sidebar-entries">
           {visible.map((entry) => {
+            const key = entryKey(entry);
+            const edit = editing?.key === key ? editing : null;
             const connected = online(entry);
             const state = connected ? entry.state : "unknown";
             const workspace = workspaces.find((workspace) => workspace.id === entry.workspaceId);
             const tab = workspace?.tabs.find((tab) => tab.id === entry.tabId);
             const selected = activeWorkspaceId === entry.workspaceId && workspace?.activeTabId === entry.tabId && tab?.activePaneId === entry.paneId;
-            return <button key={`${entry.hostId}:${entry.paneId}`} type="button" className={"agents-sidebar-entry" + (selected ? " selected" : "")} aria-current={selected ? "location" : undefined} onClick={() => jump(entry)} title={`${kindLabel[entry.kind]} · ${entry.workspaceName} / ${entry.tabName}\n${connected ? entry.reason : "Host is offline; last detected agent"}`}>
+            const className = "agents-sidebar-entry" + (selected ? " selected" : "");
+            const kind = kindLabel[entry.kind];
+            const title = `${entry.agentName ? `${entry.agentName} · ` : ""}${kind} · ${entry.workspaceName} / ${entry.tabName}`;
+            const content = <>
               <span className={`agents-sidebar-glyph ${entry.kind}`}>{kindGlyph[entry.kind]}</span>
               <span className="agents-sidebar-copy">
-                <span className="agents-sidebar-name">{kindLabel[entry.kind]} · {entry.tabName}</span>
+                {edit ? (
+                  <input
+                    autoFocus
+                    className="agents-sidebar-rename"
+                    aria-label="Agent name"
+                    placeholder={entry.tabName}
+                    value={edit.draft}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onChange={(event) => setEditing({ key, draft: event.currentTarget.value })}
+                    onBlur={(event) => rename(entry, event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        rename(entry, event.currentTarget.value);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        setEditing(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="agents-sidebar-name">{entry.agentName ?? `${kind} · ${entry.tabName}`}</span>
+                )}
                 <span className="agents-sidebar-location">{entry.workspaceName} / {hostLabels.get(entry.hostId) ?? "Remote"}</span>
               </span>
               <span className={`agents-sidebar-state ${state}`}><span className="agents-sidebar-dot" />{connected ? stateLabel[state] : "Offline"}</span>
-            </button>;
+            </>;
+            return edit ? (
+              <div key={key} className={className + " editing"}>{content}</div>
+            ) : (
+              <button
+                key={key}
+                type="button"
+                className={className}
+                aria-current={selected ? "location" : undefined}
+                title={`${title}\n${connected ? entry.reason : "Host is offline; last detected agent"}`}
+                onClick={() => jump(entry)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenu({ key, x: event.clientX, y: event.clientY });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "F2") return;
+                  event.preventDefault();
+                  beginRename(entry);
+                }}
+              >
+                {content}
+              </button>
+            );
           })}
           {visible.length === 0 && <p className="agents-sidebar-empty">{entries.length ? "No agents in this category" : "Run Claude, Codex or OpenCode in a terminal"}</p>}
         </div>
       </div>
+      {menu && menuEntry && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            { label: "Rename Agent", onClick: () => beginRename(menuEntry) },
+            ...(menuEntry.agentName
+              ? [{ label: "Use Auto Name", onClick: () => rename(menuEntry, "") }]
+              : []),
+          ]}
+        />
+      )}
     </section>
   );
 }
