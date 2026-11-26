@@ -66,24 +66,10 @@ impl AgentClient {
         client_name: impl Into<String>,
         events: mpsc::Sender<AgentClientEvent>,
     ) -> Result<(Self, Child), String> {
-        validate_ssh_target(ssh_target)?;
-        let mut child = Command::new(ssh_program())
-            .arg("-T")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("ServerAliveInterval=15")
-            .arg("-o")
-            .arg("ServerAliveCountMax=3")
-            .arg("-o")
-            .arg("ConnectTimeout=8")
-            .arg("--")
-            .arg(ssh_target)
-            .arg("~/.local/bin/yterminal-agent connect")
+        let mut child = ssh_command(ssh_target, "~/.local/bin/yterminal-agent connect")?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("start OpenSSH: {e}"))?;
         let reader = child
@@ -283,8 +269,27 @@ impl AgentClient {
     }
 }
 
-fn ssh_program() -> std::ffi::OsString {
-    std::env::var_os("YTERMINAL_SSH_BIN").unwrap_or_else(|| "ssh".into())
+pub fn ssh_command(target: &str, remote_command: &str) -> Result<Command, String> {
+    validate_ssh_target(target)?;
+    let program = std::env::var_os("YTERMINAL_SSH_BIN").unwrap_or_else(|| "ssh".into());
+    let mut command = Command::new(program);
+    command
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "ConnectTimeout=8",
+            "--",
+            target,
+            remote_command,
+        ])
+        .kill_on_drop(true);
+    Ok(command)
 }
 
 pub fn validate_ssh_target(target: &str) -> Result<(), String> {

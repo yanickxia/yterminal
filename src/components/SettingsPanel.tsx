@@ -787,7 +787,7 @@ function RemoteHostsTab() {
         <p className="field-hint">
           Targets use your existing <code>~/.ssh/config</code>, ssh-agent,
           ProxyJump and known_hosts. yterminal never stores a password or private
-          key. The remote machine must have <code>~/.local/bin/yterminal-agent</code>.
+          key. Connect / Test downloads a missing Agent on this computer and installs it over SSH.
         </p>
       </div>
 
@@ -826,6 +826,7 @@ function RemoteHostsTab() {
               <input
                 className="select"
                 value={profile.sshTarget}
+                disabled={state.status === "connecting"}
                 placeholder="office-linux"
                 spellCheck={false}
                 onChange={(event) =>
@@ -837,12 +838,15 @@ function RemoteHostsTab() {
                   type="button"
                   className="settings-action-btn"
                   disabled={state.status === "connecting"}
-                  onClick={() => void reconnectRemoteHost(profile.id)}
+                  onClick={() => void reconnectRemoteHost(profile.id, true)}
                 >
                   {state.status === "connecting" ? "Connecting…" : "Connect / Test"}
                 </button>
               </div>
-              {state.message && (
+              {state.message && state.status === "connecting" && (
+                <p className="field-hint" role="status">{state.message}</p>
+              )}
+              {state.message && state.status !== "connecting" && (
                 <>
                   <p className="field-hint remote-error">{state.message}</p>
                   {profile.sshTarget.trim() && (

@@ -16,6 +16,8 @@ mod clipboard;
 #[cfg(unix)]
 mod host_connection;
 mod logger;
+#[cfg(unix)]
+mod remote_agent_install;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

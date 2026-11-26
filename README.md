@@ -40,15 +40,21 @@ drag-and-drop reordering.
 
 ## Remote workspaces over SSH
 
-On every machine that should own remotely accessible work, open **Settings →
-Remote** and click **Enable Remote Workspaces**. This installs
-`~/.local/bin/yterminal-agent` plus a per-user systemd service (Linux) or
-LaunchAgent (macOS). No root permission and no listening TCP port are needed.
+On the client machine, open **Settings → Remote**, add an SSH target, and click
+**Connect / Test**. The target is an alias or `user@host` accepted by your existing
+`ssh` command. Authentication, host-key verification, `ProxyJump`, agent forwarding
+and key selection remain entirely in `~/.ssh/config`/OpenSSH.
 
-On the client machine, add an SSH target in the same panel. The target is an
-alias or `user@host` accepted by your existing `ssh` command. Authentication,
-host-key verification, `ProxyJump`, agent forwarding and key selection remain
-entirely in `~/.ssh/config`/OpenSSH; yterminal stores no password or private key.
+When the remote Agent is missing, the client detects the host platform, downloads
+the matching yterminal release on this computer, verifies its GitHub SHA-256 digest,
+and uploads it to `~/.local/bin/yterminal-agent` over SSH. Linux x86-64, Linux ARM64,
+and macOS are supported. The download uses the local updater's proxy and GitHub
+mirror settings. Existing Agent binaries are reused.
+
+The installer starts a per-user systemd service on Linux or LaunchAgent on macOS.
+On hosts without an available user service manager, it starts a detached daemon.
+To install from a GUI running on the host, click **Enable Remote Workspaces**.
+No root permission or listening TCP port is required.
 
 Remote workspaces then appear under their device in the sidebar. One client
 controls a workspace at a time; other clients attach read-only and can use

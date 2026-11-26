@@ -3,6 +3,7 @@ import {
   HostTransport,
   localHost,
   resetLocalHost,
+  type HostConnectOptions,
 } from "./host-transport";
 import { logger } from "./logger";
 import {
@@ -281,7 +282,8 @@ function acceptWorkspaceResponse(
 export async function connectRemoteWorkspaceHost(
   hostId: string,
   name: string,
-  sshTarget: string
+  sshTarget: string,
+  setup?: Pick<HostConnectOptions, "installAgent" | "onInstallProgress">
 ): Promise<HostTransport> {
   const existing = hosts.get(hostId);
   if (existing) return existing;
@@ -289,6 +291,7 @@ export async function connectRemoteWorkspaceHost(
     kind: "ssh",
     name,
     sshTarget,
+    ...setup,
   });
   const duplicateHost = deviceHosts.get(connection.hello.deviceId);
   if (duplicateHost && duplicateHost !== hostId) {
