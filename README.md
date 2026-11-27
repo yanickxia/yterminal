@@ -52,7 +52,7 @@ docker compose up -d --no-build --wait
 ```
 
 Compose defaults to `ghcr.io/yanickxia/yterminal:latest`. Set
-`YTERMINAL_IMAGE=ghcr.io/yanickxia/yterminal:0.18.22` in `.env` to pin a
+`YTERMINAL_IMAGE=ghcr.io/yanickxia/yterminal:0.20.0` in `.env` to pin a
 version. From a source checkout, `docker compose up -d --build --wait` builds
 the image locally.
 
