@@ -41,8 +41,13 @@ drag-and-drop reordering.
 ## Docker Web
 
 The [GHCR image](https://github.com/yanickxia/yterminal/pkgs/container/yterminal)
-supports Linux amd64 and arm64. With [`compose.yaml`](compose.yaml) in your
-deployment directory, pull and start the image:
+supports Linux amd64 and arm64. For a private GHCR package, run
+`docker login ghcr.io -u YOUR_GITHUB_USERNAME` on the deployment host and
+use a GitHub personal access token (classic) with `read:packages` when
+prompted for the password.
+
+With [`compose.yaml`](compose.yaml) in your deployment directory, pull and
+start the image:
 
 ```sh
 docker compose pull
