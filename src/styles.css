@@ -2083,6 +2083,29 @@ body {
 .settings-action-btn:hover { border-color: var(--accent); }
 .settings-action-btn:disabled { cursor: default; opacity: 0.55; }
 
+.remote-install-help-toggle {
+  min-width: 2rem;
+  color: var(--accent);
+}
+.remote-install-help-toggle[aria-expanded="true"] { border-color: var(--accent); }
+.remote-install-help {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--bg-light);
+  border-radius: 6px;
+  color: var(--fg);
+}
+.remote-install-help p { margin: 6px 0 0; }
+.remote-install-help p code { overflow-wrap: anywhere; }
+.remote-install-help pre {
+  margin: 10px 0 0;
+  padding: 8px;
+  max-height: 11rem;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--bg-medium);
+}
+
 .ai-provider-head {
   display: flex;
   align-items: center;
