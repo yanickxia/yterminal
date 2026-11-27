@@ -4,6 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY index.html tsconfig*.json vite.config.ts ./
 COPY src ./src
+COPY scripts/ssh-agent-install-local.sh scripts/ssh-agent-install-remote.sh scripts/ssh-agent-probe.sh ./scripts/
 RUN npm run build
 
 FROM rust:bookworm AS backend

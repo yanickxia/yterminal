@@ -36,6 +36,12 @@ import {
 } from "../lib/remote-host-manager";
 import { localHost } from "../lib/host-transport";
 import { clipboardWrite } from "../lib/clipboard";
+import { openUrl } from "../lib/opener";
+import {
+  agentReleasePage,
+  sshAgentInstallScript,
+  sshCheckCommand,
+} from "../lib/ssh-agent-install-guide";
 
 interface AgentServiceStatus {
   installed: boolean;
@@ -652,6 +658,7 @@ function RemoteHostsTab() {
   const [agent, setAgent] = useState<AgentRuntimeStatus | null>(null);
   const [maintenance, setMaintenance] = useState("");
   const [maintenanceError, setMaintenanceError] = useState("");
+  const [manualInstallHost, setManualInstallHost] = useState<string>();
 
   async function refreshAgentStatus() {
     try {
@@ -812,11 +819,12 @@ function RemoteHostsTab() {
       <div className="ai-provider-list">
         {profiles.map((profile) => {
           const state = runtime[profile.id] ?? { status: "offline" as const };
-          const target = profile.sshTarget.trim();
-          const quotedTarget = "'" + target.replace(/'/g, "'\\''") + "'";
-          const checkCommand = target && (isWeb
-            ? `docker compose exec yterminal ssh -- ${quotedTarget}`
-            : `ssh -- ${quotedTarget}`);
+          const helpOpen = manualInstallHost === profile.id;
+          const helpId = `ssh-install-help-${profile.id}`;
+          const sshCheck = sshCheckCommand(profile.sshTarget);
+          const checkCommand = isWeb && sshCheck
+            ? `docker compose exec yterminal ${sshCheck}`
+            : sshCheck;
           return (
             <div className="ai-provider-card" key={profile.id}>
               <div className="ai-provider-card-head">
@@ -865,6 +873,19 @@ function RemoteHostsTab() {
                 >
                   {state.status === "connecting" ? "Connecting…" : "Connect / Test"}
                 </button>
+                {!isWeb && (
+                  <button
+                    type="button"
+                    className="settings-action-btn remote-install-help-toggle"
+                    aria-label={`Manual Agent installation for ${profile.name || "SSH host"}`}
+                    title="Manual Agent installation"
+                    aria-expanded={helpOpen}
+                    aria-controls={helpId}
+                    onClick={() => setManualInstallHost(helpOpen ? undefined : profile.id)}
+                  >
+                    ?
+                  </button>
+                )}
               </div>
               {state.message && state.status === "connecting" && (
                 <p className="field-hint" role="status">{state.message}</p>
@@ -886,6 +907,9 @@ function RemoteHostsTab() {
                   )}
                 </>
               )}
+              {!isWeb && helpOpen && (
+                <RemoteInstallHelp id={helpId} target={profile.sshTarget} />
+              )}
             </div>
           );
         })}
@@ -899,6 +923,66 @@ function RemoteHostsTab() {
         + Add SSH host
       </button>
     </>
+  );
+}
+
+function RemoteInstallHelp({ id, target }: { id: string; target: string }) {
+  const panel = useRef<HTMLElement>(null);
+  const [feedback, setFeedback] = useState<{ target: string; message: string }>();
+  const script = sshAgentInstallScript(target, __APP_VERSION__);
+
+  useEffect(() => {
+    panel.current?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  async function copyScript(text: string) {
+    try {
+      await clipboardWrite(text);
+      setFeedback({ target, message: "Script copied." });
+    } catch {
+      setFeedback({ target, message: "Clipboard unavailable. Select and copy the script below." });
+    }
+  }
+
+  async function openRelease() {
+    try {
+      await openUrl(agentReleasePage(__APP_VERSION__));
+    } catch {
+      setFeedback({ target, message: "Could not open the release page." });
+    }
+  }
+
+  return (
+    <section ref={panel} className="remote-install-help" id={id} aria-labelledby={`${id}-title`}>
+      <strong id={`${id}-title`}>Install Agent manually</strong>
+      {script ? (
+        <p>
+          Paste the script into a local Bash or Zsh terminal. It detects the SSH host’s platform,
+          downloads Agent v{__APP_VERSION__} from the release assets, and uploads it over SSH.
+          This works when the GitHub API is rate-limited. Then retry <b>Connect / Test</b>.
+        </p>
+      ) : <p>Enter a valid SSH target to generate the script.</p>}
+      <div className="remote-agent-actions">
+        {script && (
+          <button type="button" className="settings-action-btn" onClick={() => void copyScript(script)}>
+            Copy install script
+          </button>
+        )}
+        <button type="button" className="link-btn" onClick={() => void openRelease()}>
+          Open release assets
+        </button>
+      </div>
+      {feedback?.target === target && <p role="status">{feedback.message}</p>}
+      {script && (
+        <>
+          <pre tabIndex={0} aria-label="Manual Agent installation script"><code>{script}</code></pre>
+          <p>
+            Already downloaded the archive? Run <code>export YTERMINAL_AGENT_ARCHIVE="/path/to/agent.tar.gz"</code>
+            {" "}before pasting. Export <code>YTERMINAL_AGENT_SHA256</code> to check a known digest.
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 

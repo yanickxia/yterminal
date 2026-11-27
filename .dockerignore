@@ -9,6 +9,10 @@
 !public/**
 !src
 !src/**
+!scripts
+!scripts/ssh-agent-install-local.sh
+!scripts/ssh-agent-install-remote.sh
+!scripts/ssh-agent-probe.sh
 !agent-cli
 !agent-cli/Cargo.toml
 !agent-cli/Cargo.lock
