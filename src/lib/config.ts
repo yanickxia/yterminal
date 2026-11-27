@@ -10,6 +10,7 @@
 // catalogs so a hand-edited file can never put the app into a broken state.
 
 import { invoke } from "@tauri-apps/api/core";
+import { isWeb } from "./platform";
 import { THEMES, getAllFonts, UI_FONTS, DEFAULT_THEME_ID, DEFAULT_FONT_ID, DEFAULT_UI_FONT_ID } from "./themes";
 import {
   useSettingsStore,
@@ -314,6 +315,7 @@ export async function configFilePath(): Promise<string> {
  * Returns true if a valid file was loaded and applied.
  */
 export async function loadConfigFromDisk(): Promise<boolean> {
+  if (isWeb) return false;
   let text = "";
   try {
     text = await invoke<string>("read_config");
@@ -333,6 +335,7 @@ export async function loadConfigFromDisk(): Promise<boolean> {
 
 /** Serialize the current store to the JSON file on disk. */
 export async function saveConfigToDisk(): Promise<void> {
+  if (isWeb) return;
   const json = JSON.stringify(configFromStore(), null, 2) + "\n";
   try {
     await invoke("write_config", { contents: json });

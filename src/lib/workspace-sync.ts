@@ -6,6 +6,7 @@ import {
   type HostConnectOptions,
 } from "./host-transport";
 import { logger } from "./logger";
+import { isWeb } from "./platform";
 import {
   toWorkspaceDocument,
   type WorkspaceDocument,
@@ -62,7 +63,9 @@ export function startWorkspaceSync(initial: Workspace[]): Promise<void> {
     const localInitial = initial.filter(
       (workspace) => (workspace.hostId ?? LOCAL_HOST_ID) === LOCAL_HOST_ID
     );
-    const response = await host.request({
+    // The browser cache is a projection. Re-importing it could restore
+    // workspaces that another client already deleted.
+    const response = await host.request(isWeb ? { method: "list_workspaces" } : {
       method: "import_workspaces",
       params: { workspaces: localInitial.map(toWorkspaceDocument) },
     });
@@ -73,10 +76,12 @@ export function startWorkspaceSync(initial: Workspace[]): Promise<void> {
       remember(LOCAL_HOST_ID, workspace);
     }
     sink?.replaceHost(LOCAL_HOST_ID, response.data.workspaces);
-    try {
-      localStorage.setItem("yterminal-workspaces.agent-migrated", "1");
-    } catch {
-      /* localStorage unavailable; the agent database is still authoritative */
+    if (!isWeb) {
+      try {
+        localStorage.setItem("yterminal-workspaces.agent-migrated", "1");
+      } catch {
+        /* localStorage unavailable; the agent database is still authoritative */
+      }
     }
     logger.info(
       "workspace",

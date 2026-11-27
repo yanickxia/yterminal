@@ -1,0 +1,16 @@
+services:
+  yterminal:
+    image: "${YTERMINAL_IMAGE:-ghcr.io/yanickxia/yterminal:latest}"
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      YTERMINAL_WEB_ORIGIN: "${YTERMINAL_WEB_ORIGIN:-}"
+      YTERMINAL_WEB_TOKEN: "${YTERMINAL_WEB_TOKEN:-}"
+    ports:
+      - "${YTERMINAL_WEB_BIND:-127.0.0.1}:${YTERMINAL_WEB_PORT:-8080}:8080"
+    volumes:
+      - yterminal-home:/home/yterminal
+
+volumes:
+  yterminal-home:

@@ -19,6 +19,7 @@ import {
 } from "../lib/terminal-manager";
 import { collectLeafIds } from "../lib/pane-tree";
 import { useHostStore } from "../stores/host-store";
+import { isWeb } from "../lib/platform";
 import {
   pauseRemoteHost,
   reconnectRemoteHost,
@@ -120,7 +121,7 @@ export function WorkspaceSidebar({
   const hostGroups = [
     {
       id: "local",
-      name: "This device",
+      name: isWeb ? "Docker" : "This device",
       status: "online",
       workspaces: workspaces.filter(
         (workspace) => (workspace.hostId ?? "local") === "local"
@@ -401,13 +402,15 @@ export function WorkspaceSidebar({
         >
           ⑂
         </button>
-        <button
-          className="icon-btn rail-ai"
-          title="Toggle AI sidebar (⌘I)"
-          onClick={() => toggleAi()}
-        >
-          ✦
-        </button>
+        {!isWeb && (
+          <button
+            className="icon-btn rail-ai"
+            title="Toggle AI sidebar (⌘I)"
+            onClick={() => toggleAi()}
+          >
+            ✦
+          </button>
+        )}
         <button
           className="icon-btn rail-settings"
           title="Appearance settings"
@@ -464,13 +467,15 @@ export function WorkspaceSidebar({
           >
             ⑂
           </button>
-          <button
-            className="icon-btn"
-            title="Toggle AI sidebar (⌘I)"
-            onClick={() => toggleAi()}
-          >
-            ✦
-          </button>
+          {!isWeb && (
+            <button
+              className="icon-btn"
+              title="Toggle AI sidebar (⌘I)"
+              onClick={() => toggleAi()}
+            >
+              ✦
+            </button>
+          )}
           <button
             className="icon-btn"
             title="Hide sidebar"

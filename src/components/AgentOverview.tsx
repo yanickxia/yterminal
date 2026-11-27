@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { workspaceNavigationCopy } from "../lib/workspace-navigation-copy";
 import { clearAttentionMany } from "../stores/attention-store";
 import { useAgentPtyStore } from "../stores/agent-pty-store";
 import { collectAllAgents, OVERVIEW_COLS } from "../lib/agent-overview";
@@ -25,6 +26,7 @@ const KIND_LABEL: Record<AgentKind, string> = {
 const PREVIEW_LINES = 24;
 
 export function AgentOverview({ onClose }: { onClose: () => void }) {
+  const copy = workspaceNavigationCopy();
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const setActiveTab = useWorkspaceStore((s) => s.setActiveTab);
@@ -125,11 +127,11 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
         onKeyDown={onKeyDown}
       >
         <div className="agent-overview-head">
-          <span className="agent-overview-title">Agents</span>
+          <span className="agent-overview-title">{copy.agents}</span>
           <span className="agent-overview-count">{entries.length}</span>
         </div>
         {entries.length === 0 ? (
-          <div className="agent-overview-empty">当前没有运行中的 agent</div>
+          <div className="agent-overview-empty">{copy.noAgents}</div>
         ) : (
           <div
             className="agent-overview-grid"
@@ -165,14 +167,14 @@ export function AgentOverview({ onClose }: { onClose: () => void }) {
                   {e.agentName ?? e.tabName}
                 </div>
                 <pre className="agent-card-preview" aria-hidden="true">
-                  {previews.get(e.paneId) || "（无输出）"}
+                  {previews.get(e.paneId) || copy.noOutput}
                 </pre>
               </button>
             ))}
           </div>
         )}
         <div className="agent-overview-hint">
-          ↑↓←→ navigate · ↵ jump · esc close
+          {copy.overviewHint}
         </div>
       </div>
     </div>

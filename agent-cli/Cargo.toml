@@ -1,11 +1,20 @@
 [package]
 name = "yterminal"
-version = "0.18.23"
+version = "0.20.0"
 edition = "2021"
+default-run = "yterminal-agent"
 
 [[bin]]
 name = "yterminal-agent"
 path = "src/main.rs"
+
+[[bin]]
+name = "yterminal-web"
+path = "src/web.rs"
+required-features = ["web"]
+
+[features]
+web = ["dep:axum", "dep:subtle", "dep:tower-http"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -17,3 +26,6 @@ tokio = { version = "1", features = ["sync", "io-util", "io-std", "net", "proces
 ciborium = "0.2"
 serde_bytes = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "tokio", "ws"], optional = true }
+subtle = { version = "2", optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
