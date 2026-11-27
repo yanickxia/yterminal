@@ -51,6 +51,12 @@ and uploads it to `~/.local/bin/yterminal-agent` over SSH. Linux x86-64, Linux A
 and macOS are supported. The download uses the local updater's proxy and GitHub
 mirror settings. Existing Agent binaries are reused.
 
+The **?** next to **Connect / Test** shows a copyable local install script and
+links to the matching release assets. The script downloads through the direct
+release URL, which works even when the GitHub API is rate-limited. To use a
+downloaded archive, export `YTERMINAL_AGENT_ARCHIVE` with its local path before
+pasting the script.
+
 The installer starts a per-user systemd service on Linux or LaunchAgent on macOS.
 On hosts without an available user service manager, it starts a detached daemon.
 To install from a GUI running on the host, click **Enable Remote Workspaces**.
