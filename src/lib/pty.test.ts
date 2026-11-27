@@ -317,10 +317,13 @@ describe("AgentPty control takeover", () => {
     });
 
     expect(completed).not.toHaveBeenCalled();
+    expect(pty.replayingOutput).toBe(true);
     pty.acknowledgeData(chunks[0]);
     expect(completed).not.toHaveBeenCalled();
+    expect(pty.replayingOutput).toBe(true);
     pty.acknowledgeData(chunks[1]);
     expect(completed).toHaveBeenCalledTimes(1);
+    expect(pty.replayingOutput).toBe(false);
 
     // Ordinary live output is outside the replay boundary and must not emit a
     // second completion event.

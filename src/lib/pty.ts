@@ -46,6 +46,7 @@ export interface IPty {
   cols: number;
   rows: number;
   readonly readOnly: boolean;
+  readonly replayingOutput: boolean;
   readonly controlConnectionId: string | undefined;
   write(data: string): void;
   resize(cols: number, rows: number): void;
@@ -480,6 +481,11 @@ class AgentPty implements IPty {
     this.parsedSeq = Math.max(this.parsedSeq, end);
     this.resolveParserIdle();
     this.maybeCompleteReplay();
+  }
+
+  get replayingOutput(): boolean {
+    // ReplayEnd can be delivered before xterm parses its queued history.
+    return this.replayActive || this.replayPendingData.size > 0;
   }
 
   onData(cb: (data: Uint8Array) => void) {

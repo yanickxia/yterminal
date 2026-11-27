@@ -19,6 +19,7 @@ import { detectIsMac, shouldOpenLink } from "./link-modifier";
 import { openUrl } from "./opener";
 import { clipboardWrite, clipboardRead } from "./clipboard";
 import { matchClipboardShortcut } from "./clipboard-shortcut";
+import { registerClipboardOsc } from "./terminal-clipboard-osc";
 import { encodeEnter } from "./enter-key";
 import { encodeAltArrow } from "./terminal-alt-arrow";
 import { createControlEnterHandler } from "./terminal-control-shortcut";
@@ -701,8 +702,11 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
   // replay any persisted scrollback from a previous launch before wiring the
   // live shell, so old output appears above the fresh prompt.
   const restored = loadScrollback(tabId);
+  let restoringScrollback = Boolean(restored);
   if (restored) {
-    term.write(restored);
+    term.write(restored, () => {
+      restoringScrollback = false;
+    });
     term.write("\r\n\x1b[90m[restored previous session]\x1b[0m\r\n");
   }
 
@@ -736,6 +740,18 @@ export function getOrCreateSession(tabId: string, cwd: string): Session {
       TERM_PROGRAM: "Apple_Terminal",
     },
   });
+
+  // The parser sees both live PTY output and restored history. Only the
+  // focused controller may turn its live OSC 52 output into a local copy.
+  registerClipboardOsc(
+    term.parser,
+    () =>
+      !restoringScrollback && !pty.replayingOutput && !pty.readOnly &&
+      !!s && !s.disposed && s.el.isConnected && isPaneFocused(tabId) &&
+      s.el.contains(document.activeElement),
+    clipboardWrite,
+    (error) => logger.warn("term", `OSC 52 clipboard write failed: ${String(error)}`)
+  );
 
   // term.resize() emits onResize just like a user/container-driven fit. Mark
   // the synchronous agent projection so that callback repaints the terminal
