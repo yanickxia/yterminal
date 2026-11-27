@@ -1,4 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { isWeb } from "./platform";
+import { connectWebHost } from "./web-host-connection";
 import type { UpdaterNetworkOptions } from "./updater-native";
 import type {
   WorkspaceDocument,
@@ -255,7 +257,7 @@ export type AgentEvent =
     }
   | { event: "warning"; data: { code: string; message: string } };
 
-type HostEvent =
+export type HostEvent =
   | { type: "agent"; payload: AgentEvent }
   | { type: "diagnostic"; payload: { message: string } }
   | { type: "disconnected"; payload: { message: string } };
@@ -287,6 +289,43 @@ interface HostConnectionInfo {
   hello: AgentHello;
 }
 
+export interface HostConnection {
+  info: HostConnectionInfo;
+  request(request: HostRequest): Promise<HostResponse>;
+  notify(request: HostRequest): Promise<void>;
+  disconnect(): Promise<void>;
+}
+
+async function connectDesktopHost(
+  options: HostConnectOptions,
+  onEvent: (event: HostEvent) => void
+): Promise<HostConnection> {
+  const channel = new Channel<HostChannelEvent>();
+  channel.onmessage = (event) => {
+    if (event.type === "install_progress") options.onInstallProgress?.(event.payload.message);
+    else onEvent(event);
+  };
+  const info = await invoke<HostConnectionInfo>("host_connect", {
+    options: {
+      kind: options.kind,
+      name: options.name ?? "yterminal",
+      sshTarget: options.sshTarget ?? null,
+      installAgent: options.installAgent,
+    },
+    onEvent: channel,
+  });
+  const connectionId = info.connectionId;
+  return {
+    info,
+    request: (request) => invoke<HostResponse>("host_request", { connectionId, request }),
+    notify: (request) => invoke<void>("host_notify", { connectionId, request }),
+    disconnect: async () => {
+      channel.onmessage = () => {};
+      await invoke("host_disconnect", { connectionId });
+    },
+  };
+}
+
 type SessionListener = (event: AgentEvent) => void;
 type StatusListener = (online: boolean, message?: string) => void;
 type WorkspaceListener = (event: AgentEvent) => void;
@@ -296,7 +335,6 @@ const CONTROL_REQUEST_TIMEOUT_MS = 8_000;
 export class HostTransport {
   readonly connectionId: string;
   readonly hello: AgentHello;
-  private readonly channel: Channel<HostChannelEvent>;
   private readonly sessionListeners = new Map<string, Set<SessionListener>>();
   private readonly statusListeners = new Set<StatusListener>();
   private readonly workspaceListeners = new Set<WorkspaceListener>();
@@ -306,13 +344,9 @@ export class HostTransport {
   private online = true;
   private notifyQueue: Promise<void> = Promise.resolve();
 
-  private constructor(
-    info: HostConnectionInfo,
-    channel: Channel<HostChannelEvent>
-  ) {
-    this.connectionId = info.connectionId;
-    this.hello = info.hello;
-    this.channel = channel;
+  private constructor(private readonly connection: HostConnection) {
+    this.connectionId = connection.info.connectionId;
+    this.hello = connection.info.hello;
     this.heartbeat = setInterval(() => {
       for (const [workspaceId, leaseEpoch] of this.leases) {
         void this.request({
@@ -335,49 +369,29 @@ export class HostTransport {
   }
 
   static async connect(options: HostConnectOptions): Promise<HostTransport> {
-    const channel = new Channel<HostChannelEvent>();
     let transport: HostTransport | undefined;
-    // The Rust side may finish the handshake and report a disconnect before
-    // `invoke(host_connect)` resolves. Buffer those early events instead of
-    // silently losing them and leaving a dead connection marked online.
+    // Preserve events delivered between handshake and construction.
     const earlyEvents: HostEvent[] = [];
-    channel.onmessage = (event) => {
-      if (event.type === "install_progress") options.onInstallProgress?.(event.payload.message);
-      else if (transport) transport.handleEvent(event);
+    const connect = isWeb ? connectWebHost : connectDesktopHost;
+    const connection = await connect(options, (event) => {
+      if (transport) transport.handleEvent(event);
       else earlyEvents.push(event);
-    };
-    const info = await invoke<HostConnectionInfo>("host_connect", {
-      options: {
-        kind: options.kind,
-        name: options.name ?? "yterminal",
-        sshTarget: options.sshTarget ?? null,
-        installAgent: options.installAgent,
-      },
-      onEvent: channel,
     });
-    transport = new HostTransport(info, channel);
+    transport = new HostTransport(connection);
     for (const event of earlyEvents) transport.handleEvent(event);
     return transport;
   }
 
   async request(request: HostRequest): Promise<HostResponse> {
     try {
-      return await invoke<HostResponse>("host_request", {
-        connectionId: this.connectionId,
-        request,
-      });
+      return await this.connection.request(request);
     } catch (error) {
       throw normalizeHostError(error);
     }
   }
 
   async notify(request: HostRequest): Promise<void> {
-    const next = this.notifyQueue.then(() =>
-      invoke<void>("host_notify", {
-        connectionId: this.connectionId,
-        request,
-      })
-    );
+    const next = this.notifyQueue.then(() => this.connection.notify(request));
     this.notifyQueue = next.catch(() => {
       /* keep a failed send from poisoning later reconnect-era notifications */
     });
@@ -466,15 +480,14 @@ export class HostTransport {
   async disconnect(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
-    // Drop future Rust channel deliveries while retaining the Channel object
-    // for the lifetime of the connection above.
-    this.channel.onmessage = () => {};
-    await invoke("host_disconnect", { connectionId: this.connectionId });
+    await this.connection.disconnect();
     this.setOnline(false, "disconnected");
   }
 
   private handleEvent(event: HostEvent): void {
     if (event.type === "disconnected") {
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
       this.setOnline(false, event.payload.message);
       return;
     }
@@ -588,7 +601,7 @@ export function localHost(): Promise<HostTransport> {
   if (!localHostPromise) {
     localHostPromise = HostTransport.connect({
       kind: "local",
-      name: "Local GUI",
+      name: isWeb ? "Web browser" : "Local GUI",
     })
       .then((transport) => {
         localHostTransport = transport;

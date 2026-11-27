@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isWeb } from "../lib/platform";
 import {
   useSettingsStore,
   MIN_FONT_SIZE,
@@ -65,6 +66,9 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "debug", label: "Debug" },
   { id: "update", label: "Update" },
 ];
+const WEB_TABS = TABS.filter(
+  ({ id }) => id === "appearance" || id === "terminal" || id === "remote"
+);
 
 /**
  * Settings modal grouped into tabs:
@@ -153,7 +157,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   }
 
   useEffect(() => {
-    configFilePath().then(setCfgPath);
+    if (!isWeb) configFilePath().then(setCfgPath);
   }, []);
 
   // re-apply to live terminals and persist to the JSON file on any change
@@ -215,7 +219,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="settings-tabbar" role="tablist">
-          {TABS.map((t) => (
+          {(isWeb ? WEB_TABS : TABS).map((t) => (
             <button
               key={t.id}
               role="tab"
@@ -272,15 +276,17 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <div className="field">
                 <label className="field-label" htmlFor="font-select">
                   Terminal font
-                  <button
-                    type="button"
-                    className="link-btn"
-                    onClick={refreshFonts}
-                    disabled={refreshing}
-                    title="Re-scan installed system fonts"
-                  >
-                    {refreshing ? "scanning…" : "refresh"}
-                  </button>
+                  {!isWeb && (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      onClick={refreshFonts}
+                      disabled={refreshing}
+                      title="Re-scan installed system fonts"
+                    >
+                      {refreshing ? "scanning…" : "refresh"}
+                    </button>
+                  )}
                 </label>
                 <select
                   id="font-select"
@@ -651,7 +657,7 @@ function RemoteHostsTab() {
     try {
       const host = await localHost();
       const [nextService, response] = await Promise.all([
-        invoke<AgentServiceStatus>("agent_service_status"),
+        isWeb ? Promise.resolve(null) : invoke<AgentServiceStatus>("agent_service_status"),
         host.request({ method: "agent_status" }),
       ]);
       setService(nextService);
@@ -730,15 +736,18 @@ function RemoteHostsTab() {
   return (
     <>
       <div className="field">
-        <label className="field-label">This device</label>
+        <label className="field-label">{isWeb ? "Docker" : "This device"}</label>
         <p className="field-hint">
-          Install the per-user agent so other yterminal machines can attach over
-          SSH even while this GUI is closed. No TCP port or cloud relay is used.
+          {isWeb
+            ? "Local workspaces run inside this container."
+            : "Install the per-user agent so other yterminal machines can attach over SSH even while this GUI is closed. No TCP port or cloud relay is used."}
         </p>
         <div className="remote-agent-summary">
-          <span className={`remote-status ${service?.running ? "online" : "offline"}`} />
+          <span className={`remote-status ${(isWeb ? agent : service?.running) ? "online" : "offline"}`} />
           <span>
-            {service?.installed ? service.version || "Agent installed" : "Not installed"}
+            {isWeb
+              ? agent ? "Container agent" : "Container agent unavailable"
+              : service?.installed ? service.version || "Agent installed" : "Not installed"}
             {service?.managed ? " · service enabled" : ""}
             {agent ? ` · running ${agent.version}` : ""}
             {agent ? ` · ${agent.runningSessions} live session(s)` : ""}
@@ -755,23 +764,27 @@ function RemoteHostsTab() {
           </p>
         )}
         <div className="remote-agent-actions">
-          <button className="settings-action-btn" onClick={() => void installService()}>
-            {service?.installed ? "Install update" : "Enable Remote Workspaces"}
-          </button>
-          <button
-            className="settings-action-btn"
-            onClick={() => void setDraining(!agent?.draining)}
-          >
-            {agent?.draining ? "Cancel drain" : "Drain"}
-          </button>
-          <button
-            className="settings-action-btn"
-            disabled={!service?.managed}
-            onClick={() => void restartAgent()}
-            title="Restart the agent in place. Live sessions restart but reconnect automatically with their scrollback preserved — use this to finish an update."
-          >
-            Restart agent
-          </button>
+          {!isWeb && (
+            <>
+              <button className="settings-action-btn" onClick={() => void installService()}>
+                {service?.installed ? "Install update" : "Enable Remote Workspaces"}
+              </button>
+              <button
+                className="settings-action-btn"
+                onClick={() => void setDraining(!agent?.draining)}
+              >
+                {agent?.draining ? "Cancel drain" : "Drain"}
+              </button>
+              <button
+                className="settings-action-btn"
+                disabled={!service?.managed}
+                onClick={() => void restartAgent()}
+                title="Restart the agent in place. Live sessions restart but reconnect automatically with their scrollback preserved — use this to finish an update."
+              >
+                Restart agent
+              </button>
+            </>
+          )}
           <button className="link-btn" onClick={() => void refreshAgentStatus()}>
             Refresh
           </button>
@@ -785,15 +798,25 @@ function RemoteHostsTab() {
       <div className="field">
         <label className="field-label">SSH workspace hosts</label>
         <p className="field-hint">
-          Targets use your existing <code>~/.ssh/config</code>, ssh-agent,
-          ProxyJump and known_hosts. yterminal never stores a password or private
-          key. Connect / Test downloads a missing Agent on this computer and installs it over SSH.
+          {isWeb ? (
+            <>Targets use the container’s <code>~/.ssh/config</code> and <code>known_hosts</code>.
+              Connect to a server with a running yterminal-agent.</>
+          ) : (
+            <>Targets use your existing <code>~/.ssh/config</code>, ssh-agent,
+              ProxyJump and known_hosts. yterminal never stores a password or private
+              key. Connect / Test downloads a missing Agent on this computer and installs it over SSH.</>
+          )}
         </p>
       </div>
 
       <div className="ai-provider-list">
         {profiles.map((profile) => {
           const state = runtime[profile.id] ?? { status: "offline" as const };
+          const target = profile.sshTarget.trim();
+          const quotedTarget = "'" + target.replace(/'/g, "'\\''") + "'";
+          const checkCommand = target && (isWeb
+            ? `docker compose exec yterminal ssh -- ${quotedTarget}`
+            : `ssh -- ${quotedTarget}`);
           return (
             <div className="ai-provider-card" key={profile.id}>
               <div className="ai-provider-card-head">
@@ -833,12 +856,12 @@ function RemoteHostsTab() {
                   updateHost(profile.id, { sshTarget: event.target.value })
                 }
               />
-              <div style={{ marginTop: 8 }}>
+              <div className="remote-agent-actions">
                 <button
                   type="button"
                   className="settings-action-btn"
                   disabled={state.status === "connecting"}
-                  onClick={() => void reconnectRemoteHost(profile.id, true)}
+                  onClick={() => void reconnectRemoteHost(profile.id, !isWeb)}
                 >
                   {state.status === "connecting" ? "Connecting…" : "Connect / Test"}
                 </button>
@@ -849,17 +872,13 @@ function RemoteHostsTab() {
               {state.message && state.status !== "connecting" && (
                 <>
                   <p className="field-hint remote-error">{state.message}</p>
-                  {profile.sshTarget.trim() && (
+                  {checkCommand && (
                     <div className="remote-ssh-check">
-                      <code>ssh {profile.sshTarget.trim()}</code>
+                      <code>{checkCommand}</code>
                       <button
                         type="button"
                         className="link-btn"
-                        onClick={() =>
-                          void clipboardWrite(
-                            `ssh ${profile.sshTarget.trim()}`
-                          )
-                        }
+                        onClick={() => void clipboardWrite(checkCommand)}
                       >
                         Copy check command
                       </button>

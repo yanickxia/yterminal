@@ -12,6 +12,7 @@
 // that. Writes flow back to SQLite asynchronously through Tauri commands.
 
 import { invoke } from "@tauri-apps/api/core";
+import { isWeb } from "./platform";
 
 const LEGACY_PREFIX = "yterminal-scrollback:";
 
@@ -85,6 +86,7 @@ export function loadScrollback(paneId: string): string {
  */
 export function saveScrollback(paneId: string, data: string): void {
   cache.set(paneId, data);
+  if (isWeb) return;
   invoke("scrollback_save", { paneId, data }).catch(() => {
     /* best effort */
   });
@@ -93,6 +95,7 @@ export function saveScrollback(paneId: string, data: string): void {
 /** Drop a pane's snapshot. Called when the pane is permanently closed. */
 export function clearScrollback(paneId: string): void {
   cache.delete(paneId);
+  if (isWeb) return;
   invoke("scrollback_clear", { paneId }).catch(() => {
     /* ignore */
   });
@@ -106,6 +109,7 @@ export function pruneScrollback(liveIds: Set<string>): void {
   for (const id of Array.from(cache.keys())) {
     if (!liveIds.has(id)) cache.delete(id);
   }
+  if (isWeb) return;
   invoke("scrollback_prune", {
     livePaneIds: Array.from(liveIds),
   }).catch(() => {

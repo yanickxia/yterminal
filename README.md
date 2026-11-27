@@ -38,7 +38,78 @@ drag-and-drop reordering.
   on another macOS/Linux machine through one persistent system OpenSSH channel.
   Closing either GUI or losing the network does not stop the remote work.
 
-## Remote workspaces over SSH
+## Docker Web
+
+The [GHCR image](https://github.com/yanickxia/yterminal/pkgs/container/yterminal)
+supports Linux amd64 and arm64. With [`compose.yaml`](compose.yaml) in your
+deployment directory, pull and start the image:
+
+```sh
+docker compose pull
+docker compose up -d --no-build --wait
+```
+
+Compose defaults to `ghcr.io/yanickxia/yterminal:latest`. Set
+`YTERMINAL_IMAGE=ghcr.io/yanickxia/yterminal:0.18.22` in `.env` to pin a
+version. From a source checkout, `docker compose up -d --build --wait` builds
+the image locally.
+
+Set `YTERMINAL_WEB_TOKEN` in `.env` or in the environment running Compose to
+choose your login token. Compose passes it to the container and the Web
+gateway uses it in place of the generated token. To apply a changed token,
+run `docker compose up -d --no-build --wait` again. If the variable is unset
+or empty, the gateway generates and persists a token on first start. Read
+that generated token with:
+
+```sh
+docker compose exec yterminal cat /home/yterminal/.config/yterminal/web-token
+```
+
+Open <http://127.0.0.1:8080>, sign in with your token, and choose **New
+workspace**. The **Docker** group runs shells as the non-root `yterminal`
+user. The named volume persists its home directory, including projects,
+the agent database, SSH configuration, and any generated token. Reloading or
+closing the browser leaves shells running. Restarting the container restores
+the workspace layout and saved output with fresh shells.
+
+The workspace switcher and Agent Overview follow the browser or WebView
+language for English and Chinese.
+
+The Compose port binds to loopback by default. For access from another
+machine, serve the app at the root of an HTTPS origin through a reverse
+proxy that forwards WebSocket upgrades. Set `YTERMINAL_WEB_ORIGIN` to the
+external origin (for example, `https://terminal.example.com`) in the Compose
+`.env` file. `YTERMINAL_WEB_BIND` and `YTERMINAL_WEB_PORT` control the host
+port binding when the proxy needs another address or port. The Web login
+grants access to the container shell and its configured SSH hosts.
+
+GitHub Actions publishes versioned images for `v*` and `docker-v*` tags.
+Use a `docker-v*` tag to release the container without triggering desktop
+bundles. Stable tags also update `latest`.
+
+### Add an existing SSH server
+
+Use an SSH alias or `user@host` accepted by OpenSSH **inside the container**.
+Set up a key or SSH agent and verify the server's host key from that
+environment. For example, to generate a dedicated key and check the connection
+after authorizing its public key on the server:
+
+```sh
+docker compose exec yterminal ssh-keygen -t ed25519
+docker compose exec yterminal cat /home/yterminal/.ssh/id_ed25519.pub
+docker compose exec yterminal ssh user@host true
+docker compose exec yterminal ssh -o BatchMode=yes user@host '~/.local/bin/yterminal-agent version'
+```
+
+Use the default key path when prompted. With a passphrase, make the key
+available to the container's OpenSSH through an SSH agent for non-interactive
+connections. Then open **Settings → Remote → Add SSH host**, enter the alias
+or `user@host`, and choose **Connect / Test**. SSH profiles are saved in the
+browser. The server needs a running, compatible `yterminal-agent` installed
+at `~/.local/bin/yterminal-agent`. Its workspaces are listed separately from
+Docker's workspaces and their commands run on the server.
+
+## Remote workspaces over SSH from the desktop app
 
 On the client machine, open **Settings → Remote**, add an SSH target, and click
 **Connect / Test**. The target is an alias or `user@host` accepted by your existing

@@ -12,6 +12,7 @@
 // content or user keystrokes themselves.
 
 import { invoke } from "@tauri-apps/api/core";
+import { isWeb } from "./platform";
 
 export type LogLevel = "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE";
 
@@ -57,6 +58,7 @@ export function log(level: LogLevel, source: string, message: string) {
       ? console.warn
       : console.log;
   c(line);
+  if (isWeb) return;
   // forward to the backend file (best effort; swallow if not in Tauri)
   invoke("log_event", { level, source, message }).catch(() => {
     /* non-Tauri or backend busy — the ring still has it */

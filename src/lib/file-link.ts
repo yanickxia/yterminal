@@ -10,6 +10,7 @@ import {
   looksLikePath,
 } from "./file-link-classify";
 import { pathIsFile } from "./file-reader";
+import { isWeb } from "./platform";
 import { openUrl, openPath } from "./opener";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import {
@@ -47,7 +48,7 @@ export async function handleClickedToken(
   const store = useWorkspaceStore.getState();
   const wsId = workspaceId ?? store.activeWorkspaceId ?? undefined;
   let ownerHome = home;
-  if (wsId && isRemoteWorkspace(wsId) && trimmed.startsWith("~")) {
+  if (wsId && (isWeb || isRemoteWorkspace(wsId)) && trimmed.startsWith("~")) {
     ownerHome = remoteHomes.get(wsId);
     if (!ownerHome) {
       try {
@@ -85,7 +86,7 @@ export async function handleClickedToken(
     // `openPath` runs on the GUI machine. A remote absolute path has no local
     // meaning, so leave unsupported binary files untouched instead of opening
     // a same-named local file by accident.
-    if (wsId && isRemoteWorkspace(wsId)) return false;
+    if (isWeb || (wsId && isRemoteWorkspace(wsId))) return false;
     // Recognized as a file but not a viewable text type: hand to the OS.
     await openPath(target.path).catch((err) =>
       console.warn("openPath failed", target.path, err)

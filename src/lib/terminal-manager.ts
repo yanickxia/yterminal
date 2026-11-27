@@ -44,6 +44,7 @@ import { shouldSuppressContextMenu } from "./context-menu-suppress";
 import { spawn, type IPty } from "./pty";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isWeb } from "./platform";
 import {
   saveScrollback,
   loadScrollback,
@@ -523,6 +524,7 @@ function currentAppearance() {
 }
 
 function pickShell(): { cmd: string; args: string[] } {
+  if (isWeb) return { cmd: "", args: ["-l"] };
   const ua = navigator.userAgent.toLowerCase();
   if (ua.includes("windows")) {
     return { cmd: cachedShell ?? "powershell.exe", args: [] };
@@ -545,7 +547,7 @@ let cachedShell: string | null = null;
  * failures fall back to the platform default inside pickShell().
  */
 export async function initShell(): Promise<void> {
-  if (cachedShell) return;
+  if (isWeb || cachedShell) return;
   try {
     const sh = await invoke<string>("default_shell");
     if (sh && sh.trim()) cachedShell = sh.trim();
@@ -2041,25 +2043,27 @@ if (typeof window !== "undefined") {
   // Tauri's close event is async-capable. Intercept it once so we can flush the
   // current process cwd before the webview disappears; this closes the gap where
   // the user `cd`s and immediately quits before the 15s autosave tick.
-  try {
-    const appWindow = getCurrentWindow();
-    let closing = false;
-    appWindow
-      .onCloseRequested(async (event) => {
-        if (closing) return;
-        closing = true;
-        event.preventDefault();
-        try {
-          await Promise.all([snapshotAllCwds(), snapshotAllAgents()]);
-          await persistAllSessions();
-        } finally {
-          await appWindow.destroy();
-        }
-      })
-      .catch(() => {
-        /* not running inside Tauri */
-      });
-  } catch {
-    /* not running inside Tauri */
+  if (!isWeb) {
+    try {
+      const appWindow = getCurrentWindow();
+      let closing = false;
+      appWindow
+        .onCloseRequested(async (event) => {
+          if (closing) return;
+          closing = true;
+          event.preventDefault();
+          try {
+            await Promise.all([snapshotAllCwds(), snapshotAllAgents()]);
+            await persistAllSessions();
+          } finally {
+            await appWindow.destroy();
+          }
+        })
+        .catch(() => {
+          /* native window registration failed */
+        });
+    } catch {
+      /* native window unavailable */
+    }
   }
 }

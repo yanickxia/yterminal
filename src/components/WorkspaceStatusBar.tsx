@@ -9,6 +9,7 @@ import {
 import { collectLeafIds } from "../lib/pane-tree";
 import { scrollSessionToBottom } from "../lib/terminal-manager";
 import { detectIsMac } from "../lib/link-modifier";
+import { workspaceNavigationCopy } from "../lib/workspace-navigation-copy";
 
 // Platform detected once at module load (same canonical source as App.tsx and
 // the link modifier), so the overview-button tooltip shows the right chord.
@@ -73,7 +74,7 @@ export function WorkspaceStatusBar({
       <button
         type="button"
         className="ws-statusbar-overview"
-        title={`打开 Agent 透视图 (${isMac ? "⌘O" : "Ctrl+Shift+O"})`}
+        title={`${workspaceNavigationCopy().openAgentOverview} (${isMac ? "⌘O" : "Ctrl+Shift+O"})`}
         onClick={onOpenOverview}
       >
         ⤢

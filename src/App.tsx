@@ -35,6 +35,7 @@ import {
   startWorkspaceSync,
 } from "./lib/workspace-sync";
 import { startConfiguredRemoteHosts } from "./lib/remote-host-manager";
+import { isWeb } from "./lib/platform";
 
 // Platform detected once at module load (same source as the link modifier).
 // Drives the shortcut modifier split: Cmd on macOS, Ctrl+Shift elsewhere.
@@ -63,7 +64,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const aiOpen = useAiStore((s) => s.open);
+  const aiOpen = useAiStore((s) => !isWeb && s.open);
   const aiWidth = useLayoutStore((s) => s.aiWidth);
   const setAiWidth = useLayoutStore((s) => s.setAiWidth);
   const gitOpen = useGitStore((s) => s.open);
@@ -82,7 +83,7 @@ export default function App() {
       const wantVerbose = useSettingsStore.getState().debugVerbose;
       setVerbose(wantVerbose);
       try {
-        await invoke("set_log_verbose", { verbose: wantVerbose });
+        if (!isWeb) await invoke("set_log_verbose", { verbose: wantVerbose });
       } catch {
         /* non-Tauri — ignore */
       }
@@ -99,9 +100,9 @@ export default function App() {
       // Prime the in-memory scrollback cache from SQLite BEFORE any pane mounts,
       // so loadScrollback (which the React lifecycle calls synchronously) sees
       // the saved data. Also handles the one-time localStorage migration.
-      await preloadScrollbacks();
+      if (!isWeb) await preloadScrollbacks();
       if (cancelled) return;
-      ensureSeedWorkspace();
+      if (!isWeb) ensureSeedWorkspace();
       configureWorkspaceProjection({
         replaceHost: (hostId, documents) => {
           useWorkspaceStore.getState().applyAgentSnapshot(hostId, documents);
@@ -131,6 +132,7 @@ export default function App() {
       setReady(true);
       logger.info("app", "startup ready");
       startConfiguredRemoteHosts();
+      if (isWeb) return;
       scheduleAutoCheck();
 
       // probe installed monospace fonts in the background — the native call is
@@ -238,6 +240,7 @@ export default function App() {
           setOverviewOpen((open) => !open);
           return;
         case "aiSidebar":
+          if (isWeb) return;
           consume();
           useAiStore.getState().toggleOpen();
           return;
@@ -457,7 +460,13 @@ export default function App() {
             <WorkspaceStatusBar onOpenOverview={() => setOverviewOpen(true)} />
           </>
         ) : (
-          <div className="empty">No workspace.</div>
+          <div className="empty">
+            {isWeb ? (
+              <button type="button" className="settings-action-btn" onClick={() => addWorkspace()}>
+                New workspace
+              </button>
+            ) : "No workspace."}
+          </div>
         )}
       </div>
       {gitOpen && (

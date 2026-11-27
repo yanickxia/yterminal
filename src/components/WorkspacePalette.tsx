@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
+import { workspaceNavigationCopy } from "../lib/workspace-navigation-copy";
 
 /**
  * Cmd/Ctrl+K quick switcher: fuzzy-search every (workspace, tab) pair and jump
@@ -12,6 +13,7 @@ export function WorkspacePalette({
   onClose: () => void;
   onOpenOverview: () => void;
 }) {
+  const copy = workspaceNavigationCopy();
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
@@ -120,7 +122,7 @@ export function WorkspacePalette({
         <input
           ref={inputRef}
           className="palette-input"
-          placeholder="Jump to workspace / tab…"
+          placeholder={copy.jumpPlaceholder}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           spellCheck={false}
@@ -136,12 +138,12 @@ export function WorkspacePalette({
             }}
           >
             <span className="palette-icon">⤢</span>
-            <span className="palette-ws">打开 Agent 透视图</span>
+            <span className="palette-ws">{copy.openAgentOverview}</span>
           </div>
         </div>
         <div className="palette-list" ref={listRef}>
           {matches.length === 0 ? (
-            <div className="palette-empty">No matches</div>
+            <div className="palette-empty">{copy.noMatches}</div>
           ) : (
             matches.map((m, i) => (
               <div
@@ -161,13 +163,13 @@ export function WorkspacePalette({
                 <span className="palette-ws">{m.workspaceName}</span>
                 <span className="palette-sep">›</span>
                 <span className="palette-tab">{m.tabName}</span>
-                {m.isActive && <span className="palette-badge">current</span>}
+                {m.isActive && <span className="palette-badge">{copy.current}</span>}
               </div>
             ))
           )}
         </div>
         <div className="palette-hint">
-          ↑↓ navigate · ↵ jump · esc close
+          {copy.paletteHint}
         </div>
       </div>
     </div>
