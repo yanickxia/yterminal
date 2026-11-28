@@ -8,6 +8,8 @@ each workspace, and a recursive **split-pane tree** inside each tab — with
 persistent scrollback, switchable themes, configurable fonts, and
 drag-and-drop reordering.
 
+![yterminal on macOS with a workspace sidebar, three tabs, and nested terminal splits](docs/screenshots/macos-workspaces.webp)
+
 ## Features
 
 - **Workspaces → Tabs → Split panes** — a three-level model; each leaf pane is
@@ -39,6 +41,8 @@ drag-and-drop reordering.
   Closing either GUI or losing the network does not stop the remote work.
 
 ## Docker Web
+
+![Docker Web workspace with a highlighted search match in worker logs and queue status in a second pane](docs/screenshots/docker-web.webp)
 
 The [public GHCR image](https://github.com/users/yanickxia/packages/container/package/yterminal)
 supports Linux amd64 and arm64. You can pull it without signing in.
@@ -195,6 +199,8 @@ daemon.
 | Double-click a tab / workspace | Rename it |
 
 ## Configuration
+
+![Appearance settings showing five themes and separate terminal and interface font controls](docs/screenshots/appearance-settings.webp)
 
 Appearance, terminal, and updater settings are mirrored to a plain JSON file,
 so you can version it, sync it across machines, or edit it by hand:
